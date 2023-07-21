@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+{% load static %}
+{% include 'nav.html' %}
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Alegreya&family=Rubik&display=swap" rel="stylesheet">
+
+    <title>ANTHER</title>
+ <!-- <link rel="stylesheet" href="{% static 'neumorphism/html&css/css/neumorphism.css' %}" /> -->
+
+ <style>
+    .card {
+      /* Add your custom styles here */
+      border-radius: 30px;
+      overflow: hidden;
+      font-family: 'Alegreya', serif;
+    }
+
+    .card .card-img {
+      /* Add your custom styles here */
+      width: 100%;
+      height: auto;
+      border-radius: 30px;
+    }
+
+    /* Add any other custom styles as needed */
+  </style>
+  
+  </head>
+<body>
+    <div class="col-lg">
+
+    <div class="row justify-content-center">
+    <img src="{% static 'images/team-transparent.png' %}" style="height: 100px; width:550px; margin-top: 20px; margin-bottom: 50px;">
+    </div>
+    <div class="row">
+    
+        <div class="row">
+            <div>
+                <div class="card bg-dark" style="height: 550px; margin-left: 50px;">
+                    <!-- <div class="card-image" style="height: 99.7%;width: 99.8%;margin-left: 1px;">
+                    <img src="{% static 'images/sky.jpg' %}" class="card-img" alt="sky">
+                    </div> -->
+                    <div class="card-img-overlay">
+                        <div class="row">
+                            <div class="col-sm-6 mb-3 mb-sm-0">
+                              <div class="card text-bg-dark">
+                                <div class="card-body">
+                                  <div class="row">
+                                    <div class="col-sm-6">
+                                      <h5 class="card-title" style="margin-top: 175px;">Matt Williams</h5>
+                                      <span class="card-text small">Founder</span>
+                                     
+                                    </div>
+                                    <div class="col-sm-6">
+                                      <img src="{% static 'images/Matt-head.jpg' %}" alt="Matt's Headshot" style="height: 182px; width: 225px; border-radius: 20px;">
+                                    </div>
+                                    <div class="row">
+                                        <p class="card-text">Matt is a producer and a bassist who has guided multiple acts through project launches. He's currently doing full stack development at Bluestem</p>
+                                        <div class="d-grid gap-2 d-md-block" style="margin-left: 40%;">
+                                        <a href="https://open.spotify.com/artist/0Uy0vwHJKJO5btcAMnxLqc?si=5sUUxVXiTYKKzxa5n_i3QQ" class="btn btn-success"><i class="fab fa-spotify"></i></a>
+                                        <a href="https://www.linkedin.com/in/mattwilliams19/" class="btn btn-primary"><i class="fab fa-linkedin"></i></a>
+                                        </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="col-sm-6">
+                              <div class="card text-bg-dark">
+                                <div class="card-body">
+                                  <h5 class="card-title">Khashiff Miranda</h5>
+                                  <span class="card-text small">CTO</span>
+                                  <p class="card-text">With supporting text below as a natural lead-in to additional content.</p>
+                                  <div class="d-grid gap-2 d-md-block" style="margin-left: 40%;">
+                                    <a href="https://www.linkedin.com/in/khashiff-miranda-a3745877/" class="btn btn-primary"><i class="fab fa-linkedin"></i></a>
+                                    <a href="kkmiranda.github.io" class="btn btn-secondary"><i class="fab fa-github"></i></a>
+                                    </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div class="row">
+                            <div class="col-sm-6 mb-3 mb-sm-0">
+                              <div class="card text-bg-dark">
+                                <div class="card-body">
+                                  <h5 class="card-title">Hank Grier</h5>
+                                  <span class="card-text small">AI Expert</span>
+                                  <p class="card-text">With supporting text below as a natural lead-in to additional content.</p>
+                                  <div class="d-grid gap-2 d-md-block" style="margin-left: 40%;">
+                                    <a href="https://open.spotify.com/artist/4yNwxhj2bg1qe1dW9Gak1W?si=3U1Lr2rZS3SllkwUOwqMnA" class="btn btn-success"><i class="fab fa-spotify"></i></a>
+                                    <a href="https://pubmed.ncbi.nlm.nih.gov/36424431/" class="btn btn-secondary"><i class="fas fa-book"></i></a>
+                                    </div>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="col-sm-6">
+                              <div class="card text-bg-dark">
+                                <div class="card-body">
+                                  <h5 class="card-title">David Xu</h5>
+                                  <span class="card-text small">Front End Developer</span>
+                                  <p class="card-text">With supporting text below as a natural lead-in to additional content.</p>
+                                  <a href="#" class="btn btn-primary">Go somewhere</a>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+    
+    <script src="{% static 'neumorphism/html&css/js/neumorphism.js' %}"></script>
+</body>
+</html>

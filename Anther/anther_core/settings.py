@@ -25,7 +25,7 @@ SECRET_KEY = 'z@art%abh5w+d!z-^r&j+-q9c%q0x=5&mfr!imsx+$n*(l-boc'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'actually-elegant-seasnail.ngrok-free.app', '230c-2601-246-5c81-f200-752f-7e1-7e16-29d1.ngrok-free.app']
 
 # Add here your deployment HOSTS
 CSRF_TRUSTED_ORIGINS = ['http://localhost:8000', 'http://localhost:5085', 'http://127.0.0.1:8000', 'http://127.0.0.1:5085']

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+{% load static %}
+<html>
+<head>
+  <script src="https://kit.fontawesome.com/a72f4c9e27.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}" />
+  <!-- <link rel="stylesheet" href="{% static 'neumorphism/html&css/css/neumorphism.css' %}" /> -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7SnpJef0486qhLnuZ2cdeRhO02iuK6FUUVM" crossorigin="anonymous">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik&display=swap" rel="stylesheet"> 
+<style>
+  .rotate-image {
+    transition: transform 70s ease;
+  }
+
+  .rotate-image:hover {
+    transform: rotate(360deg);
+  }
+  .borderless-button {
+    border: none;
+    outline: none;
+    box-shadow: none;
+  }
+  .borderless-button:focus,
+  .borderless-button:active {
+    box-shadow: none;
+  }
+</style>
+
+</head>
+<body>
+
+<div class="row" style="height: 20px; position: relative;">
+  <a href="/" style="position: absolute; top: 10px; left: 18px;">
+  <img src="{% static 'images/anther_logo.png' %}" class="rotate-image" style="height: 65px;width: 100px;" alt="Anther Logo">   
+</a>
+
+<!-- <nav class="navbar" style="background-color:hsla(337, 56%, 63%, 0); position: relative;">
+    <div class="container-fluid" style="position: absolute; top: 10px; left: 18px;">
+      <button class="navbar-toggler borderless-button" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavAltMarkup" aria-controls="navbarNavAltMarkup" aria-expanded="false" aria-label="Toggle navigation">
+        <img src="{% static 'images/anther_logo.png' %}" class="rotate-image" style="height: 60px;width: 75px;">
+      </button>
+      <div class="collapse navbar-collapse justify-content-end" id="navbarNavAltMarkup">
+        <div class="navbar-nav" style="margin-right: auto;width: 80px;">
+          <a class="nav-link active" aria-current="page" href="/">Home</a>
+          <a class="nav-link" href="/team/">Team</a>
+          <a class="nav-link disabled">Contact Us</a>
+          <a class="nav-link" href="/playlists/">Sandbox</a>
+        </div>
+      </div>
+    </div>
+  </nav> -->
+</div>
+
+</body>
+</html>

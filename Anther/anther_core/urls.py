@@ -21,5 +21,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include('urls.playlist_urls')),
     path('', include('urls.load_animation_urls')),
-    path('', include('urls.home_urls'))
+    path('', include('urls.home_urls')),
+    path('', include('urls.team_urls')),
+    path('', include('urls.login_urls'))
 ]
