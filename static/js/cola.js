@@ -43,7 +43,7 @@ function playListChart() {
         .force("charge", d3.forceManyBody().strength(charge))
  
     d3.queue()
-        .defer(d3.json, "/templates/static/sandBox_src/playlistData.json")
+        .defer(d3.json, "/static/sandBox_src/playlistData.json")
         .await(ready)
     
     function ready(error, datapoints){
@@ -64,7 +64,7 @@ function playListChart() {
                 nom = d3.select(this).attr("name");
                 console.log(plID);
                 d3.selectAll(".playList").style("visibility","hidden")
-                d3.json("/templates/static/sandBox_src/miserables.json", function(error, _graph) {
+                d3.json("/static/sandBox_src/miserables.json", function(error, _graph) {
                     if(error) throw error;
                     graph = _graph;
                     initializeDisplay(plID, nom)

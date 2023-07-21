@@ -1,6 +1,4 @@
-#!/bin/sh
-'''exec' "/Users/mattwilliams/Documents/Programming/Github repository local folder/Anther/Anther/bin/python3" "$0" "$@"
-' '''
+#!/Users/khashiffm/Documents/Anther/Anther/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

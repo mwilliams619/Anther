@@ -1,4 +1,4 @@
-#!/Users/mattwilliams/Documents/Programming/Github repository local folder/Anther/Anther/bin/python3
+#!/Users/khashiffm/Documents/Anther/Anther/bin/python
 
 # Author:
 # Contact: grubert@users.sf.net

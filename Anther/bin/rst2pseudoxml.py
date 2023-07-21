@@ -1,4 +1,4 @@
-#!/Users/mattwilliams/Documents/Programming/Github repository local folder/Anther/Anther/bin/python3
+#!/Users/khashiffm/Documents/Anther/Anther/bin/python
 
 # $Id: rst2pseudoxml.py 9115 2022-07-28 17:06:24Z milde $
 # Author: David Goodger <goodger@python.org>

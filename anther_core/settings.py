@@ -85,11 +85,11 @@ WSGI_APPLICATION = 'anther_core.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'Anther_1',
-        'USER': 'mattwilliams',
+        'NAME': 'anther',
+        'USER': 'khashiffm',
         'PASSWORD': '',
         'HOST': 'localhost',
-        'PORT': 5433
+        'PORT': 5432
     }
 }
 

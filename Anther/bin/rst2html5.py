@@ -1,4 +1,4 @@
-#!/Users/mattwilliams/Documents/Programming/Github repository local folder/Anther/Anther/bin/python3
+#!/Users/khashiffm/Documents/Anther/Anther/bin/python
 # :Copyright: © 2015 Günter Milde.
 # :License: Released under the terms of the `2-Clause BSD license`_, in short:
 #
