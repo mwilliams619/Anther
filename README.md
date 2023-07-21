@@ -7,4 +7,3 @@ Make a postgres server
 4. populate db with current models
     4.1 run python manage.py makemigrations
     4.2 run python manage.py migrate
-5.
