@@ -82,16 +82,7 @@ WSGI_APPLICATION = 'anther_core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/3.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'anther',
-        'USER': 'khashiffm',
-        'PASSWORD': '',
-        'HOST': 'localhost',
-        'PORT': 5432
-    }
-}
+
 
 
 # Password validation
@@ -157,3 +148,8 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 
 USE_TZ = True
+
+try:
+    from localsettings import *
+except ImportError:
+    pass
