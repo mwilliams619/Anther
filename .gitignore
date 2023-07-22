@@ -7,7 +7,6 @@
 /node_modules/
 build/
 env
-/staticfiles/
 /Anther/lib/site-packages
 /Anther/launch.json
 /Anther/anther_core/settings.py
