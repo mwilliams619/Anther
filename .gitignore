@@ -10,8 +10,9 @@ env
 /Anther/lib/site-packages/**
 /Anther/launch.json
 **/settings.py
-/Anther/anther_core/localsettings.py
+
 #src
 *.sqlite*
 
 .env
+anther_core/localsettings.py
