@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ANTHER</title>
+    <!-- Add your CSS stylesheets or external stylesheets here -->
+  
+  </head>
+  <body>
+        <!-- Include the nav_bar.html template at the top -->
+        {% include 'nav.html' %}
+<!-- search.html -->
+
+<div class="input-group">
+    <input type="text" class="form-control" id="search-input" aria-label="Text input with segmented dropdown button" placeholder="Search Song">
+    <button type="button" class="btn btn-outline-secondary">Search</button>
+    <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
+        <span class="visually-hidden">Toggle Dropdown</span>
+    </button>
+    <ul class="dropdown-menu dropdown-menu-end">
+        <li><a class="dropdown-item" href="#" data-search-type="track">Search Song</a></li>
+        <li><a class="dropdown-item" href="#" data-search-type="artist">Search Artist</a></li>
+        <li><a class="dropdown-item" href="#" data-search-type="playlist">Search Playlist</a></li>
+    </ul>
+</div>
+
+<!-- Your search results display section here -->
+{% if search_results %}
+    <h3>Search Results:</h3>
+    <ul>
+        {% for result in search_results %}
+            <li>{{ result.name }}</li>
+        {% endfor %}
+    </ul>
+{% endif %}
+
+<!-- Include jQuery library -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
+<!-- Your custom JavaScript -->
+<script>
+    $(document).ready(function () {
+        // Set the initial search category to "track"
+        var searchCategory = "track";
+        // Function to change the placeholder and search category based on the selected dropdown item
+        function changePlaceholderAndCategory(item) {
+            var newPlaceholder = "Search " + item.text();
+            searchCategory = item.data('search-type');
+            $("#search-input").attr("placeholder", newPlaceholder);
+        }
+
+        // Listen for the click event on dropdown items
+        $(".dropdown-item").on("click", function () {
+            changePlaceholderAndCategory($(this));
+        });
+
+        // Function to handle the search request
+        function performSearch() {
+            var query = $("#search-input").val();
+            // Send the query and search category to your Django view using AJAX
+            // The Django view will then use the corresponding class from spotipy_functions.py based on the search category
+            // Display the search results on the page
+            $.ajax({
+                type: 'GET',
+                url: '/search/',
+                data: {
+                    query: query,
+                    search_category: searchCategory
+                },
+                success: function (data) {
+                    // Replace the content of the search results section with the updated results
+                    $('#search-results').html(data);
+                },
+                error: function () {
+                    // Handle error if necessary
+                }
+            });
+        }
+
+        // Listen for the click event on the search button
+        $(".btn-outline-secondary").on("click", function () {
+            performSearch();
+        });
+
+        // Listen for the Enter key press in the search input field
+        $("#search-input").on("keypress", function (event) {
+            if (event.keyCode === 13) {
+                performSearch();
+            }
+        });
+    });
+</script>
+
+  </body>
+</html>

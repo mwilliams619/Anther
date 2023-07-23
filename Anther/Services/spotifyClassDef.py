@@ -9,6 +9,8 @@ from statistics import mean
 import copy
 from json import dump
 from math import log10
+from django.db import connection
+from Anther.models import SongProps
 
 # Import Login credentials from .env file
 
@@ -20,7 +22,7 @@ client_credentials_manager = SpotifyClientCredentials(client_id=client_id, clien
 
 sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)  # spotify object to access API
 
-db = sqlite3.connect("song_props.sqlite", detect_types=sqlite3.PARSE_DECLTYPES)
+db = connection.cursor()
 
 db.execute("CREATE TABLE IF NOT EXISTS song_props (name TEXT PRIMARY KEY NOT NULL, danceability INTEGER NOT NULL,"
            "energy INTEGER NOT NULL, mode INTEGER NOT NULL, valence INTEGER NOT NULL, tempo INTEGER NOT NULL,"
@@ -41,24 +43,38 @@ class SpotSuper:
             self.catalog = self.track_list()
 
     def search(self):
-        """ Search for either track/playlist/artist item return uri"""
-
-        # TODO my db contains songs how do I get it to return
-        #  artist and playlist uris if I already have their songs in the db
-
-        cursor = db.execute(
-            "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props WHERE (name = ?)",
-            (self.name,))
-        row = cursor.fetchone()
-        if row:
-            name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
-            return uri
-        else:
+        """Search for either track/playlist/artist item and return the URI."""
+        try:
+            song_props = SongProps.objects.get(name=self.name)
+            return song_props.uri
+        except SongProps.DoesNotExist:
             result = sp.search(q=self._category + ':' + self.name, type=self._category)  # search query
 
-            spotify_obj = result[self._category + 's']['items'][0]
-            uri = spotify_obj['uri']
-            return uri
+            if result and self._category + 's' in result and 'items' in result[self._category + 's']:
+                spotify_obj = result[self._category + 's']['items'][0]
+                uri = spotify_obj['uri']
+                return uri
+            else:
+                raise Exception("No search results found for '{}' in category '{}'.".format(self.name, self._category))
+    # def search(self):
+    #     """ Search for either track/playlist/artist item return uri"""
+
+    #     # TODO my db contains songs how do I get it to return
+    #     #  artist and playlist uris if I already have their songs in the db
+
+    #     cursor = db.execute(
+    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props WHERE (name = ?)",
+    #         (self.name,))
+    #     row = cursor.fetchone()
+    #     if row:
+    #         name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
+    #         return uri
+    #     else:
+    #         result = sp.search(q=self._category + ':' + self.name, type=self._category)  # search query
+
+    #         spotify_obj = result[self._category + 's']['items'][0]
+    #         uri = spotify_obj['uri']
+    #         return uri
 
     def track_list(self):
         """
@@ -89,58 +105,50 @@ class SpotSuper:
         return catalog
 
     @staticmethod
-    def _properties_dict_gen(song_name, song_uri):
+    def _properties_dict_gen(self, song_name, song_uri):
         """
-        for use in song_properties generates song properties dict and adds to sqlite table 'song_props'
-
-        :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
-                 and popularity and genre
+        for use in song_properties generates song properties dict and adds to SongProps model
         """
-        # get metadata for song
         song_features = sp.audio_features(song_uri)
-        # different search necessary to get genre and popularity
         track = sp.track(song_uri)
         popular = track['popularity']
         artist = sp.artist(track["artists"][0]["external_urls"]["spotify"])
         genre = str(artist['genres'])
 
-        cursor = db.execute(
-            "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
-            "WHERE (name = ?)",
-            (song_name,))
+        song_props, _ = SongProps.objects.get_or_create(
+            name=song_name,
+            defaults={
+                'danceability': song_features[0]['danceability'],
+                'energy': song_features[0]['energy'],
+                'mode': song_features[0]['mode'],
+                'valence': song_features[0]['valence'],
+                'tempo': song_features[0]['tempo'],
+                'uri': song_uri,
+                'key': song_features[0]['key'],
+                'popularity': popular,
+                'genre': genre,
+            }
+        )
 
-        cursor.execute("INSERT OR IGNORE INTO song_props VALUES(?,?,?,?,?,?,?,?,?,?)",
-                       (song_name, song_features[0]['danceability'], song_features[0]['energy'],
-                        song_features[0]['mode'], song_features[0]['valence'], song_features[0]['tempo'],
-                        song_uri, song_features[0]['key'], popular, genre))
-        cursor.connection.commit()
-
-        feature_dict = {'name': song_name,
-                        'features': {'danceability': song_features[0]['danceability'],
-                                     'energy': song_features[0]['energy'],
-                                     'mode': song_features[0]['mode'], 'valence': song_features[0]['valence'],
-                                     'tempo': song_features[0]['tempo'] / 100,
-                                     # divide tempo so it fits with other data
-                                     'uri': song_uri,
-                                     'key': song_features[0]['key'],
-                                     'popularity': popular,
-                                     'genre': genre}}
-
-        # df = pd.json_normalize(data=feature_dict, max_level=1)
-        # df = df.set_index('name')
-        # df.to_csv("song_properties.csv", mode='a')
-        # print(feature_dict)
+        feature_dict = {
+            'name': song_props.name,
+            'features': {
+                'danceability': song_props.danceability,
+                'energy': song_props.energy,
+                'mode': song_props.mode,
+                'valence': song_props.valence,
+                'tempo': song_props.tempo / 100,  # divide tempo so it fits with other data
+                'uri': song_props.uri,
+                'key': song_props.key,
+                'popularity': song_props.popularity,
+                'genre': song_props.genre,
+            }
+        }
         return feature_dict
 
     def song_properties(self, track=None):
         """
-        try to get song info from db if not available create gen new entry with _properties_dict_gen()
-        SHOULD BE SINGLE SONGS
-
-        :param track: dictionary from multi_song_properties func containing song_name and song_uri
-
-        :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
-                 and popularity and genre
+        Try to get song info from the SongProps model if not available, create and store it using _properties_dict_gen()
         """
         try:
             if self._category == 'track':
@@ -153,30 +161,113 @@ class SpotSuper:
             song_name = track[0]
             song_uri = track[1]
 
-        cursor = db.execute(
-            "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
-            "WHERE (name = ?)",
-            (song_name,))
-        # cursor = db.execute(
-        #     "SELECT name, danceability, energy, mode, valence, tempo, uri, key FROM song_props WHERE (name = ?)",
-        #     (self.name,))
-        row = cursor.fetchone()
-        if row:
-            name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
-            feature_dict = {'name': name,
-                            'features': {'danceability': danceability,
-                                         'energy': energy,
-                                         'mode': mode, 'valence': valence,
-                                         'tempo': tempo,
-                                         # divide tempo so it fits with other data
-                                         'uri': uri,
-                                         'key': key,
-                                         'popularity': popularity,
-                                         'genre': genre}}
-            # print("got from cache")
+        try:
+            song_props = SongProps.objects.get(name=song_name)
+            feature_dict = {
+                'name': song_props.name,
+                'features': {
+                    'danceability': song_props.danceability,
+                    'energy': song_props.energy,
+                    'mode': song_props.mode,
+                    'valence': song_props.valence,
+                    'tempo': song_props.tempo / 100,
+                    'uri': song_props.uri,
+                    'key': song_props.key,
+                    'popularity': song_props.popularity,
+                    'genre': song_props.genre,
+                }
+            }
             return feature_dict
-        else:
-            self._properties_dict_gen(song_name, song_uri)
+        except SongProps.DoesNotExist:
+            return self._properties_dict_gen(song_name, song_uri)
+    # def _properties_dict_gen(song_name, song_uri):
+    #     """
+    #     for use in song_properties generates song properties dict and adds to sqlite table 'song_props'
+
+    #     :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
+    #              and popularity and genre
+    #     """
+    #     # get metadata for song
+    #     song_features = sp.audio_features(song_uri)
+    #     # different search necessary to get genre and popularity
+    #     track = sp.track(song_uri)
+    #     popular = track['popularity']
+    #     artist = sp.artist(track["artists"][0]["external_urls"]["spotify"])
+    #     genre = str(artist['genres'])
+
+    #     cursor = db.execute(
+    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
+    #         "WHERE (name = ?)",
+    #         (song_name,))
+
+    #     cursor.execute("INSERT OR IGNORE INTO song_props VALUES(?,?,?,?,?,?,?,?,?,?)",
+    #                    (song_name, song_features[0]['danceability'], song_features[0]['energy'],
+    #                     song_features[0]['mode'], song_features[0]['valence'], song_features[0]['tempo'],
+    #                     song_uri, song_features[0]['key'], popular, genre))
+    #     cursor.connection.commit()
+
+    #     feature_dict = {'name': song_name,
+    #                     'features': {'danceability': song_features[0]['danceability'],
+    #                                  'energy': song_features[0]['energy'],
+    #                                  'mode': song_features[0]['mode'], 'valence': song_features[0]['valence'],
+    #                                  'tempo': song_features[0]['tempo'] / 100,
+    #                                  # divide tempo so it fits with other data
+    #                                  'uri': song_uri,
+    #                                  'key': song_features[0]['key'],
+    #                                  'popularity': popular,
+    #                                  'genre': genre}}
+
+    #     # df = pd.json_normalize(data=feature_dict, max_level=1)
+    #     # df = df.set_index('name')
+    #     # df.to_csv("song_properties.csv", mode='a')
+    #     # print(feature_dict)
+    #     return feature_dict
+
+    # def song_properties(self, track=None):
+    #     """
+    #     try to get song info from db if not available create gen new entry with _properties_dict_gen()
+    #     SHOULD BE SINGLE SONGS
+
+    #     :param track: dictionary from multi_song_properties func containing song_name and song_uri
+
+    #     :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
+    #              and popularity and genre
+    #     """
+    #     try:
+    #         if self._category == 'track':
+    #             song_name = self.name
+    #             song_uri = self._uri
+    #         else:
+    #             song_name = track[0]
+    #             song_uri = track[1]
+    #     except AttributeError:
+    #         song_name = track[0]
+    #         song_uri = track[1]
+
+    #     cursor = db.execute(
+    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
+    #         "WHERE (name = ?)",
+    #         (song_name,))
+    #     # cursor = db.execute(
+    #     #     "SELECT name, danceability, energy, mode, valence, tempo, uri, key FROM song_props WHERE (name = ?)",
+    #     #     (self.name,))
+    #     row = cursor.fetchone()
+    #     if row:
+    #         name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
+    #         feature_dict = {'name': name,
+    #                         'features': {'danceability': danceability,
+    #                                      'energy': energy,
+    #                                      'mode': mode, 'valence': valence,
+    #                                      'tempo': tempo,
+    #                                      # divide tempo so it fits with other data
+    #                                      'uri': uri,
+    #                                      'key': key,
+    #                                      'popularity': popularity,
+    #                                      'genre': genre}}
+    #         # print("got from cache")
+    #         return feature_dict
+    #     else:
+    #         self._properties_dict_gen(song_name, song_uri)
 
     def multi_song_properties(self):
         for track in self.catalog.items():
