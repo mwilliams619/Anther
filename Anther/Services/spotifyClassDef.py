@@ -46,6 +46,26 @@ class SpotSuper:
         else:
             self.catalog = self.track_list()
 
+    def basic_list_search(self): 
+        all_results = sp.search(q=self._category + ':' + self.name, type=self._category)
+        result_list = []
+        if all_results and self._category + 's' in all_results and 'items' in all_results[self._category + 's']:
+            if self.model == 'track':
+                for item in all_results[self._category + 's']['items']:
+                    result_list.append((item['name'], item['artists'][0]['name'], item['uri']))
+
+            elif self.model == 'artist':
+                for item in all_results[self._category + 's']['items']:
+                    result_list.append((item['name'], item['genres']))
+                # Assuming you have a field named 'uri' in the Artist model
+            elif self.model == 'playlist':
+                for item in all_results[self._category + 's']['items']:
+                    result_list.append((item['name'], item['owner']['display_name'], item['uri']))
+        
+        return result_list
+
+
+
     def search(self):
         """Search for either track/playlist/artist item and return the URI."""
         try:
@@ -615,8 +635,6 @@ class TrackClass(SpotSuper):
 
 if __name__ == '__main__':
     #  below is sample code analyzing the POLLEN playlist and how Passionfruit relates and its contents
-
-    conn = sqlite3.connect('song_props.sqlite')
     passionfruit = TrackClass("Passionfruit")
     passionfruit.song_properties()
     #

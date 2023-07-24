@@ -79,7 +79,7 @@
                         // Iterate through the search results and add each item to the list
                         for (var i = 0; i < data.length; i++) {
                             var result = data[i];
-                            var listItem = $('<li></li>').text(result.name +" - "+ result.artist);
+                            var listItem = $('<li></li>').text(result[0] +" - "+ result[1]);
                             searchResultsList.append(listItem);
                         }
 
