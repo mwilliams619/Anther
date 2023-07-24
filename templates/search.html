@@ -11,8 +11,8 @@
         <!-- Include the nav_bar.html template at the top -->
         {% include 'nav.html' %}
 <!-- search.html -->
-
-<div class="input-group">
+<div class="col-lg" style="margin-left: 18%; margin-top: 200px;">
+<div class="input-group" style="width: 80%;">
     <input type="text" class="form-control" id="search-input" aria-label="Text input with segmented dropdown button" placeholder="Search Song">
     <button type="button" class="btn btn-outline-secondary">Search</button>
     <button type="button" class="btn btn-outline-secondary dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown" aria-expanded="false">
@@ -24,16 +24,11 @@
         <li><a class="dropdown-item" href="#" data-search-type="playlist">Search Playlist</a></li>
     </ul>
 </div>
+<div id="search-results">
+</div>
+</div>
 
-<!-- Your search results display section here -->
-{% if search_results %}
-    <h3>Search Results:</h3>
-    <ul>
-        {% for result in search_results %}
-            <li>{{ result.name }}</li>
-        {% endfor %}
-    </ul>
-{% endif %}
+
 
 <!-- Include jQuery library -->
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -63,14 +58,37 @@
             // Display the search results on the page
             $.ajax({
                 type: 'GET',
-                url: '/search/',
+                url: '/search/results',
                 data: {
                     query: query,
                     search_category: searchCategory
                 },
                 success: function (data) {
-                    // Replace the content of the search results section with the updated results
-                    $('#search-results').html(data);
+                    // Clear previous search results
+                    $('#search-results').empty();
+                    console.log(data[0])
+
+                    // Check if there are search results
+                    if (data.length > 0) {
+                        // Add the title
+                        $('#search-results').append('<h3 id="search-results-title">Search Results:</h3>');
+
+                        // Create an unordered list for the search results
+                        var searchResultsList = $('<ul></ul>');
+
+                        // Iterate through the search results and add each item to the list
+                        for (var i = 0; i < data.length; i++) {
+                            var result = data[i];
+                            var listItem = $('<li></li>').text(result.name +" - "+ result.artist);
+                            searchResultsList.append(listItem);
+                        }
+
+                        // Add the search results list to the div
+                        $('#search-results').append(searchResultsList);
+                    } else {
+                        // If there are no search results, display a message
+                        $('#search-results').append('<p>No search results found.</p>');
+                    }
                 },
                 error: function () {
                     // Handle error if necessary

@@ -23,5 +23,6 @@ urlpatterns = [
     path('', include('Anther.urls.load_animation_urls')),
     path('', include('Anther.urls.home_urls')),
     path('', include('Anther.urls.team_urls')),
-    path('', include('Anther.urls.login_urls'))
+    path('', include('Anther.urls.login_urls')),
+    path('', include('Anther.urls.search_urls'))
 ]

@@ -35,7 +35,7 @@ class SpotSuper:
         self.name = name
         self._category = category
         self._uri = self.search()
-        self.connection_cursor = connection.cursor()
+        self.connection_cursor = connection
         self.cursor = self.connection_cursor
         if self._category == "track":
             self.catalog = None
@@ -114,9 +114,11 @@ class SpotSuper:
         popular = track['popularity']
         artist = sp.artist(track["artists"][0]["external_urls"]["spotify"])
         genre = str(artist['genres'])
+        artist = artist['name']
 
         song_props, _ = SongProps.objects.get_or_create(
             name=song_name,
+            artist = artist,
             defaults={
                 'danceability': song_features[0]['danceability'],
                 'energy': song_features[0]['energy'],
@@ -132,6 +134,7 @@ class SpotSuper:
 
         feature_dict = {
             'name': song_props.name,
+            'artist': artist,
             'features': {
                 'danceability': song_props.danceability,
                 'energy': song_props.energy,
@@ -165,6 +168,7 @@ class SpotSuper:
             song_props = SongProps.objects.get(name=song_name)
             feature_dict = {
                 'name': song_props.name,
+                'artist': song_props.artist,
                 'features': {
                     'danceability': song_props.danceability,
                     'energy': song_props.energy,
@@ -179,7 +183,7 @@ class SpotSuper:
             }
             return feature_dict
         except SongProps.DoesNotExist:
-            return self._properties_dict_gen(song_name, song_uri)
+            return self._properties_dict_gen(self=self, song_name=song_name, song_uri=song_uri)
     # def _properties_dict_gen(song_name, song_uri):
     #     """
     #     for use in song_properties generates song properties dict and adds to sqlite table 'song_props'
@@ -270,9 +274,12 @@ class SpotSuper:
     #         self._properties_dict_gen(song_name, song_uri)
 
     def multi_song_properties(self):
+        trackdeets=[]
         for track in self.catalog.items():
             # print(track)
-            self.song_properties(track=track)
+            props=self.song_properties(track=track)
+            trackdeets.append(props)
+        return trackdeets
 
     def _prep_feat_list_to_plot(self):
         """prepare feature values to plot on radial graph by scaling tempo and mode[major/minor] data
