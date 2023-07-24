@@ -1,16 +1,19 @@
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials  # To access authorised Spotify data
-import pandas as pd
-import sqlite3
-import plotly.graph_objects as go
-import plotly.offline as pyo
-from sklearn.metrics.pairwise import cosine_similarity
-from statistics import mean
 import copy
+import sqlite3
 from json import dump
 from math import log10
+from statistics import mean
+
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.offline as pyo
+import spotipy
 from django.db import connection
-from Anther.models import SongProps
+from sklearn.metrics.pairwise import cosine_similarity
+from spotipy.oauth2 import \
+    SpotifyClientCredentials  # To access authorised Spotify data
+
+from Anther.models import Artist, Playlist, Song, SongProps
 
 # Import Login credentials from .env file
 
@@ -22,21 +25,22 @@ client_credentials_manager = SpotifyClientCredentials(client_id=client_id, clien
 
 sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)  # spotify object to access API
 
-db = connection.cursor()
+# db = connection.cursor()
 
-db.execute("CREATE TABLE IF NOT EXISTS song_props (name TEXT PRIMARY KEY NOT NULL, danceability INTEGER NOT NULL,"
-           "energy INTEGER NOT NULL, mode INTEGER NOT NULL, valence INTEGER NOT NULL, tempo INTEGER NOT NULL,"
-           "uri TEXT NOT NULL, key INTEGER NOT NULL, popularity INTEGER NOT NULL, genre TEXT NOT NULL)")
+# db.execute("CREATE TABLE IF NOT EXISTS song_props (name TEXT PRIMARY KEY NOT NULL, danceability INTEGER NOT NULL,"
+#            "energy INTEGER NOT NULL, mode INTEGER NOT NULL, valence INTEGER NOT NULL, tempo INTEGER NOT NULL,"
+#            "uri TEXT NOT NULL, key INTEGER NOT NULL, popularity INTEGER NOT NULL, genre TEXT NOT NULL)")
 
 
 class SpotSuper:
 
-    def __init__(self, name, category, connection):
+    def __init__(self, name, category, model):
         self.name = name
         self._category = category
+        self.model = model
         self._uri = self.search()
-        self.connection_cursor = connection
-        self.cursor = self.connection_cursor
+        # self.connection_cursor = connection
+        # self.cursor = self.connection_cursor
         if self._category == "track":
             self.catalog = None
         else:
@@ -45,9 +49,21 @@ class SpotSuper:
     def search(self):
         """Search for either track/playlist/artist item and return the URI."""
         try:
-            song_props = SongProps.objects.get(name=self.name)
-            return song_props.uri
-        except SongProps.DoesNotExist:
+            if self.model == 'track':
+                song_props = Song.objects.get(name=self.name)
+                return song_props.uri
+            elif self.model == 'artist':
+                artist = Artist.objects.get(name=self.name)
+                # Assuming you have a field named 'uri' in the Artist model
+                return artist.uri
+            elif self.model == 'playlist':
+                playlist = Playlist.objects.get(name=self.name)
+                # Assuming you have a field named 'uri' in the Playlist model
+                return playlist.uri
+            else:
+                raise ValueError("Invalid model provided.")
+
+        except (Song.DoesNotExist, Artist.DoesNotExist, Playlist.DoesNotExist):
             result = sp.search(q=self._category + ':' + self.name, type=self._category)  # search query
 
             if result and self._category + 's' in result and 'items' in result[self._category + 's']:
@@ -112,11 +128,15 @@ class SpotSuper:
         song_features = sp.audio_features(song_uri)
         track = sp.track(song_uri)
         popular = track['popularity']
-        artist = sp.artist(track["artists"][0]["external_urls"]["spotify"])
-        genre = str(artist['genres'])
-        artist = artist['name']
+        artist_info = sp.artist(track["artists"][0]["external_urls"]["spotify"])
+        genre = str(artist_info['genres'])
+        artist_name = artist_info['name']
 
-        song_props, _ = SongProps.objects.get_or_create(
+        # Get or create the corresponding Artist object
+        artist, _ = Artist.objects.get_or_create(name=artist_name)
+
+
+        song_props, _ = Song.objects.get_or_create(
             name=song_name,
             artist = artist,
             defaults={
@@ -134,7 +154,7 @@ class SpotSuper:
 
         feature_dict = {
             'name': song_props.name,
-            'artist': artist,
+            'artist': artist_name,
             'features': {
                 'danceability': song_props.danceability,
                 'energy': song_props.energy,
@@ -165,7 +185,7 @@ class SpotSuper:
             song_uri = track[1]
 
         try:
-            song_props = SongProps.objects.get(name=song_name)
+            song_props = Song.objects.get(name=song_name)
             feature_dict = {
                 'name': song_props.name,
                 'artist': song_props.artist,
@@ -182,7 +202,7 @@ class SpotSuper:
                 }
             }
             return feature_dict
-        except SongProps.DoesNotExist:
+        except Song.DoesNotExist:
             return self._properties_dict_gen(self=self, song_name=song_name, song_uri=song_uri)
     # def _properties_dict_gen(song_name, song_uri):
     #     """
@@ -508,10 +528,31 @@ class SpotSuper:
         return edge, node
 
 
-class Playlist(SpotSuper):
+class PlaylistClass(SpotSuper):
     def __init__(self, name):
-        super().__init__(name=name, category="playlist", connection=sqlite3.connect('song_props.sqlite'))
-        self.mean_feats = self.mean_playlist_feats(self.catalog)
+        super().__init__(name=name, category="playlist", model='playlist')
+        # self.mean_feats = self.mean_playlist_feats(self.catalog)
+        self.get_or_create_playlist()
+    
+    def get_or_create_playlist(self):
+        
+        pl_obj = sp.playlist(self._uri)
+        name = pl_obj['name']
+        owner_obj = pl_obj['owner']
+        follows = pl_obj['followers']['total']
+        desc = pl_obj['description']
+        cover = pl_obj['images'][0]['url']
+        processed_owner = (owner_obj['display_name'],owner_obj['uri'])
+        # Attempt to get the Playlist object by name
+        playlist, created = Playlist.objects.get_or_create(name=self.name, defaults={
+            # If the playlist does not exist, provide default values for other fields
+            'name': name,
+            'owner': processed_owner,
+            'follow_count': follows,
+            'description': desc,
+            'cover_image': cover,
+            'uri': self._uri
+        })
 
     @staticmethod
     def mean_playlist_feats(dictionary):
@@ -562,21 +603,21 @@ class Playlist(SpotSuper):
     #     # Jaal(edge_df=edges, node_df=nodes).plot()
 
 
-class Artist(SpotSuper):
+class ArtistClass(SpotSuper):
     def __init__(self, name):
-        super().__init__(name=name, category="artist", connection=sqlite3.connect('song_props.sqlite'))
+        super().__init__(name=name, category="artist", model='artist')
 
 
-class Track(SpotSuper):
+class TrackClass(SpotSuper):
     def __init__(self, name):
-        super().__init__(name=name, category="track", connection=sqlite3.connect('song_props.sqlite'))
+        super().__init__(name=name, category="track",model='track')
 
 
 if __name__ == '__main__':
     #  below is sample code analyzing the POLLEN playlist and how Passionfruit relates and its contents
 
     conn = sqlite3.connect('song_props.sqlite')
-    passionfruit = Track("Passionfruit")
+    passionfruit = TrackClass("Passionfruit")
     passionfruit.song_properties()
     #
     #     dum_surfer = Track("dum surfer")
@@ -587,12 +628,12 @@ if __name__ == '__main__':
     #     sad = Track("cementality")
     #     sad.song_properties
     #     # onetake.overlay(passionfruit)
-    pollen = Playlist("POLLEN")
+    pollen = PlaylistClass("POLLEN")
     pollen.similarness()
     # pollen.track_test(passionfruit)
     #     # pollen.network_plot()
     #
-    drake = Artist("Drake")
+    drake = ArtistClass("Drake")
     # drake.track_test(passionfruit)
 #     # dork = SpotSuper("dork", "track", conn)
 #     # dork.overlay(dum_surfer)

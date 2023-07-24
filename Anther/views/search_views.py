@@ -1,8 +1,8 @@
-from Anther.Services.spotifyClassDef import Playlist, Artist, Track, SpotSuper
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from django.db import connection
 from django.shortcuts import render
+from Anther.Services.spotifyClassDef import PlaylistClass, ArtistClass, TrackClass, SpotSuper
 
 db = connection.cursor()
 
@@ -16,18 +16,20 @@ def search_results(request):
 
     # Create a SpotSuper instance based on the selected search category
     if search_category == 'track':
-        spot_instance = SpotSuper(name=search_query, category='track', connection=None)  # Pass your Django db connection here
+        spot_instance = TrackClass(name=search_query)  # Pass your Django db connection here
         song_details = spot_instance.song_properties()
         print(song_details)
         search_results = [{'name': song_details['name'],'artist': song_details['artist']}]
 
     elif search_category == 'artist':
-        spot_instance = SpotSuper(name=search_query, category='artist', connection=None)  # Pass your Django db connection here
+        spot_instance = ArtistClass(name=search_query)  # Pass your Django db connection here
         search_results = spot_instance.multi_song_properties()
+        print(search_results)
 
     elif search_category == 'playlist':
-        spot_instance = SpotSuper(name=search_query, category='playlist', connection=None)  # Pass your Django db connection here
+        spot_instance = PlaylistClass(name=search_query)  # Pass your Django db connection here
         search_results = spot_instance.multi_song_properties()
+        print(search_results)
     else:
         return JsonResponse({'error': 'Invalid search category.'}, status=400)
 

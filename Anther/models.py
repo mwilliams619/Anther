@@ -36,11 +36,11 @@ class Song(models.Model):
     # Song-specific information
     id = models.BigAutoField(primary_key=True)
     name = models.CharField(max_length=255, unique=True)
-    danceability = models.IntegerField()
-    energy = models.IntegerField()
+    danceability = models.FloatField()  # Use FloatField for decimal values
+    energy = models.FloatField()       # Use FloatField for decimal values
     mode = models.IntegerField()
-    valence = models.IntegerField()
-    tempo = models.IntegerField()
+    valence = models.FloatField()      # Use FloatField for decimal values
+    tempo = models.FloatField()        # Use FloatField for decimal values
     uri = models.TextField()
     key = models.IntegerField()
     popularity = models.IntegerField()
@@ -58,9 +58,11 @@ class Playlist(models.Model):
     id = models.BigAutoField(primary_key=True)
     # Playlist metadata information
     name = models.CharField(max_length=100)
-    owner = models.CharField(max_length=100)
-    number_of_likes = models.IntegerField()
+    owner = models.JSONField()
+    follow_count = models.IntegerField()
     description = models.TextField()
+    cover_image = models.URLField()
+    uri = models.TextField()
 
     # Songs on the playlist (Many-to-Many relationship with Song model)
     songs = models.ManyToManyField('Song', related_name='playlists')
@@ -68,6 +70,10 @@ class Playlist(models.Model):
     # Other fields for additional playlist-related information can be added here
 
     def __str__(self):
-        return f"{self.owner}'s Playlist - {self.name}:\n {self.description[:50]}"  # Customize the display of the playlist in the admin panel
+        return f"{self.get_display_name()} Playlist - {self.name}:\n {self.description[:50]}"
+
+    def get_display_name(self):
+        # Extract the display name from the owner dictionary
+        return self.owner.get('display_name', 'Unknown')
     
 
