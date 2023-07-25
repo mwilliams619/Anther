@@ -6,33 +6,119 @@
     <title>ANTHER</title>
     <!-- Add your CSS stylesheets or external stylesheets here -->
   
+    <style>
+      /* Add this to create the parallax effect */
+
+      .parallax {
+        background-attachment: fixed;
+        background-size: 100% auto;
+        background-repeat: no-repeat;
+        height: 100vh; /* Adjust the height as needed */
+        color: #fff; /* Set the text color */
+        background-position: center 50px; /* Adjust the vertical position of the background image */
+      }
+    
+      /* Customize the appearance of the "About Me" content */
+      #about-me {
+        background-image: url("/static/images/sky.jpg");
+        display: flex;
+        align-items: center; /* Vertically center the content */
+        justify-content: center; /* Horizontally center the content */
+      }
+    
+      /* Center the content vertically within the "About Me" section */
+      #about-me .container {
+        position: relative;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      #second-one {
+        background-image: url("/static/images/point.jpg");
+        display: flex;
+        align-items: center; /* Vertically center the content */
+        justify-content: center; /* Horizontally center the content */
+      }
+    
+      /* Center the content vertically within the "About Me" section */
+      #second-one .container {
+        position: relative;
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      @keyframes slideInLeft {
+        from {
+          transform: translateX(-100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      @keyframes slideInRight {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      .animate-left {
+        opacity: 0; /* Start with opacity 0 */
+      }
+
+      .animate-left.active {
+        animation: slideInLeft 2s ease forwards; /* Adjust the animation duration as needed */
+        opacity: 1; /* Set opacity to 1 after animation finishes */
+      }
+
+      .animate-right {
+        opacity: 0; /* Start with opacity 0 */
+      }
+
+      .animate-right.active {
+        animation: slideInRight 2s ease forwards; /* Adjust the animation duration as needed */
+        opacity: 1; /* Set opacity to 1 after animation finishes */
+      }
+    </style>
+    
+  
   </head>
   <body>
         <!-- Include the nav_bar.html template at the top -->
         {% include 'nav.html' %}
-        <div >
+        <div style="height: 100vh;"> 
+      <div >
 
           <a href="/team/" style="position: absolute; top: 10px; right: 58px;display: flex; align-items: center; text-decoration: none;">
             <i class="fas fa-users" style="color: #1e3050;"></i><h5 style="margin-left: 5px;color:black">Our Team</h5>
         </a></div>
+        <div class="container-fluid text-center" style="margin-right: 0px;">
+        
+          <div class="row">
 
-        <div class="container text-center">
-        <div class="row" style="margin-bottom: 40px;margin-top: 100px;">
+        <div class="row" style="margin-bottom: 40px;margin-top: 15%;">
             
                 <div class="col-lg">
                 <h1>COMING SOON</h1>
                 </div>
             </div>
-            <div class="row">
+      <div class="row">
       <div class="col-md">
         <div id="animation-container" title="F.K.A. Playlitics">
-          <img id="animation-frame" src="" style="width: 90%;"/>
+          <img id="animation-frame" src="" style="width: 60%;"/>
         </div>
     </div>
     </div>
     <div id="home-card" class="card" style="margin-top: 30px;">
         <div class="card-body">
-        <div class="col-md" id="spiel"><h5>Anther is a place where musicians can get more clarity on where they belong. We dig through what's out there and find the best places for you to submit your music to get real listeners.</h5></div> 
+        <div class="col-md" id="spiel"><h5>Anther is a place where musicians can get more clarity on where they belong. We dig through what's out there and find the best places for you to submit your music so you can get heard.</h5></div> 
     
 
     <div class="row" style="margin: 40px;">
@@ -43,25 +129,49 @@
       <div class="row justify-content-center">
         <p>Join our newsletter for updates<p>
         </div>
-            <div class="row">
-            <div class="col-sm-10">   
+            <div class="row"  style="margin-left: 20%; width: 60%; margin-bottom: 14%;">
+            <div class="col-sm-11">   
         <div class="form-floating mb-3">
             <input type="email" class="form-control" id="floatingInput" placeholder="name@example.com">
             <label for="floatingInput">Email Address</label>
           </div>
         </div>
     
-        <div class="col-2">
+        <div class="col-sm-1">
             <button type="button" class="btn btn-outline-dark" style="margin-top: 7px;">Subscribe</button>
         </div>  
     </div>
-    
-
+  
 </div>
-    
-
-
 </div>
+</div>
+
+
+  <section id="about-me" class="parallax" style="width: 100%; height: 150vh;">
+    <div class="container text-center" style="padding-bottom: 30%;">
+      <div class="animate-left">
+        <h2>About Me</h2>
+        <p>
+          Put your about me content here...
+        </p>
+      </div>
+      <div class="animate-right">
+        <h2>More About Me</h2>
+        <p>
+          Put more about me content here...
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="second-one" class="parallax" style="width: 100%; height: 150vh;">
+    <div class="container text-center">
+
+        {% include 'team.html' %}
+    </div>
+  </section>
+
+
     <!-- Add your JavaScript code or external scripts here -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
@@ -96,5 +206,45 @@
         },
       });
     </script>
+    <script>
+      // Function to check if an element is in the viewport
+      function handleIntersection(entries, observer) {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            $(".animate-left").addClass("active");
+            $(".animate-right").addClass("active");
+          } else {
+            $(".animate-left").removeClass("active");
+            $(".animate-right").removeClass("active");
+          }
+        });
+      }
+
+      // Create an Intersection Observer
+      const options = {
+        rootMargin: "0px",
+        threshold: 0.3, // Set the threshold to 0.2 (20% of the element should be in the viewport)
+      };
+
+      const observer = new IntersectionObserver(handleIntersection, options);
+
+      // Observe the target element
+      const aboutMeDiv = document.getElementById("about-me");
+      observer.observe(aboutMeDiv);
+
+
+      $(window).scroll(function() {
+        const scrollTop = $(this).scrollTop();
+        
+        // Calculate the background position for the "About Me" section
+        const aboutMeBgPosition = `center ${scrollTop * 0.1-400}px`;
+        $('#about-me').css('background-position', aboutMeBgPosition);
+        
+        // Calculate the background position for the "Another one" section
+        const secondOneBgPosition = `center ${scrollTop * 0.015-100}px`;
+        $('#second-one').css('background-position', secondOneBgPosition);
+      });
+    </script>
+    
   </body>
 </html>
