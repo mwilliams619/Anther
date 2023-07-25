@@ -9,11 +9,12 @@ import plotly.graph_objects as go
 import plotly.offline as pyo
 import spotipy
 from django.db import connection
+from django.db import transaction
 from sklearn.metrics.pairwise import cosine_similarity
 from spotipy.oauth2 import \
     SpotifyClientCredentials  # To access authorised Spotify data
 
-from Anther.models import Artist, Playlist, Song, SongProps
+from Anther.models import Artist, Playlist, Song, SongRelationship
 
 # Import Login credentials from .env file
 
@@ -415,7 +416,7 @@ class SpotSuper:
         # while keeping it for labeling your nodes
         data2 = copy.deepcopy(data)
         for item in data2:
-            feat_list, song_name = Playlist._prep_feats_for_cosine_similarity(item)
+            feat_list, song_name = PlaylistClass._prep_feats_for_cosine_similarity(item)
             # feat_list.append(song_name)
             cleaned_data.append(feat_list)
         # print(cleaned_data)
@@ -426,48 +427,67 @@ class SpotSuper:
 
         # print('->')
         pd.set_option("display.max_rows", None, "display.max_columns", None)
+        link_list =[]
+        with transaction.atomic():
+            counter = 0
+            for i, row in enumerate(cosine_similarity(df, df)):
+                for index, element in enumerate(row):
+                    if element > 0.97 and data[i]['name'] != data[index]['name']:
+                        if counter % 20 == 0:
+                            song_a = Song.objects.get(name=data[i]['name'])
+                            song_b = Song.objects.get(name=data[index]['name'])
+                            similarity_score = element
 
-        name = set()
-        outputDict = {"nodes":[], "links":[]}
-        outputHist = []
-        for i, row in enumerate(cosine_similarity(df, df)):
-            for index, element in enumerate(row):
-                ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
-                if index > i and element > 0.995: ## CAN VARY ELEMENT THRESHOLD
-                    outputHist.append(element)
-                ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
+                            # Create a new SongRelationship instance and save it
+                            link = SongRelationship.objects.create(
+                                song_a=song_a,
+                                song_b=song_b,
+                                similarity_score=similarity_score
+                            )
+                            link_list.append(link)
+                        counter += 1
 
-                if element > .97 and data[i]['name'] != data[index]['name']:
-                    if index>i: 
-                        # selects only lower triangle of matrix but can't put it in larger
-                        # if condition because it wouldn't allow the last node to be added.
-                        # could make cleaner with thought but this works. 
-                        # Need only lower triangle selected because this is an undirected graph
-                        outputDict["links"].append({"source":i,"target":index,"value":log10(element*100)})
+        # name = set()
+        # outputDict = {"nodes":[], "links":[]}
+        # outputHist = []
+        # for i, row in enumerate(cosine_similarity(df, df)):
+        #     for index, element in enumerate(row):
+        #         ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
+        #         if index > i and element > 0.995: ## CAN VARY ELEMENT THRESHOLD
+        #             outputHist.append(element)
+        #         ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
 
-                    if data[i]['name'] not in name:
-                        name.add(data[i]['name'])
-                        outputDict["nodes"].append({
-                            "id":i,
-                            "name":data[i]['name'],
-                            "dance":data[i]['features']["danceability"],
-                            "energy":data[i]['features']["energy"],
-                            "mode":data[i]['features']["mode"],
-                            "valence":data[i]['features']["valence"],
-                            "bpm":data[i]['features']["tempo"],
-                            "key":data[i]['features']["key"],
-                            "popularity":data[i]['features']["popularity"],
-                            "genre":data[i]['features']["genre"]
-                        })
-        with open('spot_network.json', 'w') as outfile:
-            dump(outputDict, outfile, indent=4)
+        #         if element > .97 and data[i]['name'] != data[index]['name']:
+        #             if index>i: 
+        #                 # selects only lower triangle of matrix but can't put it in larger
+        #                 # if condition because it wouldn't allow the last node to be added.
+        #                 # could make cleaner with thought but this works. 
+        #                 # Need only lower triangle selected because this is an undirected graph
+        #                 outputDict["links"].append({"source":i,"target":index,"value":log10(element*100)})
+
+        #             if data[i]['name'] not in name:
+        #                 name.add(data[i]['name'])
+        #                 outputDict["nodes"].append({
+        #                     "id":i,
+        #                     "name":data[i]['name'],
+        #                     "dance":data[i]['features']["danceability"],
+        #                     "energy":data[i]['features']["energy"],
+        #                     "mode":data[i]['features']["mode"],
+        #                     "valence":data[i]['features']["valence"],
+        #                     "bpm":data[i]['features']["tempo"],
+        #                     "key":data[i]['features']["key"],
+        #                     "popularity":data[i]['features']["popularity"],
+        #                     "genre":data[i]['features']["genre"]
+        #                 })
+        # with open('spot_network.json', 'w') as outfile:
+        #     dump(outputDict, outfile, indent=4)
 
         ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
         # import matplotlib.pyplot as plt
         # plt.hist(outputHist, bins=100)
         # plt.show()
         ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
-        return
+        return link_list
 
     def track_test(self, comp_song: object):
         # TODO write DOCSTRINGS! And fix code redundancy

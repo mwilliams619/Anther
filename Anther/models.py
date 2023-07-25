@@ -1,37 +1,5 @@
 from django.db import models
 
-class SongProps(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    name = models.CharField(max_length=255, unique=True)
-    artist = models.CharField(max_length=255, unique=True, default=None)
-    danceability = models.IntegerField()
-    energy = models.IntegerField()
-    mode = models.IntegerField()
-    valence = models.IntegerField()
-    tempo = models.IntegerField()
-    uri = models.TextField()
-    key = models.IntegerField()
-    popularity = models.IntegerField()
-    genre = models.CharField(max_length=255)
-
-    def __str__(self):
-        return self.name
-    
-class Artist(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    name = models.CharField(max_length=100)
-
-    # Songs by the artist (One-to-Many relationship with Song model)
-    tracks = models.ManyToManyField('Song', related_name='featured_artists')
-
-    # Playlists featuring the artist (Many-to-Many relationship with Playlist model)
-    playlists_featured_on = models.ManyToManyField('Playlist', related_name='featured_artists')
-
-    # Other fields for additional artist-related information can be added here
-
-    def __str__(self):
-        return self.name
-
 class Song(models.Model):
     # Song-specific information
     id = models.BigAutoField(primary_key=True)
@@ -53,6 +21,36 @@ class Song(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class SongRelationship(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    # Foreign keys to represent the relationship between two songs
+    song_a = models.ForeignKey('Song', related_name='related_songs_a', on_delete=models.CASCADE)
+    song_b = models.ForeignKey('Song', related_name='related_songs_b', on_delete=models.CASCADE)
+
+    # Additional fields for the relationship, if necessary
+    similarity_score = models.FloatField()
+
+    def __str__(self):
+        return f"Song Relationship: {self.song_a.name} - {self.song_b.name}"
+
+
+class Artist(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    name = models.CharField(max_length=100)
+
+    # Songs by the artist (One-to-Many relationship with Song model)
+    tracks = models.ManyToManyField('Song', related_name='featured_artists')
+
+    # Playlists featuring the artist (Many-to-Many relationship with Playlist model)
+    playlists_featured_on = models.ManyToManyField('Playlist', related_name='featured_artists')
+
+    # Other fields for additional artist-related information can be added here
+
+    def __str__(self):
+        return self.name
+
 
 class Playlist(models.Model):
     id = models.BigAutoField(primary_key=True)

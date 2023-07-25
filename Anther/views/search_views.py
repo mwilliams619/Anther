@@ -45,3 +45,28 @@ def search_results(request):
 
 def search_view(request):
     return render(request, 'search.html')
+
+def link_find(request):
+    playlist_name = request.GET.get('param_name') #Get the playlist id in this line so you can 
+    spot_instance = PlaylistClass(name=playlist_name)
+    links = spot_instance.similarness()
+    response_data = []
+
+    # Iterate through the link_list
+    for link in links:
+        # Get the song names of both songs and similarity score
+        song_a_name = link.song_a.name
+        song_b_name = link.song_b.name
+        similarity_score = link.similarity_score
+
+        # Create a dictionary to store the data
+        data_dict = {
+            'song_a_name': song_a_name,
+            'song_b_name': song_b_name,
+            'similarity_score': similarity_score,
+        }
+
+        # Append the dictionary to the response_data list
+        response_data.append(data_dict)
+    print(response_data)
+    return JsonResponse(response_data, safe=False)
