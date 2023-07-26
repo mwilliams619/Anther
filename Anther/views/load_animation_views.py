@@ -7,3 +7,12 @@ def get_animation_frames(request):
     frames = [os.path.join('/static/images/animation_frames', frame) for frame in frames]
     frames.sort()
     return JsonResponse(frames, safe=False)
+
+
+
+def get_diagram_animation_frames(request):
+    frames_directory = 'static/images/planning_animation'  # Update with the correct path to your frames folder
+    frames = os.listdir(frames_directory)
+    frames = [os.path.join('/static/images/planning_animation', frame) for frame in frames]
+    frames.sort()
+    return JsonResponse(frames, safe=False)

@@ -286,12 +286,50 @@
           </section>
         </form>
         </div>
+        <div id="animation-container" title="meditation">
+          <img id="animation-frame" src="" style="height: 500px; width: 500px;"/>
+        </div>
+      </div>
         <!-- Pills content -->
       </div>
-    </div>
+
+      
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script
   type="text/javascript"
   src="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/6.4.0/mdb.min.js"
 ></script>
+<script>
+  const container = document.getElementById("animation-container");
+  const frameElement = document.getElementById("animation-frame");
+  let frames = [];
+
+  // Make an AJAX request to get the frame filenames
+  $.ajax({
+    url: "/loading_diagram/",
+    type: "GET",
+    dataType: "json",
+    success: function (data) {
+      frames = data;
+
+      let currentFrame = 0;
+
+      function playAnimation() {
+        frameElement.src = frames[currentFrame];
+        currentFrame = (currentFrame + 1) % frames.length; // Loop frames
+
+        // Call the function again after a certain delay (e.g., 100ms)
+        setTimeout(playAnimation, 100);
+      }
+
+      // Start the animation
+      playAnimation();
+    },
+    error: function (error) {
+      console.log(error);
+    },
+  });
+</script>
+
   </body>
 </html>
