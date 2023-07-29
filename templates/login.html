@@ -27,8 +27,8 @@
             role="tab"
             aria-controls="pills-login"
             aria-selected="true"
-            >Login</a
-          >
+            >Login
+          </a>
         </li>
         <li class="nav-item" role="presentation">
           <a
@@ -39,8 +39,8 @@
             role="tab"
             aria-controls="pills-register"
             aria-selected="false"
-            >Register</a
-          >
+            >Register
+          </a>
         </li>
       </ul>
       <!-- Pills navs -->
@@ -53,7 +53,8 @@
           role="tabpanel"
           aria-labelledby="tab-login"
         >
-        <form>
+        <form id="login-form">
+          {% csrf_token %}
             <section class="text-center">
               <div
                 class="card mx-4 mx-md-5 shadow-5-strong"
@@ -73,10 +74,11 @@
                         <div class="form-outline mb-4">
                           <input
                             type="email"
-                            id="form3Example3"
+                            id="username_or_email"
+                            name="username_or_email"
                             class="form-control"
                           />
-                          <label class="form-label" for="form3Example3"
+                          <label class="form-label" for="username_or_email"
                             >Username or Email address</label
                           >
                         </div>
@@ -85,12 +87,11 @@
                         <div class="form-outline mb-4">
                           <input
                             type="password"
-                            id="form3Example4"
-                            class="form-control"
-                          />
-                          <label class="form-label" for="form3Example4"
-                            >Password</label
-                          >
+                            name="password"
+                            class="form-control"/>
+                          <label class="form-label" for="password">
+                            Password
+                          </label>
                         </div>
                     </div>
                 </div>
@@ -117,9 +118,13 @@
                 <a href="#!">Forgot password?</a>
               </div>
             </div>
+            <!-- Display error message if login fails -->
+              {% if error_message %}
+                <p>{{ error_message }}</p>
+              {% endif %}
 
             <!-- Submit button -->
-            <button type="submit" class="btn btn-primary btn-block mb-4" style="width:60%; margin-left: 20%;">
+            <button type="button" class="btn btn-primary btn-block mb-4" style="width:60%; margin-left: 20%;" id="login_submit_button">
               Sign in
             </button>
 
@@ -157,7 +162,8 @@
           role="tabpanel"
           aria-labelledby="tab-register"
         >
-        <form>
+        <form id="registration-form">
+          {% csrf_token %}
           <section class="text-center">
             <div
               class="card mx-4 mx-md-5 shadow-5-strong"
@@ -177,10 +183,10 @@
                           <div class="form-outline">
                             <input
                               type="text"
-                              id="form3Example1"
+                              name="first-name"
                               class="form-control"
                             />
-                            <label class="form-label" for="form3Example1"
+                            <label class="form-label" for="first-name"
                               >First name</label
                             >
                           </div>
@@ -189,10 +195,10 @@
                           <div class="form-outline">
                             <input
                               type="text"
-                              id="form3Example2"
+                              name="last-name"
                               class="form-control"
                             />
-                            <label class="form-label" for="form3Example2"
+                            <label class="form-label" for="last-name"
                               >Last name</label
                             >
                           </div>
@@ -203,10 +209,10 @@
                       <div class="form-outline mb-4">
                         <input
                           type="email"
-                          id="form3Example3"
+                          name="email"
                           class="form-control"
                         />
-                        <label class="form-label" for="form3Example3"
+                        <label class="form-label" for="email"
                           >Email address</label
                         >
                       </div>
@@ -215,10 +221,10 @@
                       <div class="form-outline mb-4">
                         <input
                           type="password"
-                          id="form3Example4"
+                          name="password"
                           class="form-control"
                         />
-                        <label class="form-label" for="form3Example4"
+                        <label class="form-label" for="password"
                           >Password</label
                         >
                       </div>
@@ -231,18 +237,18 @@
                           class="form-check-input me-2"
                           type="checkbox"
                           value=""
-                          id="form2Example33"
+                          id="subscribe-check"
                           checked
                         />
-                        <label class="form-check-label" for="form2Example33">
+                        <label class="form-check-label" for="subscribed">
                           Subscribe to our newsletter
                         </label>
                       </div>
 
                       <!-- Submit button -->
                       <button
-                        type="submit"
-                        class="btn btn-primary btn-block mb-4"
+                        type="button"
+                        class="btn btn-primary btn-block mb-4" id="registration_submit_button"
                       >
                         Sign up
                       </button>
@@ -286,9 +292,6 @@
           </section>
         </form>
         </div>
-        <div id="animation-container" title="meditation">
-          <img id="animation-frame" src="" style="height: 500px; width: 500px;"/>
-        </div>
       </div>
         <!-- Pills content -->
       </div>
@@ -299,37 +302,67 @@
   type="text/javascript"
   src="https://cdnjs.cloudflare.com/ajax/libs/mdb-ui-kit/6.4.0/mdb.min.js"
 ></script>
+
 <script>
-  const container = document.getElementById("animation-container");
-  const frameElement = document.getElementById("animation-frame");
-  let frames = [];
-
-  // Make an AJAX request to get the frame filenames
-  $.ajax({
-    url: "/loading_diagram/",
-    type: "GET",
-    dataType: "json",
-    success: function (data) {
-      frames = data;
-
-      let currentFrame = 0;
-
-      function playAnimation() {
-        frameElement.src = frames[currentFrame];
-        currentFrame = (currentFrame + 1) % frames.length; // Loop frames
-
-        // Call the function again after a certain delay (e.g., 100ms)
-        setTimeout(playAnimation, 100);
+  function getCookie(name) {
+  var cookieValue = null;
+  if (document.cookie && document.cookie !== '') {
+    var cookies = document.cookie.split(';');
+    for (var i = 0; i < cookies.length; i++) {
+      var cookie = cookies[i].trim();
+      // Does this cookie string begin with the name we want?
+      if (cookie.substring(0, name.length + 1) === name + '=') {
+        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+        break;
       }
+    }
+  }
+  return cookieValue;
+}
+  var csrftoken = getCookie('csrftoken');
+  $.ajaxSetup({
+    beforeSend: function (xhr, settings) {
+      if (!this.crossDomain) {
+        xhr.setRequestHeader('X-CSRFToken', csrftoken);
+      }
+    }
+  });
 
-      // Start the animation
-      playAnimation();
-    },
-    error: function (error) {
-      console.log(error);
-    },
+    // Function to handle login form submission
+    $('#login_submit_button').click(function (event) {
+    var formData = $('#login-form').serialize();
+    $.ajax({
+      url: '/login/',
+      type: 'post',
+      data: formData,
+      success: function (response) {
+        window.location.href = '/'; 
+      },
+      error: function (error) {
+        // Handle error response, e.g., display an error message
+        console.log('Login error:', error.responseText);
+      }
+    });
+  });
+
+  // Function to handle registration form submission
+  $('#registration_submit_button').click(function (event) {
+    var formData = $('#registration-form').serialize();
+
+    $.ajax({
+      url: '{% url "register" %}',
+      type: 'post',
+      data: formData,
+      success: function (response) {
+        // Handle success response, e.g., redirect to the home page
+        window.location.href = '/'; 
+      },
+      error: function (error) {
+        // Handle error response, e.g., display an error message
+        console.log('Registration error:', error.responseText);
+      }
+    });
   });
 </script>
-
   </body>
 </html>

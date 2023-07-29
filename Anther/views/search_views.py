@@ -2,7 +2,7 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 from django.db import connection
 from django.shortcuts import render
-from Anther.Services.spotifyClassDef import PlaylistClass, ArtistClass, TrackClass, SpotSuper
+from Anther.Services.spotifyClassDef import PlaylistClass, ArtistClass, TrackClass, CrawlClass
 
 db = connection.cursor()
 
@@ -34,6 +34,14 @@ def search_results(request):
         # search_results = spot_instance.multi_song_properties()
         search_results = spot_instance.basic_list_search()
         print(search_results)
+    
+    elif search_category == 'thicc':
+        search_results = crawl(search_query)
+    
+    elif search_category == 'contactable-playlist':
+        spot_instance = PlaylistClass(name=search_query)
+        search_results = spot_instance.contactable_search()
+
     else:
         return JsonResponse({'error': 'Invalid search category.'}, status=400)
 
@@ -42,6 +50,12 @@ def search_results(request):
 
     # Return the search results as JSON data
     return JsonResponse(search_results, safe=False)
+
+def crawl(query):
+    search_query = query
+    spotinstance = CrawlClass(name=search_query)
+    spotinstance.crawling()
+    return "You finished loading the DB"
 
 def search_view(request):
     return render(request, 'search.html')

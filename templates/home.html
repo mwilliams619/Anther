@@ -131,15 +131,16 @@
         </div>
             <div class="row"  style="margin-left: 20%; width: 60%; margin-bottom: 14%;">
             <div class="col-sm-11">   
-        <div class="form-floating mb-3">
-            <input type="email" class="form-control" id="floatingInput" placeholder="name@example.com">
-            <label for="floatingInput">Email Address</label>
+          <div class="form-floating mb-3">
+              <input type="email" class="form-control" id="email-input" placeholder="name@example.com">
+              <label for="email-input">Email Address</label>
           </div>
         </div>
     
         <div class="col-sm-1">
-            <button type="button" class="btn btn-outline-dark" style="margin-top: 7px;">Subscribe</button>
-        </div>  
+            <button type="button" id="subscribe-button" class="btn btn-outline-dark" style="margin-top: 7px;">Subscribe</button>
+        </div>
+        <div id="message-container"></div> <!-- The <div> to display the response message -->  
     </div>
   
 </div>
@@ -180,6 +181,31 @@
     <!-- Add your JavaScript code or external scripts here -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
+    <script>
+      // Function to handle subscription form submission
+      $('#subscribe-button').click(function () {
+          var email = $('#email-input').val();
+
+          // Send the AJAX request to the Django view
+          $.ajax({
+              url: '{% url "add_to_mailing_list" %}',
+              type: 'post',
+              data: {
+                  'email': email
+              },
+              success: function (response) {
+                  // Handle success response
+                  $('#message-container').text(response.message);
+                  // You can update the UI or show a success message here
+              },
+              error: function (error) {
+                  // Handle error response
+                  $('#message-container').text('Error: ' + error.responseJSON.message);
+                  // You can display an error message or handle the error as needed
+              }
+          });
+      });
+  </script>
     <script>
       const container = document.getElementById("animation-container");
       const frameElement = document.getElementById("animation-frame");
@@ -250,6 +276,5 @@
         $('#second-one').css('background-position', secondOneBgPosition);
       });
     </script>
-    
   </body>
 </html>

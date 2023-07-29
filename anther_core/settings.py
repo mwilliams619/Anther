@@ -56,6 +56,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'anther_core.middleware.custom_middleware.LoginMiddleware',
 ]
 
 ROOT_URLCONF = 'anther_core.urls'
@@ -90,6 +91,10 @@ WSGI_APPLICATION = 'anther_core.wsgi.application'
 
 # Password validation
 # https://docs.djangoproject.com/en/3.0/ref/settings/#auth-password-validators
+
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+]
 
 AUTH_PASSWORD_VALIDATORS = [
     {

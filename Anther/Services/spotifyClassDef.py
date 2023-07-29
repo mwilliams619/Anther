@@ -44,25 +44,46 @@ class SpotSuper:
         # self.cursor = self.connection_cursor
         if self._category == "track":
             self.catalog = None
+        if self.model == "thicc":
+            self.catalog = None
         else:
             self.catalog = self.track_list()
 
-    def basic_list_search(self): 
-        all_results = sp.search(q=self._category + ':' + self.name, type=self._category)
+    def basic_list_search(self, limit=15): 
+        all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=limit)
         result_list = []
         if all_results and self._category + 's' in all_results and 'items' in all_results[self._category + 's']:
             if self.model == 'track':
                 for item in all_results[self._category + 's']['items']:
+                    props = self.song_properties(track = (item['name'], item['uri']))
+                    artprop = props['artist']
+                    if isinstance(artprop, str):     
+                        thisartist = ArtistClass(name=artprop)
+                    elif isinstance(artprop.name, str): 
+                        thisartist = ArtistClass(name=artprop.name)
+                    artobj, _ =  Artist.objects.get_or_create(name= thisartist.name, uri=thisartist._uri)
+                    songobj = Song.objects.get(name=props['name'])
+                    artobj.tracks.add(songobj)
+
                     result_list.append((item['name'], item['artists'][0]['name'], item['uri']))
 
             elif self.model == 'artist':
                 for item in all_results[self._category + 's']['items']:
+                    artist, created = Artist.objects.get_or_create(name=item['name'], uri=item['uri'])
+                    thisinstance = ArtistClass(name=item['name'])
+                    tracks = thisinstance.track_list()
+                    # for track in tracks:
+                    #     song = TrackClass(name=track).song_properties()
+                    #     songobj = Song.objects.get(name=track)
+                    #     artist.tracks.add(songobj)
+
                     result_list.append((item['name'], item['genres']))
                 # Assuming you have a field named 'uri' in the Artist model
             elif self.model == 'playlist':
                 for item in all_results[self._category + 's']['items']:
+                    thisinstance = PlaylistClass(name=item['name'])
                     result_list.append((item['name'], item['owner']['display_name'], item['uri']))
-        
+
         return result_list
 
 
@@ -77,14 +98,19 @@ class SpotSuper:
                 artist = Artist.objects.get(name=self.name)
                 # Assuming you have a field named 'uri' in the Artist model
                 return artist.uri
-            elif self.model == 'playlist':
-                playlist = Playlist.objects.get(name=self.name)
-                # Assuming you have a field named 'uri' in the Playlist model
-                return playlist.uri
+            elif self.model in ['playlist', 'thicc']:
+                try:
+                    playlist = Playlist.objects.get(name=self.name)
+                    return playlist.uri
+                except Playlist.MultipleObjectsReturned:
+                    results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=1)
+                    return results[self._category + 's']['items'][0]['uri']
+                    
+                
             else:
                 raise ValueError("Invalid model provided.")
 
-        except (Song.DoesNotExist, Artist.DoesNotExist, Playlist.DoesNotExist):
+        except (Song.DoesNotExist, Artist.DoesNotExist, Playlist.DoesNotExist, Playlist.MultipleObjectsReturned):
             result = sp.search(q=self._category + ':' + self.name, type=self._category)  # search query
 
             if result and self._category + 's' in result and 'items' in result[self._category + 's']:
@@ -93,25 +119,6 @@ class SpotSuper:
                 return uri
             else:
                 raise Exception("No search results found for '{}' in category '{}'.".format(self.name, self._category))
-    # def search(self):
-    #     """ Search for either track/playlist/artist item return uri"""
-
-    #     # TODO my db contains songs how do I get it to return
-    #     #  artist and playlist uris if I already have their songs in the db
-
-    #     cursor = db.execute(
-    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props WHERE (name = ?)",
-    #         (self.name,))
-    #     row = cursor.fetchone()
-    #     if row:
-    #         name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
-    #         return uri
-    #     else:
-    #         result = sp.search(q=self._category + ':' + self.name, type=self._category)  # search query
-
-    #         spotify_obj = result[self._category + 's']['items'][0]
-    #         uri = spotify_obj['uri']
-    #         return uri
 
     def track_list(self):
         """
@@ -125,11 +132,26 @@ class SpotSuper:
         # TODO if playlist is already in cache get info from cache!!
         if self._category == "playlist":
             track_list = []
-            for item in sp.playlist_items(self._uri)['items']:
+            try:
+                items = sp.playlist_items(self._uri)['items']
+            except AttributeError:
+                return None
+
+            for item in items:
+                props = self.song_properties(track = (item['track']['name'], item['track']['uri']))
                 track_list.append((item['track']['name'], item['track']['uri']))
         elif self._category == "artist":
             track_list = []
             for item in sp.artist_top_tracks(self._uri)['tracks'][:50]:
+                try:
+                    artobj = Artist.objects.get(name=self.name)
+                    props = self.song_properties(track = (item['name'], item['uri']))
+                    songobj = Song.objects.get(name=props['name'])
+                    artobj.tracks.add(songobj)
+
+                except Artist.DoesNotExist:
+                    print("artist object does not exist")
+                    pass
                 track_list.append((item['name'], item['uri']))
         else:
             return None
@@ -152,9 +174,10 @@ class SpotSuper:
         artist_info = sp.artist(track["artists"][0]["external_urls"]["spotify"])
         genre = str(artist_info['genres'])
         artist_name = artist_info['name']
+        artist_uri = artist_info['uri']
 
         # Get or create the corresponding Artist object
-        artist, _ = Artist.objects.get_or_create(name=artist_name)
+        artist, _ = Artist.objects.get_or_create(name=artist_name, uri=artist_uri)
 
 
         song_props, _ = Song.objects.get_or_create(
@@ -195,7 +218,7 @@ class SpotSuper:
         Try to get song info from the SongProps model if not available, create and store it using _properties_dict_gen()
         """
         try:
-            if self._category == 'track':
+            if self._category == 'track' and track is None:
                 song_name = self.name
                 song_uri = self._uri
             else:
@@ -225,94 +248,6 @@ class SpotSuper:
             return feature_dict
         except Song.DoesNotExist:
             return self._properties_dict_gen(self=self, song_name=song_name, song_uri=song_uri)
-    # def _properties_dict_gen(song_name, song_uri):
-    #     """
-    #     for use in song_properties generates song properties dict and adds to sqlite table 'song_props'
-
-    #     :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
-    #              and popularity and genre
-    #     """
-    #     # get metadata for song
-    #     song_features = sp.audio_features(song_uri)
-    #     # different search necessary to get genre and popularity
-    #     track = sp.track(song_uri)
-    #     popular = track['popularity']
-    #     artist = sp.artist(track["artists"][0]["external_urls"]["spotify"])
-    #     genre = str(artist['genres'])
-
-    #     cursor = db.execute(
-    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
-    #         "WHERE (name = ?)",
-    #         (song_name,))
-
-    #     cursor.execute("INSERT OR IGNORE INTO song_props VALUES(?,?,?,?,?,?,?,?,?,?)",
-    #                    (song_name, song_features[0]['danceability'], song_features[0]['energy'],
-    #                     song_features[0]['mode'], song_features[0]['valence'], song_features[0]['tempo'],
-    #                     song_uri, song_features[0]['key'], popular, genre))
-    #     cursor.connection.commit()
-
-    #     feature_dict = {'name': song_name,
-    #                     'features': {'danceability': song_features[0]['danceability'],
-    #                                  'energy': song_features[0]['energy'],
-    #                                  'mode': song_features[0]['mode'], 'valence': song_features[0]['valence'],
-    #                                  'tempo': song_features[0]['tempo'] / 100,
-    #                                  # divide tempo so it fits with other data
-    #                                  'uri': song_uri,
-    #                                  'key': song_features[0]['key'],
-    #                                  'popularity': popular,
-    #                                  'genre': genre}}
-
-    #     # df = pd.json_normalize(data=feature_dict, max_level=1)
-    #     # df = df.set_index('name')
-    #     # df.to_csv("song_properties.csv", mode='a')
-    #     # print(feature_dict)
-    #     return feature_dict
-
-    # def song_properties(self, track=None):
-    #     """
-    #     try to get song info from db if not available create gen new entry with _properties_dict_gen()
-    #     SHOULD BE SINGLE SONGS
-
-    #     :param track: dictionary from multi_song_properties func containing song_name and song_uri
-
-    #     :return: dictionary containing: name danceability, energy, mode (major/minor), valence, tempo, uri and key
-    #              and popularity and genre
-    #     """
-    #     try:
-    #         if self._category == 'track':
-    #             song_name = self.name
-    #             song_uri = self._uri
-    #         else:
-    #             song_name = track[0]
-    #             song_uri = track[1]
-    #     except AttributeError:
-    #         song_name = track[0]
-    #         song_uri = track[1]
-
-    #     cursor = db.execute(
-    #         "SELECT name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre FROM song_props "
-    #         "WHERE (name = ?)",
-    #         (song_name,))
-    #     # cursor = db.execute(
-    #     #     "SELECT name, danceability, energy, mode, valence, tempo, uri, key FROM song_props WHERE (name = ?)",
-    #     #     (self.name,))
-    #     row = cursor.fetchone()
-    #     if row:
-    #         name, danceability, energy, mode, valence, tempo, uri, key, popularity, genre = row
-    #         feature_dict = {'name': name,
-    #                         'features': {'danceability': danceability,
-    #                                      'energy': energy,
-    #                                      'mode': mode, 'valence': valence,
-    #                                      'tempo': tempo,
-    #                                      # divide tempo so it fits with other data
-    #                                      'uri': uri,
-    #                                      'key': key,
-    #                                      'popularity': popularity,
-    #                                      'genre': genre}}
-    #         # print("got from cache")
-    #         return feature_dict
-    #     else:
-    #         self._properties_dict_gen(song_name, song_uri)
 
     def multi_song_properties(self):
         trackdeets=[]
@@ -439,7 +374,7 @@ class SpotSuper:
                             similarity_score = element
 
                             # Create a new SongRelationship instance and save it
-                            link = SongRelationship.objects.create(
+                            link = SongRelationship.objects.get_or_create(
                                 song_a=song_a,
                                 song_b=song_b,
                                 similarity_score=similarity_score
@@ -569,14 +504,17 @@ class SpotSuper:
 
 
 class PlaylistClass(SpotSuper):
-    def __init__(self, name):
-        super().__init__(name=name, category="playlist", model='playlist')
+    def __init__(self, name, model='playlist'):
+        super().__init__(name=name, category="playlist", model=model)
         # self.mean_feats = self.mean_playlist_feats(self.catalog)
-        self.get_or_create_playlist()
+        self.playobj = self.get_or_create_playlist()
     
-    def get_or_create_playlist(self):
+    def get_or_create_playlist(self, uri=None):
         
-        pl_obj = sp.playlist(self._uri)
+        if uri:
+            pl_obj = sp.playlist(uri)
+        else:
+            pl_obj = sp.playlist(self._uri)
         name = pl_obj['name']
         owner_obj = pl_obj['owner']
         follows = pl_obj['followers']['total']
@@ -593,60 +531,198 @@ class PlaylistClass(SpotSuper):
             'cover_image': cover,
             'uri': self._uri
         })
-
-    @staticmethod
-    def mean_playlist_feats(dictionary):
-
-        """
-        Average track information from playlist tracks. Track must be from self.catalog
-
-        :param dictionary: self.catalog
-        :return: dictionary containing danceability, energy, mode (major/minor), valence, tempo, and key
-        """
-        dance_list = []
-        nrg_list = []
-        val_list = []
-        tempo_list = []
-
-        majmin_count = {'major': 0, 'minor': 0}
-        for track in dictionary:
-            song_features = sp.audio_features(dictionary[track])
-            dance_list.append(song_features[0]['danceability'])
-            nrg_list.append(song_features[0]['energy'])
-            val_list.append(song_features[0]['energy'])
-            tempo_list.append(song_features[0]['tempo'])
-
-            if song_features[0]['mode'] == 0:
-                majmin_count['minor'] += 1
-            else:
-                majmin_count['major'] += 1
-            print('.', end='')
-
-        feature_dict = {'danceability': mean(dance_list), 'energy': mean(nrg_list),
-                        'mode': majmin_count, 'valence': mean(val_list),
-                        'tempo': mean(tempo_list), }
-        # print(feature_dict)
-        return feature_dict
+        catalog = self.track_list()
+        for song in catalog:
+            songobj = Song.objects.get(name=song)
+            playlist.songs.add(songobj)
+            art = songobj.artist
+            art.playlists_featured_on.add(playlist)
+        return playlist
 
     def network_plot(self):
         edge, node = self.similarness()
         print(edge)
         print(node)
-    #     # G = nx.Graph()
-    #     # G.add_weighted_edges_from(edge)
-    #     # G.add_nodes_from(node)
-    #     # nx.draw(G)
-    #     # edge.pop(0)
-    #     # node.pop(0)
-    #     # edges = pd.DataFrame(edge, columns=["from", "to", "Weight"])
-    #     # nodes = pd.DataFrame(node, columns=["label", "id"])
-    #     # Jaal(edge_df=edges, node_df=nodes).plot()
+    
+    def contactable_search(self):
+        all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=30)
+        result_list = []
+        for item in all_results[self._category + 's']['items']:
+            thisinstance = PlaylistClass(name=item['name'])
+            thisinstance._uri = item['uri']
+            if '@' in thisinstance.playobj.description: 
+                result_list.append((item['name'], item['owner']['display_name'], item['uri']))
+        return result_list
+        
+
+
+
+
+class CrawlClass(PlaylistClass):
+    def __init__(self, name):
+        super().__init__(name=name, model='thicc')
+        self.name = name
+        self._uri = self.search()
+
+    def crawling(self):
+                    
+        categories = sp.categories(limit=50)
+        all_lists = []
+        for category in categories:
+            playlists = sp.category_playlists(category_id=category, limit=50)
+            all_lists.append(playlists)
+        
+        feat_lists = sp.featured_playlists(limit=50)
+        for list in feat_lists:
+            all_lists.append(list)
+        
+
+        bacth_list = [
+            "A playlist for september",
+            "Fixing your shitty music taste",
+            "axel's release radar",
+            "The smoker's club pregame",
+            "songs that are perfect",
+            "talking to the moon",
+            "save this for a rainy day",
+            "songs that ar eway to dangerous to listen to alone",
+            "hidden gems.",
+            "songs that slap",
+            "sonder szn",
+            "Indie Waver",
+            "Night Trip",
+            "Vibes for the Day",
+            "Morning Right",
+            "Songs you forgot about",
+            "summer aux",
+            "let me float",
+            "therapeutic",
+            "frequency",
+            "dancing in the kitchen",
+            "oh i love it and i hate it at the same time",
+            "true that I saw her hair like the branch of a tree",
+            "In the back of my mind, you died",
+            "New Finds",
+            "a song a day",
+            "these things run though my mind while I'm by myself",
+            "On Repeat",
+            "a walk with my earbuds in",
+            "leaning against a train window",
+            "Anxiety Free :)",
+            "life is peaking, but in a different way",
+            "Fall 2022",
+            "lost love...",
+            "i need him like water",
+            "songs you need to hear at least once",
+            "can I bite your tongue like my bad habit?",
+            "rainy day songs...",
+            "Good Morning",
+            "Mr. Forgettable",
+            "In my own world",
+            "Dance walking",
+            "Rancid Eddie - Dry",
+            "Just a Little While",
+            "6 cars & a grizzly bear",
+            "Miserable Man",
+            "Background Music",
+            "Good Looking - Suki Waterhouse",
+            "I wanna run away and live in the woods",
+            "sitting watching the world end",
+            "3 am driving into the morning",
+            "the saddest songs i know",
+            "Notion - The Rare Occasions",
+            "depollute my pretty baby...",
+            "i think i like when it rains",
+            "iOS 15 Background Sounds",
+            "found - zach webb",
+            "beautiful love songs",
+            "mending a broken heart",
+            "Silk Sonic",
+            "ur a frog on a leaf in the garden",
+            "Vibe Test Songs",
+            "Sumer Rotation",
+            "Running Up That Hill - Kate Bush",
+            "Floating amongst the clouds",
+            "You... You is the Main Character",
+            "Pope Is a Rockstar",
+            "Memoir #2",
+            "Falling in love back in the day",
+            "Where My Rosemary Goes",
+            "i love you so...",
+            "I'm going back to 505",
+            "as it was",
+            "songs about the moon",
+            "It's Called: Freefall",
+            "Lost",
+            "Incomplete & Depressed",
+            "Songs that are not rap that you'll love",
+            "Thinking about life while zoning out of reality",
+            "Actually, I Have Been Broken All Along",
+            "Falling Apart",
+            "Songs that make you leave your body",
+            "Rage, Give in to your anger!",
+            "POV I Got Passed The AUX",
+            "Pov I'm gonna fist fight a demon",
+            "Bass to Blow Out Your CAr Spaeakers",
+            "Study Lofi For MAX Focus",
+            "Straight Motivation",
+            "The Hottest love has the coldest end",
+            "Late Night Drive",
+            "Underrated Gems",
+            "Viral Trending Tik Tok Tracks",
+            "MOSHPIT",
+            "Phonk Beats and high speeds",
+            "Gym Apex Monster Playlist",
+            "Songs That Make You Feel Good",
+            "Bedroom Lovin",
+            "Summer Feel Good Vibes",
+            "Falling in Love",
+            "Party Vibes 24/7",
+            "Drill Elite",
+            "Best of Aesthetic Rap",
+            "Chill rap vibes",
+            "Intense Hyperpop",
+            "Beauty in the Darkness",
+            "Underrated Rap & Hip Hop",
+            "We Had The Right Love at The Wrong Time",
+            "Chill vibe songs",
+            "Slow & Reverb to Perfection",
+            "Be the endergy you want to attract",
+            "Masked Mortal New Music Friday",
+            "Best of Anime Songs",
+            "Euphoria Main Character Vibes",
+            "Dancing in the Kitchen at 3am",
+            "The Bun 91.3 Official Playlist",
+            "Backroads In The Key Of Indie",
+            "The Cover Song Aesthetic",
+            "The Happiness Aesthetic",
+            "the Velvet series",
+            "smooth as silk",
+            "a playlist for your crush",
+            "Raindrop Feels",
+            "Fall Flannels",
+            "late. night. listens.",
+            "Fall Yellow Day Dreams",
+            "The State of (Indie)ana",
+            "Heat Check",
+            "I'd Do Bad Things",
+            "Daily Rotation",
+            "Feels Like A Dream",
+            "Songs I Like That You'll Like Too",
+            "matcha & granola",
+        ]
+        all_lists.append(bacth_list)
+        count = 0
+        for item in all_lists:
+            thisinstance = PlaylistClass(name=item['name'])
+            count += 1
+            print("batch " + count + " done")
+
 
 
 class ArtistClass(SpotSuper):
     def __init__(self, name):
         super().__init__(name=name, category="artist", model='artist')
-
 
 class TrackClass(SpotSuper):
     def __init__(self, name):

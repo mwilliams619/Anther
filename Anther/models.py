@@ -20,7 +20,7 @@ class Song(models.Model):
     # Other fields for additional song-related information can be added here
 
     def __str__(self):
-        return self.title
+        return self.name
 
 
 class SongRelationship(models.Model):
@@ -39,6 +39,7 @@ class SongRelationship(models.Model):
 class Artist(models.Model):
     id = models.BigAutoField(primary_key=True)
     name = models.CharField(max_length=100)
+    uri = models.TextField()
 
     # Songs by the artist (One-to-Many relationship with Song model)
     tracks = models.ManyToManyField('Song', related_name='featured_artists')
@@ -73,5 +74,11 @@ class Playlist(models.Model):
     def get_display_name(self):
         # Extract the display name from the owner dictionary
         return self.owner.get('display_name', 'Unknown')
+    
+
+class MailingList(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    email = models.EmailField(unique=True)
+
     
 

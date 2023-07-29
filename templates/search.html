@@ -31,7 +31,11 @@
                     <li><a class="dropdown-item" href="#" data-search-type="track">Search Song</a></li>
                     <li><a class="dropdown-item" href="#" data-search-type="artist">Search Artist</a></li>
                     <li><a class="dropdown-item" href="#" data-search-type="playlist">Search Playlist</a></li>
+                    <li><a class="dropdown-item" href="#" data-search-type="thicc">Search Playlist THICC</a></li>
                 </ul>
+            </div>
+            <div id="playlistCheckboxWrapper" style="display: none;">
+                <input type="checkbox" id="contactablePlaylistCheckbox"> Contactable Playlists only
             </div>
             
             <div id="search-results" style="text-align: left;"></div>
@@ -44,11 +48,44 @@
                   </div>
                   
             </div>
+            <div id="animation-container" title="meditation">
+                <img id="animation-frame" src="" style="height: 500px; width: 500px;"/>
+              </div>
         </div>
     </div>
 </div>
 
-
+<script>
+    const diagram_container = document.getElementById("animation-container");
+    const diagram_frameElement = document.getElementById("animation-frame");
+    let diagram_frames = [];
+  
+    // Make an AJAX request to get the frame filenames
+    $.ajax({
+      url: "/loading_diagram/",
+      type: "GET",
+      dataType: "json",
+      success: function (data) {
+        diagram_frames = data;
+  
+        let diagram_currentFrame = 0;
+  
+        function playAnimation() {
+          diagram_frameElement.src = diagram_frames[diagram_currentFrame];
+          currentFrame = (currentFrame + 1) % diagram_frames.length; // Loop frames
+  
+          // Call the function again after a certain delay (e.g., 100ms)
+          setTimeout(playAnimation, 100);
+        }
+  
+        // Start the animation
+        playAnimation();
+      },
+      error: function (error) {
+        console.log(error);
+      },
+    });
+  </script>
 <!-- Include jQuery library -->
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-geWF76RCwLtnZ8qwWowPQNguL3RmwHVBC9FhGdlKrxdiJJigb/j/68SIy3Te4Bkz" crossorigin="anonymous"></script>
@@ -94,11 +131,37 @@
             var newPlaceholder = item.text();
             searchCategory = item.data('search-type');
             $("#search-input").attr("placeholder", newPlaceholder);
+            selectedDropdownItem = item;
         }
 
+        function toggleCheckboxVisibility() {
+        const playlistCheckboxWrapper = $("#playlistCheckboxWrapper");
+
+        if (searchCategory === "playlist") {
+            // playlistCheckboxWrapper.attr("style","display: block");
+            playlistCheckboxWrapper.attr("style","margin-left: -80.5%; margin-top: 2%");
+        } else {
+            playlistCheckboxWrapper.attr("style","display: none");
+        }
+    }
+    
         // Listen for the click event on dropdown items
         $(".dropdown-item").on("click", function () {
             changePlaceholderAndCategory($(this));
+            toggleCheckboxVisibility();
+        });
+
+        // Add event listener to the checkbox to change the search type when checked
+        const contactablePlaylistCheckbox = $("#contactablePlaylistCheckbox"); // Use jQuery to select the checkbox
+
+        contactablePlaylistCheckbox.on("change", function () {
+            const playlistDropdownItem = $("a[data-search-type='playlist']"); // Select the specific playlist dropdown item
+
+            if (this.checked) {
+                searchCategory = "contactable-playlist"
+            } else {
+                searchCategory = "playlist"
+            }
         });
 
         // Function to handle the search request
