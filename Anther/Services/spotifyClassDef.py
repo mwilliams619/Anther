@@ -138,6 +138,8 @@ class SpotSuper:
                 return None
 
             for item in items:
+                #TODO in contactable search throws typeerror can't subscript Nonetype (item)
+
                 props = self.song_properties(track = (item['track']['name'], item['track']['uri']))
                 track_list.append((item['track']['name'], item['track']['uri']))
         elif self._category == "artist":
@@ -545,6 +547,7 @@ class PlaylistClass(SpotSuper):
         print(node)
     
     def contactable_search(self):
+    # TODO bug same playlists are being saved multiple times
         all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=30)
         result_list = []
         for item in all_results[self._category + 's']['items']:
