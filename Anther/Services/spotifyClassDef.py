@@ -346,16 +346,20 @@ class SpotSuper:
         data = []
         data2 = []
         cleaned_data = []
+        node_list = []
         for track in self.catalog.items():
             feat_list = self.song_properties(track=track)
             data.append(feat_list)
         # make a copy of your list of song data so you can remove the key, uri, and genre data for calculations
         # while keeping it for labeling your nodes
         data2 = copy.deepcopy(data)
+        counter = 0
         for item in data2:
             feat_list, song_name = PlaylistClass._prep_feats_for_cosine_similarity(item)
             # feat_list.append(song_name)
             cleaned_data.append(feat_list)
+            node_list.append({"id": song_name})
+            counter += 1
         # print(cleaned_data)
         df = pd.DataFrame(cleaned_data,
                           columns=["danceability", "energy", "mode",
@@ -381,8 +385,11 @@ class SpotSuper:
                                 song_b=song_b,
                                 similarity_score=similarity_score
                             )
-                            link_list.append(link)
-                        counter += 1
+                            link_list.append({"source":link[0].song_a.name, "target": link[0].song_b.name, "value": link[0].similarity_score})
+                            counter += 1
+                        else:
+                            counter += 1
+                        
 
         # name = set()
         # outputDict = {"nodes":[], "links":[]}
@@ -424,7 +431,8 @@ class SpotSuper:
         # plt.hist(outputHist, bins=100)
         # plt.show()
         ## CHUNK FOR EDGE_WEIGHT HISTOGRAM
-        return link_list
+        graph_data = {"nodes": node_list,"links": link_list}
+        return graph_data
 
     def track_test(self, comp_song: object):
         # TODO write DOCSTRINGS! And fix code redundancy

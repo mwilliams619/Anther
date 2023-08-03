@@ -5,89 +5,91 @@ var svg = d3.select("svg")
     .attr("width",'95%')
     .attr("height",'95%')
     .append('g')
-    .attr("transform", "translate("+ width/2 +"," + -500 + ")")
+    .attr("transform", "translate("+ width/2 +"," + -50 + ")")
 
-// Tooltip
-const rectWidth = 150;
-const rectHeight = 200;
-const PLtooltip = svg.append("rect")
-    .attr("class","tooltip")
-        .attr("x", 100) // position rectangle horizontally
-        .attr("y", 100) // position rectangle vertically
-        .attr("width", rectWidth)
-        .attr("height", rectHeight)
-        .attr("stroke", "black")
-        .attr("opacity", 0);
 
-const PLtextTooltip = svg.append("text")
-                .attr('x', 100)
-                .attr('y', 500)
-                .attr('fill','green')
-                .attr('opacity',0)
                 
 
-var forceStrength = 0.03;
+var forceStrength = 0.3;
 function charge(d) {
         return -forceStrength * d.radius;
       }
+    
+// Make an AJAX call to grab playlist data from the server
+fetch('/get_playlist_data/')
+.then(response => response.json())
+.then(data => {
+// Store the fetched data in a variable or use it as needed
+var playlistData = data;
+playListChart(playlistData)
+})
+.catch(error => {
+console.error("Error fetching playlist data:", error);
+});
 
-function playListChart() {
+function playListChart(playlistData) {
     var radiusScale = d3.scaleSqrt()
         .domain([1,300])
         .range([10,80])
 
     var simulation = d3.forceSimulation()
         .force('boundary', forceBoundary(-width/2+40,0,width/2-40,height+400).border(1).strength(0.0001))
-        .force('y', d3.forceY().strength(0.0003).y(height+400))
+        .force('y', d3.forceY().strength(0.0007).y(height+400))
         .force("collide", d3.forceCollide().strength(0.7).iterations(1).radius(d => d.value))
         .force("charge", d3.forceManyBody().strength(charge))
- 
-    d3.queue()
-        .defer(d3.json, "/static/sandBox_src/playlistData.json")
-        .await(ready)
+
+   
     
-    function ready(error, datapoints){
-        var pl = svg.selectAll('.playlist')
-            .data(datapoints)
-            .enter().append("circle")
-            .call(d3.drag()
-                .on("start", dragstarted)
-                .on("drag", dragged)
-                .on("end", dragended))
-            .attr("class", "playlist")
-            .attr("r", d => radiusScale(d.value))
-            .attr("title", d => d.name)
-            .attr("id", d => d.id)
-            .on("click", function(d){
-                initializeButton();
-                plID = d3.select(this).attr("id");
-                nom = d3.select(this).attr("name");
-                console.log(plID);
-                d3.selectAll(".playList").style("visibility","hidden")
-                d3.json("/static/sandBox_src/miserables.json", function(error, _graph) {
-                    if(error) throw error;
-                    graph = _graph;
-                    initializeDisplay(plID, nom)
-                    initializeSimulation()
+    var pl = svg.selectAll('.playlist')
+        .data(playlistData)
+        .enter().append("circle")
+        .call(d3.drag()
+            .on("start", dragstarted)
+            .on("drag", dragged)
+            .on("end", dragended))
+        .attr("class", "playlist")
+        .attr("r", d => radiusScale(d.value))
+        .attr("title", d => d.name)
+        .attr("id", d => d.id)
+        .on("click", function(d) {
+            // Send a GET request to the server with the node's id
+            fetch(`/get_tracklist/?name=${d.name}`)
+                .then(response => response.json())
+                .then(graph_data => {
+                    initializeButton();
+                    plID = d3.select(this).attr("id");
+                    nom = d3.select(this).data()[0].name
+                    console.log(plID);
+
+                    // Assuming you have a function called 'initializeDisplay' and 'initializeSimulation'
+                    // to visualize the graph_data and initialize the simulation
+                    
+                    initializeSimulation(graph_data);
+                    initializeDisplay(plID, nom, graph_data);
+                    initializeForces(graph_data);
+                    
+                })
+                .catch(error => {
+                    console.error("Error fetching graph data:", error);
                 });
-            })
-            .on('mouseover', mouseover)
-            .on('mousemove', mousemove)
-            .on('mouseout', mouseleave);
 
-        simulation.nodes(datapoints)
-            .on('tick', ticked);
+            d3.selectAll(".playlist").style("visibility", "hidden");
+        })
+        .on('mouseover', mouseover)
+        .on('mousemove', mousemove)
+        .on('mouseout', mouseleave);
 
-        function ticked(){
-            pl
-                .attr('cx', d => d.x)
-                .attr('cy', d => d.y);
-            simulation.alphaTarget(0.1).restart()
-            d3.select('#alpha_value').style('flex-basis', (simulation.alpha()*100) + '%');;
-        }
+    simulation.nodes(playlistData)
+        .on('tick', ticked);
+
+    function ticked(){
+        pl
+            .attr('cx', d => d.x)
+            .attr('cy', d => d.y);
+        simulation.alphaTarget(0.1).restart()
+        d3.select('#alpha_value').style('flex-basis', (simulation.alpha()*100) + '%');
     }
 };
-playListChart()
 
 // Reset to PL view
 function initializeButton() {
@@ -104,17 +106,17 @@ function initializeButton() {
     // Toggle from song Graph to playlist view
     button.on("click", function() {
         d3.select('g')
-            .attr("transform", "translate("+ width/2 +"," + -500 + ")")
+            .attr("transform", "translate("+ width/2 +"," + -50 + ")")
 
         // Show playlist
-        d3.selectAll(".playList").style("visibility","visible");
+        d3.selectAll(".playlist").style("visibility","visible");
 
         // Hide graph and return button
         d3.selectAll(".rtnBtn").remove();
-        d3.selectAll(".nodes").remove();
-        d3.selectAll(".links").remove();
-        d3.selectAll(".playlistName").remove();
-        simulation.alpha(5).restart();
+        d3.selectAll(".nodes").style("visibility","hidden");
+        d3.selectAll(".links").style("visibility","hidden");
+        d3.selectAll(".playlistName").style("visibility","hidden");
+        simulation.alpha(0.5).restart();
     });
 }
 
@@ -126,15 +128,32 @@ var link, node;
 // the data - an object with nodes and links
 var graph;
 
+function sendNodeIdToServer(nodeId) {
+    $.ajax({
+        type: 'GET',
+        url: '/get_tracklist/',
+        data: {
+            id: nodeId
+        },
+        success: function (data) {
+            // Process the response from the server if needed
+            console.log("Server response:", data);
+        },
+        error: function (error) {
+            console.error("Error sending node ID to server:", error);
+        }
+    });
+}
+
 //////////// FORCE SIMULATION //////////// 
 
 // force simulator
 var simulation = d3.forceSimulation();
 
 // set up the simulation and event to update locations after each tick
-function initializeSimulation() {
-  simulation.nodes(graph.nodes);
-  initializeForces();
+function initializeSimulation(graph_data) {
+  simulation.nodes(graph_data.nodes);
+  initializeForces(graph_data);
   simulation.on("tick", ticked);
 }
 
@@ -170,7 +189,7 @@ forceProperties = {
 }
 
 // add forces to the simulation
-function initializeForces() {
+function initializeForces(graph_data) {
     // add forces and associate each with a name
     simulation
         .force("link", d3.forceLink())
@@ -179,11 +198,11 @@ function initializeForces() {
         .force("forceX", d3.forceX())
         .force("forceY", d3.forceY());
     // apply properties to each of the forces
-    updateForces();
+    updateForces(graph_data);
 }
 
 // apply new force properties
-function updateForces() {
+function updateForces(graph_data) {
     // get each force by name and update the properties
     simulation.force("charge")
         .strength(forceProperties.charge.strength * forceProperties.charge.enabled)
@@ -203,7 +222,7 @@ function updateForces() {
         .id(function(d) {return d.id;})
         .distance(forceProperties.link.distance)
         .iterations(forceProperties.link.iterations)
-        .links(forceProperties.link.enabled ? graph.links : []);
+        .links(forceProperties.link.enabled ? graph_data.links : []);
 
     // updates ignored until this is run
     // restarts the simulation (important if simulation has already slowed down)
@@ -214,39 +233,40 @@ function updateForces() {
 
 //////////// DISPLAY ////////////
 // generate the svg objects and force simulation
-function initializeDisplay(plID, plName) {
+function initializeDisplay(plID, plName, graph_data) {
     d3.select('g')
-            .attr("transform", "translate("+ width/2 +"," + height/2 + ")")
-            .append("text")
-                .attr("class", "playlistName")
-                .attr('y',(height/2)-50)
-                .text(plName)
-  // set the data and properties of link lines
-  link = svg.append("g")
+        .attr("transform", "translate("+ width/2 +"," + height/2 + ")")
+        .append("text")
+            .attr("class", "playlistName")
+            .attr('y',(height/2)-50)
+            .text(plName);
+
+    link = svg.append("g")
         .attr("class", "links")
-    .selectAll("line")
-    .data(graph.links)
-    .enter().append("line")
-      .attr('opacity', '0');    
+        .selectAll("line")
+        .data(graph_data.links)
+        .enter().append("line") // Append 'line' elements
+        .attr("opacity", "0"); // Apply the 'link' class to each line element
 
-  link.append("source")
-    .text(function(d) { return d.source; })
-  link.append("target")
-    .text(function(d) { return d.target; })
-
-    
+    const labelsContainer = d3.select(".labels-container");
 
   // set the data and properties of node circles
-  node = svg.append("g")
+    node = svg.append("g")
         .attr("class", "nodes")
-    .selectAll("circle")
-    .data(graph.nodes)
+        .selectAll(".node")
+        .data(graph_data.nodes)
+    
     .enter().append("circle")
+        .attr("class", "node")
+        .attr("r", 5) // Initial radius
         .call(d3.drag()
             .on("start", dragstarted)
             .on("drag", dragged)
             .on("end", dragended))
+        
     .on('mouseover', function(d) {
+        console.log("Mouseover event triggered.");
+        console.log("Mouse coordinates: x =", d3.event.pageX, ", y =", d3.event.pageY);
         d3.select(this).transition()
             .duration('100')
             .attr('r', "8")
@@ -256,19 +276,57 @@ function initializeDisplay(plID, plName) {
           })
             .transition()
             .attr('opacity','1');
+
+        const connectedNodeIds = new Set();
+
+        // Find all nodes connected to the hovered node
+        graph_data.links.forEach(linkData => {
+            if (linkData.source.id === d.id) {
+                connectedNodeIds.add(linkData.target.id);
+            } else if (linkData.target.id === d.id) {
+                connectedNodeIds.add(linkData.source.id);
+            }
+        });
+
+        node.transition()
+        .style('opacity', node => {
+            if (connectedNodeIds.has(node.id) || node.id === d.id) {
+                return 1; // Set opacity to 1 for connected nodes and hovered node
+            } else {
+                return 0.2; // Set opacity to 0.2 for non-connected nodes
+            }
+        });
+
+        // Create a tooltip-like text element
+        const nodeLabels = svg.selectAll(".node-label")
+        .data([d, ...graph_data.nodes.filter(node => connectedNodeIds.has(node.id))]);
+        
+        nodeLabels.enter().append("text")
+        .attr("class", "node-label")
+        .text(node => node.id)
+        .attr('opacity', '1')
+        .attr("fill", "black")
+        .attr("transform", function(node) {
+            return `translate(${node.x + 10}, ${node.y - 10})`;
+        })
+        .each(function() {
+            d3.select(this.parentNode)  // Append to the same parent as the nodes
+                .append(() => this);  // Append the current text element
+            console.log(this)
+        });
+
     })
+    
     .on('mouseout', function(d, i) {
         d3.select(this).transition()
             .duration('100')
             .attr('r',"5");
         link.transition()
             .attr('opacity','0');
+        svg.selectAll(".node-label").remove();
+        node.transition().style('opacity', 1);
+
     });
-
-  // node tooltip
-  node.append("title")
-      .text(function(d) { return d.name; });
-
   // visualize the graph
   updateDisplay();
 }
@@ -300,7 +358,6 @@ function ticked() {
 
 function dragstarted(d) {
     PLtextTooltip.attr("opacity",0)
-    PLtooltip.attr("opacity",0)
 
     if (!d3.event.active) simulation.alphaTarget(0.3).restart();
     d.fx = d.x;
@@ -318,38 +375,28 @@ function dragended(d) {
   d.fy = null;
 }
 
+const PLtextTooltip = svg.append("text")
+    .attr('x', 0)
+    .attr('y', 0)
+    .attr('fill','black')
+    .attr('opacity',0);
 // MOUSEOVERS
 
 var mouseover = function(d) {
-    PLtooltip
-        .transition()
-        .duration(100)
-        .style("opacity", 1)
     PLtextTooltip
-        .transition()
-        .duration(100)
-        .style("opacity", 1)
-    
-    d3.select(this)
-      .style("stroke", "black")
-      .style("opacity", 1)
+        .text("Playlist Name: " + d.name)  // Set the tooltip text to the node's title
+        .style("transform", `translate(${d.x + 50}px, ${d.y - 10}px)`)  // Use CSS transform for positioning
+        .style("opacity", 1);  // Make the tooltip visible
+
+    svg.node().appendChild(PLtextTooltip.node());
   }
 
 var mousemove = function(d) {
-    PLtooltip
-        .attr("x", (d3.mouse(this)[0]) + "px")
-        .attr("y", (d3.mouse(this)[1]) + "px")
     PLtextTooltip
-        .text("The exact value of this cell is: " + d.value)
-        .attr("x", (d3.mouse(this)[0]) + "px")
-        .attr("y", (d3.mouse(this)[1]+20) + "px")
+    .style("transform", `translate(${d.x + 10}px, ${d.y - 10}px)`)  // Use CSS transform for positioning
 }
 
 var mouseleave = function(d) {
-    PLtooltip
-        .transition()
-        .duration(100)
-        .style("opacity", 0)
     PLtextTooltip
         .transition()
         .duration(100)
@@ -362,7 +409,7 @@ var mouseleave = function(d) {
 
 // update size-related forces
 d3.select(window).on("resize", function(){
-    width = +svg.node().getBoundingClientRect().width;
-    height = +svg.node().getBoundingClientRect().height;
+    let width = +svg.node().getBoundingClientRect().width;
+    let height = +svg.node().getBoundingClientRect().height;
     updateForces();
 });

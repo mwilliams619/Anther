@@ -22,6 +22,11 @@ svg {
   stroke: #58641d;
 }
 
+.node-label{
+  fill: 'black';
+  opacity: 1;
+}
+
 body .rtnBtn {
   background-color: none;
   border: none;

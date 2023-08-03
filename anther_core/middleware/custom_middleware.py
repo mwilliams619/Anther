@@ -12,7 +12,7 @@ class LoginMiddleware:
             # If the user is not authenticated (logged in), redirect them to the login page
             login_url = ['/login/register/', '/login/']  # Remove '/login/' from the list
             if request.path not in login_url and not request.path.startswith('/admin/'):
-                return redirect(login_url[2])
+                return redirect(login_url[1])
 
         response = self.get_response(request)
         print(response)
