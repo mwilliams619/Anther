@@ -12,7 +12,7 @@ def playlist_view(request):
 def get_playlist_data(request):
     playlists = Playlist.objects.all()  # Query your playlists
     # I'm going to make the sizes random for now the value should correspond to the affinity to the playlist though
-    data = [{'id': playlist.id, 'name': playlist.name, 'value': random.randint(15, 80)} for playlist in playlists[37:65]]
+    data = [{'id': playlist.id, 'name': playlist.name, 'value': random.randint(15, 80)} for playlist in playlists]
     return JsonResponse(data, safe=False)
 
 def get_tracklist(request):

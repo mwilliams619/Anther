@@ -10,6 +10,7 @@ env
 /Anther/lib/site-packages/**
 /Anther/launch.json
 **/settings.py
+venv/**
 
 #src
 *.sqlite*

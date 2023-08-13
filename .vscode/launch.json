@@ -8,7 +8,7 @@
       "name": "Python: Django",
       "type": "python",
       "request": "launch",
-      "program": "/Users/mattwilliams/Documents/Programming/Github repository local folder/Anther/manage.py",
+      "program": "/Users/davidxu/Documents/GitHub/Anther/manage.py",
       "args": ["runserver"],
       "django": true,
       "justMyCode": true
