@@ -9,17 +9,17 @@
     <style>
       /* Add this to create the parallax effect */
 
-      .parallax {
+      /* .parallax {
         background-attachment: fixed;
         background-size: 100% auto;
         background-repeat: no-repeat;
-        height: 120vh; /* Adjust the height as needed */
-        background-position: center 50px; /* Adjust the vertical position of the background image */
+        height: 120vh; 
+        background-position: center 50px; 
       }
-    
+     */
       /* Customize the appearance of the "About Me" content */
       #about-me {
-        background-image: url("/static/images/sky.jpg");
+        /* background-image: url("/static/images/sky.jpg"); */
         display: flex;
         align-items: center; /* Vertically center the content */
         justify-content: center; /* Horizontally center the content */
@@ -31,9 +31,46 @@
         top: 45%;
         transform: translateY(-50%);
       }
+      #how-it-works {
+        background-image: url("/static/images/assets/1x/how_to_back.png");
+        background-size: cover;
+        background-position: center;
+      }
+      #how-it-works .container {
+        position: relative;
+      }
+
+      .scroll-trigger {
+        position: relative;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .how-it-works-card {
+        width: 100%;
+        transform: translateY(100%);
+        opacity: 0;
+        transition: transform 0.5s ease, opacity 0.7s ease;
+        margin-top: -300px;
+        }
+
+        .how-it-works-card .card{
+        width: 100%;
+        height: 100%;
+        background-color: #fff; /* Set your desired background color */
+        padding: 10px;
+        margin: 0 auto;
+        border-radius: 10px;
+        }
+      .how-it-workscard h2 {
+        font-size: 24px; /* Set your desired font size */
+        margin-bottom: 10px;
+      }
 
       #second-one {
-        background-image: url("/static/images/point.jpg");
+        background-image: url("/static/images/assets/1x/team_background.png");
+        background-size: cover;
         display: flex;
         align-items: center; /* Vertically center the content */
         justify-content: center; /* Horizontally center the content */
@@ -68,6 +105,17 @@
         }
       }
 
+      @keyframes slideInUP {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
       .animate-left {
         opacity: 0; /* Start with opacity 0 */
       }
@@ -84,6 +132,15 @@
       .animate-right.active {
         animation: slideInRight 1s ease forwards; /* Adjust the animation duration as needed */
         opacity: 1; /* Set opacity to 1 after animation finishes */
+      }
+
+      .animate-up{
+        opacity: 0;
+      }
+
+      .animate-up.active{
+        animation: slideInUp 1s ease forwards;
+        opacity: 0;
       }
       .no-underline {
         cursor: pointer;
@@ -170,12 +227,76 @@
     </div>
   </section>
 
-  <section id="second-one" class="parallax" style="width: 100%; height: 150vh; margin-top: -15%;">
+  <section id="how-it-works" class="parallax" style="width: 100%; height: 150vh; margin-bottom: 300px;">
+    <div class="container">
+      <div class="No-animate">
+        <h1>How it Works</h1>
+        <p>I'm going to put a graphic here that shows the flow of the user with little blurbs about steps. 1 search -> 2 explore -> 3 submit</p>
+      </div>
+      <div class="scroll-trigger">
+        <div class="how-it-works-card"> 
+          <div class="card">
+          <div class="row g-0">
+            <div class="col-md-8">
+              <img src="static/images/point.jpg" alt="placeholder" class="img-fluid rounded-start">
+            </div>
+            <div class="col-md-4">
+              <div class="card-body">
+                <h5 class="card-title" style="margin-top: 10px;">SEARCH</h5>
+                <p class="card-text">Enter your song and we search through Spotify to find all the best playlists for you to submit to</p>
+                <div class="d-grid gap-2 d-md-block">
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+      </div>
+        <div class="how-it-works-card"> 
+          <div class="card">
+            <div class="row g-0">
+              <div class="col-md-8">
+                <img src="static/images/point.jpg" alt="placeholder" class="img-fluid rounded-start">
+              </div>
+              <div class="col-md-4">
+                <div class="card-body">
+                  <h5 class="card-title" style="margin-top: 10px;">EXPLORE</h5>
+                  <p class="card-text">Visually navigate through playlists to find exactly the right place for your song</p>
+                  <div class="d-grid gap-2 d-md-block">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+      </div>
+        <div class="how-it-works-card">
+          <div class="card">
+            <div class="row g-0">
+              <div class="col-md-8">
+                <img src="static/images/point.jpg" alt="placeholder" class="img-fluid rounded-start">
+              </div>
+              <div class="col-md-4">
+                <div class="card-body">
+                  <h5 class="card-title" style="margin-top: 10px;">SUBMIT</h5>
+                  <p class="card-text">Submit your song directly to playlist curators</p>
+                  <div class="d-grid gap-2 d-md-block">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+      </div>
+      </div>
+    </div>
+  </section>
+  
+
+  <section id="second-one" class="parallax" style="width: 100%; height: 150vh; margin-top: 15%;">
     <div class="container text-center" style="margin-top: 15%;">
 
         {% include 'team.html' %}
     </div>
   </section>
+
 
 
     <!-- Add your JavaScript code or external scripts here -->
@@ -274,6 +395,24 @@
         // Calculate the background position for the "Another one" section
         const secondOneBgPosition = `center ${scrollTop * 0.030-150}px`;
         $('#second-one').css('background-position', secondOneBgPosition);
+      });
+
+      const hiw_cards = document.querySelectorAll(".how-it-works-card");
+
+      window.addEventListener("scroll", () => {
+        hiw_cards.forEach((card, index) => {
+          const cardTop = card.getBoundingClientRect().top;
+          if (cardTop < window.innerHeight * 0.05) {
+            card.style.transform = "translateY(0)";
+            card.style.opacity = "0";
+          } else if (cardTop < window.innerHeight * 0.85) {
+            card.style.transform = "translateY(30%)";
+            card.style.opacity = "1";
+          } else {
+            card.style.transform = "translateY(100%)";
+            card.style.opacity = "0";
+          }
+        });
       });
     </script>
   </body>

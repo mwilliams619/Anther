@@ -49,7 +49,7 @@ class SpotSuper:
         else:
             self.catalog = self.track_list()
 
-    def basic_list_search(self, limit=15): 
+    def basic_list_search(self, limit=1): 
         all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=limit)
         result_list = []
         if all_results and self._category + 's' in all_results and 'items' in all_results[self._category + 's']:
@@ -69,7 +69,10 @@ class SpotSuper:
 
             elif self.model == 'artist':
                 for item in all_results[self._category + 's']['items']:
-                    artist, created = Artist.objects.get_or_create(name=item['name'], uri=item['uri'])
+                    try:
+                        artist = Artist.objects.get(name=item['name'])
+                    except Artist.DoesNotExist:
+                        artist = Artist.objects.create(name=item['name'], uri=item['uri'])
                     thisinstance = ArtistClass(name=item['name'])
                     tracks = thisinstance.track_list()
                     # for track in tracks:
@@ -140,8 +143,13 @@ class SpotSuper:
             for item in items:
                 #TODO in contactable search throws typeerror can't subscript Nonetype (item)
 
-                props = self.song_properties(track = (item['track']['name'], item['track']['uri']))
-                track_list.append((item['track']['name'], item['track']['uri']))
+                if item.get('track'):
+                    props = self.song_properties(track=(item['track']['name'], item['track']['uri']))
+                    track_list.append((item['track']['name'], item['track']['uri']))
+                else:
+                    # Handle the case where 'track' is None
+                    print("Track info is missing for this item:", item)
+                
         elif self._category == "artist":
             track_list = []
             for item in sp.artist_top_tracks(self._uri)['tracks'][:50]:
@@ -532,15 +540,17 @@ class PlaylistClass(SpotSuper):
         cover = pl_obj['images'][0]['url']
         processed_owner = (owner_obj['display_name'],owner_obj['uri'])
         # Attempt to get the Playlist object by name
-        playlist, created = Playlist.objects.get_or_create(name=self.name, defaults={
-            # If the playlist does not exist, provide default values for other fields
-            'name': name,
-            'owner': processed_owner,
-            'follow_count': follows,
-            'description': desc,
-            'cover_image': cover,
-            'uri': self._uri
-        })
+        try:
+            playlist = Playlist.objects.get(name=name)
+        except Playlist.DoesNotExist:
+            playlist = Playlist.objects.create(
+                name=name,
+                owner=processed_owner,
+                follow_count=follows,
+                description=desc,
+                cover_image=cover,
+                uri=self._uri
+            )
         catalog = self.track_list()
         for song in catalog:
             songobj = Song.objects.get(name=song)
@@ -559,10 +569,11 @@ class PlaylistClass(SpotSuper):
         all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=30)
         result_list = []
         for item in all_results[self._category + 's']['items']:
-            thisinstance = PlaylistClass(name=item['name'])
-            thisinstance._uri = item['uri']
-            if '@' in thisinstance.playobj.description: 
-                result_list.append((item['name'], item['owner']['display_name'], item['uri']))
+            playlist_name = item['name']
+            playlist = Playlist.objects.get(name=playlist_name)
+
+            if '@' in playlist.description: 
+                result_list.append((playlist_name, item['owner']['display_name'], item['uri']))
         return result_list
         
 

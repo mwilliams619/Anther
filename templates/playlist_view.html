@@ -67,10 +67,84 @@
     
   </head>
   <body>
+    <div class="modal fade" id="myModal">
+      <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+        
+          <!-- Modal Header -->
+          <div class="modal-header">
+            <h4 class="modal-title">How it Works</h4>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          
+          <!-- Modal body -->
+          <div class="modal-body">
+            <!-- Your content goes here -->
+            <div class="card bg-dark" id="visual-tutorial" style="height: 550px; margin-left: 50px;">
+              <div id="carouselTutorial" class="carousel slide">
+                
+                <!-- Carousel -->
+                <div class="carousel-inner">
 
+                  <!-- Add your content for the first carousel item -->
+                  <div class="carousel-item active">
+                    <div class="card text-bg-dark" style="height: 550px">
+                      <div class="row g-0">
+                        <div class="col-md-8">
+                          <img src="{% static 'images/assets/1x/Asset_60.png' %}" alt="Vibey Circle" class="img-fluid rounded-start" style="border-radius: 20px;margin-top: 60px;">
+                        </div>
+                        <div class="col-md-4">
+                          <div class="card-body">
+                            <h5 class="card-title" style="margin-top: 10px;">Playlist View</h5>
+                            <p class="card-text">In the playlist view each plylist is represented by a circle larger circles means your song is a closer match to that playlist</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Add your content for the first carousel item -->
+                  <div class="carousel-item">
+                    <div class="card text-bg-dark" style="height: 550px;">
+                      <div class="row g-0">
+                        <div class="col-md-8">
+                          <img src="{% static 'images/assets/1x/Asset_57.png' %}" alt="Concentric Circles" class="img-fluid rounded-start" style="border-radius: 20px;margin-top: 60px;">
+                        </div>
+                        <div class="col-md-4">
+                          <div class="card-body">
+                            <h5 class="card-title" style="margin-top: 10px;">Track View</h5>
+                            <p class="card-text">In the track view each song is represented by a node and by hovering over the song you can see which songs are related to it</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+                <button class="carousel-control-prev" type="button" data-bs-target="#carouselTutorial" data-bs-slide="prev">
+                  <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+                  <span class="visually-hidden">Previous</span>
+                </button>
+                <button class="carousel-control-next" type="button" data-bs-target="#carouselTutorial" data-bs-slide="next">
+                  <span class="carousel-control-next-icon" aria-hidden="true"></span>
+                  <span class="visually-hidden">Next</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          
+          
+        </div>
+      </div>
+    </div>
+    
     <div class="col-lg">
+      <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#myModal" style="background-color: transparent; border: none;"><img src="{% static 'images/assets/1x/tutorial.png' %}" alt="Image Button" /></button>
       <div class="row svg-row"><svg></svg></div>
       <div class="labels-container"></div>
+     
 
       <!-- <div class="row" style="height: 62px;">
         <div class="anther">ANTHER</div>
@@ -87,8 +161,15 @@
         window.location.href = "/"; // Replace with the desired page URL
       }
     </script>
+        <script>
+          $(document).ready(function(){
+              $("#myModal").modal('show');
+          });
+          </script>
     <script src="https://d3js.org/d3.v4.js"></script>
     <script src="https://unpkg.com/d3-force-boundary@0.0.1/dist/d3-force-boundary.min.js"></script>
     <script src="{% static 'js/cola.js' %}"></script>
+
+      
   </body>
 </html>
