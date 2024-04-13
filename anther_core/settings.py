@@ -45,7 +45,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'Anther'   #check this line in other ppls code there was an error here
+    'Anther',   #check this line in other ppls code there was an error here
+    # 'django_react',
+    'django_react_templatetags'
 ]
 
 MIDDLEWARE = [

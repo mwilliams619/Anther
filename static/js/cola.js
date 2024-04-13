@@ -95,13 +95,12 @@ function playListChart(playlistData) {
 function initializeButton() {
     var button = d3.select("body")
               .append("button")
-              .attr("class", "rtnBtn")
+              .attr("type", "button")
+              .attr("class", "rtnBtn btn btn-light")
               .text("Playlist View");
 
     // Set the button's CSS properties
-    button.style("position", "absolute")
-        .style("top", "5%")
-        .style("left", width/2);
+    button.style("top", "2%")
 
     // Toggle from song Graph to playlist view
     button.on("click", function() {

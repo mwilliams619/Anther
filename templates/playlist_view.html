@@ -62,6 +62,19 @@
         height: 100%;
         pointer-events: none; /* Allow clicks to reach elements behind the labels */
       }
+      button[data-bs-toggle="modal"] {
+        position: absolute; 
+        z-index: 999;
+        right: 10px;
+      }
+
+      .rtnBtn {
+        position: absolute;
+        left: 47%;
+        --bs-btn-padding-y: .25rem;
+        --bs-btn-padding-x: .5rem;
+        --bs-btn-font-size: .75rem;
+      }
     </style>
     <link rel="stylesheet" href="{% static 'css/style.css' %}" />
     

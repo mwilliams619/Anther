@@ -1,4 +1,9 @@
 import copy
+import sqlite3
+from json import dump
+from math import log10
+from statistics import mean
+
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.offline as pyo
@@ -8,67 +13,58 @@ from django.db import transaction
 from sklearn.metrics.pairwise import cosine_similarity
 from spotipy.oauth2 import \
     SpotifyClientCredentials  # To access authorised Spotify data
+
 from Anther.models import Artist, Playlist, Song, SongRelationship
 from functools import wraps
 import time
 from functools import lru_cache
-import random
-import logging
-from sklearn.preprocessing import MinMaxScaler
-from rest_framework import serializers
-
-#  visit spotify api website to create an app and receive a client id and client secret
-client_id = '4ecc45a125c84526a727200f145c942c'
-client_secret = 'afc3dd89ae604655aec70104cb0863a7'
-
-logger = logging.getLogger(__name__)
-
-def retry(exceptions=(Exception,), tries=4, base_delay=1, max_delay=60):
-    """Retry calling the decorated function using an exponential backoff.
-    exceptions: The exception to check. may be a tuple of exceptions to check. 
-    tries: Number of times to try (not retry) before giving up. 
-    base_delay: Initial delay between retries in seconds.
-    max_delay: Max delay between retries in seconds.
-    """
-    def deco_retry(f):
-        @wraps(f)
-        def f_retry(*args, **kwargs):
-            mtries, mdelay = tries, base_delay
-            while mtries > 1:
-                try:
-                    return f(*args, **kwargs)
-                except exceptions as e:
-                    time.sleep(mdelay)
-                    mtries -= 1
-                    logger.warning(f"Retrying {f.__name__}, Retry #{tries-mtries}: {e}")
-                    mdelay *= 2
-                    if mdelay > max_delay:
-                        mdelay = max_delay + random.uniform(0, 1) # add jitter
-            return f(*args, **kwargs)
-        return f_retry  
-    return deco_retry
-
-class PlaylistSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Playlist
-        fields = ['name', 'owner', 'follow_count', 'description', 'cover_image', 'uri']
-
-class SongSerializer(serializers.ModelSerializer):
-    class Meta: 
-        model = Song
-        fields = ['id', 'name', 'artist', 'danceability', 'energy', 'mode','valence','tempo','uri','key','popularity','genre']
+import multiprocessing
 
 # Import Login credentials from .env file
 
+#  visit spotify api website to create an app and receive a client id and client secret
+client_id = '6825dd9b8f2740eaa12044b0681a3a78'
+client_secret = 'f8822161b11b46f6b6e624b015aaa4d7'
 
 client_credentials_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
 
 sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)  # spotify object to access API
 
+def retry(exceptions, tries=4, delay=3):
+    def deco_retry(f):
+        @wraps(f)
+        def f_retry(*args, **kwargs):
+            mtries = tries
+            while mtries > 1:
+                try:
+                    return f(*args, **kwargs)
+                except exceptions as e:
+                    print(f"Retrying {f.__name__}: {e}")
+                    time.sleep(delay)
+                    mtries -= 1
+            return f(*args, **kwargs)
+        return f_retry  
+    return deco_retry
 
+def multiprocessed_decorator(func):
+    def wrapper(*args, **kwargs):
+        process = multiprocessing.Process(target=func, args=args, kwargs=kwargs)
+        process.start()
+        return process
+    return wrapper
 
-class SpotSuper:
+class SpotDigest:
 
+    """
+    Handles Spotify API access and data retrieval. 
+    
+    Responsibilities:
+    - Search Spotify catalog
+    - Get track, artist, playlist data
+    - Cache API responses
+    - Abstracts API interaction details
+    """
+        
     def __init__(self, name, category, model):
         self.name = name
         self._category = category
@@ -78,12 +74,12 @@ class SpotSuper:
         # self.cursor = self.connection_cursor
         if self._category == "track":
             self.catalog = None
-        if self.model == "thicc":
+        if self.model == "":
             self.catalog = None
         else:
             self.catalog = self.track_list()
-
-    @lru_cache(maxsize=128)
+    
+    @lru_cache(maxsize=40)
     def basic_list_search(self, limit=1): 
         all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=limit)
         result_list = []
@@ -125,7 +121,7 @@ class SpotSuper:
         return result_list
 
 
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=40)
     def search(self):
         """Search for either track/playlist/artist item and return the URI."""
         try:
@@ -179,14 +175,12 @@ class SpotSuper:
             for item in items:
                 #TODO in contactable search throws typeerror can't subscript Nonetype (item)
 
-                try:
+                if item.get('track'):
                     props = self.song_properties(track=(item['track']['name'], item['track']['uri']))
                     track_list.append((item['track']['name'], item['track']['uri']))
-                except:
+                else:
                     # Handle the case where 'track' is None
-                    logging.exception(f"Error getting tracklist for playlist at : {item['track']}")
-                    continue
-
+                    print("Track info is missing for this item:", item)
                 
         elif self._category == "artist":
             track_list = []
@@ -305,6 +299,22 @@ class SpotSuper:
             trackdeets.append(props)
         return trackdeets
 
+class SpotAnalytics:
+    """
+    Analytics and machine learning functions for Spotify data.
+    
+    Responsibilities: 
+    - Prepare and transform track data
+    - Generate graphs and visualizations
+    - Calculate track similarity
+    - Surface insights from Spotify catalogs
+    """
+
+    def __init__(self):
+        self.api = SpotDigest()
+        self.analytics = SpotAnalytics()
+
+
     def _prep_feat_list_to_plot(self):
         """prepare feature values to plot on radial graph by scaling tempo and mode[major/minor] data
          to better match other metadata values"""
@@ -345,7 +355,7 @@ class SpotSuper:
     @staticmethod
     def _prep_feats_for_cosine_similarity(track=None):
         """Prepare song feature data for cosine similarity testing by scaling tempo, mode. Delete song uri, genre
-        and keys as they will not be used in the cosine similarity test"""
+        and keyt as they will not be used in the cosine similarity test"""
         song_name = track['name']
         feat_dict = track['features']
         del feat_dict['uri']
@@ -354,18 +364,17 @@ class SpotSuper:
 
         # categories = ["danceability", "energy", "mode", "valence", "tempo (divided by 100)", "key"]
         # categories = [*categories, categories[0]]
-        # feat_dict['tempo'] = feat_dict['tempo'] / 100  # scale down the tempo so that it is viewable with other data
-        # feat_dict['mode'] = feat_dict['mode'] / 4  # scale mode (either a value of 0 or 1)
+        feat_dict['tempo'] = feat_dict['tempo'] / 100  # scale down the tempo so that it is viewable with other data
+        feat_dict['mode'] = feat_dict['mode'] / 4  # scale mode (either a value of 0 or 1)
         # feat_dict['key'] = feat_dict['key'] / 12  # scale key (range of 1 to 12) new highest value is 1
-        scaler = MinMaxScaler()
-        processed_feat_dict = scaler.fit_transform(feat_dict)
+
         # TODO experiment with above normalizations to make sure that the weighting works
         feat_list = []
-        for key in processed_feat_dict.keys():
-            feat_list.append(processed_feat_dict[key])
+        for key in feat_dict.keys():
+            feat_list.append(feat_dict[key])
         return feat_list, song_name
 
-    def similarness(self):
+    def find_song_relationships(self):
         """Take playlist songs from self.catalog get features for all songs, format data then load in pandas df
         ,run cosine similarity to generate edges, print node list and edge list to files 'spot_node.csv' and
         'spot_edge.csv' respectively, in a format usable by gephi. (I am currently altering to a format to be read by
@@ -422,6 +431,7 @@ class SpotSuper:
         return graph_data
 
     def track_test(self, comp_song: object):
+        # TODO write DOCSTRINGS! And fix code redundancy
         """tests how similar a single track is against all the tracks on the playlist.
         Generates edges between similar songs and prints data to comparison_edges.csv and comparison_node.csv"""
 
@@ -439,13 +449,15 @@ class SpotSuper:
             # feat_list.append(song_name)
             cleaned_data.append(feat_list)
 
-
+        # print(cleaned_data)
+        # print(track_props)
         df = pd.DataFrame(cleaned_data,
                           columns=["danceability", "energy", "mode",
                                    "valence", "tempo (divided by 100)",
                                    "popularity"])
 
         df2 = pd.DataFrame(track_props).T
+        # print('->')
         pd.set_option("display.max_rows", None, "display.max_columns", None)
 
         df2.columns = ["danceability", "energy", "mode",
@@ -495,6 +507,20 @@ class SpotSuper:
                 print("{},{},{},{},{},{},{},{},{},{}"
                       .format(n_id, label, dance, energy, mode, valence, bpm, key, popularity, genre), file=nodes)
         return edge, node
+    
+class SpotSuper:
+    """
+    Coordinator class to initialize and oversee SpotDigest and SpotAnalytics.
+    
+    Responsibilities:
+    - Initialize SpotDigest API class
+    - Initialize SpotAnalytics ML class
+    - Route work between digestion and analysis classes
+    """
+
+    def __init__(self):
+        self.api = SpotDigest()
+        self.analytics = SpotAnalytics()
 
 
 class PlaylistClass(SpotSuper):
@@ -503,13 +529,11 @@ class PlaylistClass(SpotSuper):
         # self.mean_feats = self.mean_playlist_feats(self.catalog)
         self.playobj = self.get_or_create_playlist()
     
-    @lru_cache(maxsize=128)
-    def get_or_create_playlist(self, uri=None, dict=None):
+    @lru_cache(maxsize=128, typed=True)
+    def get_or_create_playlist(self, uri=None):
         
         if uri:
             pl_obj = sp.playlist(uri)
-        elif dict:
-            pass
         else:
             pl_obj = sp.playlist(self._uri)
         name = pl_obj['name']
@@ -539,10 +563,11 @@ class PlaylistClass(SpotSuper):
         return playlist
 
     def network_plot(self):
-        edge, node = self.similarness()
+        edge, node = self.find_song_relationships()
         print(edge)
         print(node)
     
+    @retry(exceptions=Exception, tries=4, delay=4)
     def contactable_search(self):
     # TODO bug same playlists are being saved multiple times
         all_results = sp.search(q=self._category + ':' + self.name, type=self._category, limit=30)
@@ -560,175 +585,37 @@ class PlaylistClass(SpotSuper):
 
 
 class CrawlClass(PlaylistClass):
+    """
+    Goal of this class is to get what songs are on what playlists
+    """
     def __init__(self, name):
-        super().__init__(name=name, model='thicc')
         self.name = name
+        super().__init__(name = self.name, model='thicc')
         self._uri = self.search()
-    
+
     @staticmethod
-    @lru_cache(maxsize=50)
-    def _get_categories():
-        return sp.categories(limit=50)
-    
-    @staticmethod
-    @lru_cache(maxsize=50) 
-    def _get_category_playlists(category_id):
-        return sp.category_playlists(category_id=category_id, limit=50)
-    
-    @staticmethod
-    @lru_cache(maxsize=50) 
-    def _get_featured_playlists(category_id):
-        return sp.featured_playlists_playlists(limit=50)
+    @multiprocessed_decorator
+    def process_item(playlist_item):
+        thisinstance = PlaylistClass(name=playlist_item['name'])
+        count += 1
+        print("batch " + count + " done")
 
-    def crawl_bulk_create(self, list_queue, current_list, master_set):
-        track_ids = []
-        track_info = []
-        song_queue = []
-        if current_list:
-            p = Playlist(
-                name = current_list['name'],
-                owner = current_list['owner'], 
-                # follow_count = current_list['followers']['total'],
-                follow_count = 'N/A',
-                description = current_list['description'],
-                cover_image = current_list['images'][0]['url'],
-                uri = current_list['uri']
-                )
-            list_queue.append(p)
-            master_set.add(current_list['name'])
-
-            tracks_url = current_list['tracks']['href']
-            tracks = sp._get(tracks_url)
-
-            for track in tracks['items']:
-                track_ids.append(track['track']['id'])
-                track_info.append((track['track']['name'],track['track']['artists'][0]['name'], track['track']['uri'], track['track']['popularity'],'genre null'))
-                if len(track_ids) % 100 == 0:
-                    song_feats = sp.audio_features(tracks=track_ids)
-                    for i, single_feats in enumerate(song_feats):
-                        s = SongSerializer(data={
-                            'id': single_feats['id'],
-                            'name': track_info[i][0],  
-                            'artist': track_info[i][1],
-                            'danceability': single_feats['danceability'],
-                            'energy': single_feats['energy'],
-                            'mode': single_feats['mode'],
-                            'valence': single_feats['valence'],
-                            'tempo': single_feats['tempo'],
-                            'uri': track_info[i][2],
-                            'key': single_feats['key'],
-                            'popularity': track_info[i][3],
-                            'genre': track_info[i][4],
-                        }) 
-                        s.is_valid(raise_exception=True)
-                        # s = Song(
-                        #     id = single_feats['id'],
-                        #     name = track_info[i][0],
-                        #     artist = track_info[i][1],
-                        #     danceability = single_feats['danceability'],
-                        #     energy = single_feats['energy'],
-                        #     mode = single_feats['mode'],
-                        #     valence = single_feats['valence'],
-                        #     tempo = single_feats['tempo'],
-                        #     uri = track_info[i][2],
-                        #     key = single_feats['key'],
-                        #     popularity = track_info[i][3],
-                        #     genre = track_info[i][4],
-                        
-                        # )
-                        song_queue.append(s.validated_data)
-                    Song.objects.bulk_create(song_queue)
-                    song_queue = []
-                    track_ids = []
-                    track_info = []
-        if track_ids:
-            song_feats = sp.audio_features(tracks=track_ids)
-            for i, single_feats in enumerate(song_feats):
-                s = SongSerializer(data={
-                    'id': single_feats['id'],
-                    'name': track_info[i][0],  
-                    'artist': track_info[i][1],
-                    'danceability': single_feats['danceability'],
-                    'energy': single_feats['energy'],
-                    'mode': single_feats['mode'],
-                    'valence': single_feats['valence'],
-                    'tempo': single_feats['tempo'],
-                    'uri': track_info[i][2],
-                    'key': single_feats['key'],
-                    'popularity': track_info[i][3],
-                    'genre': track_info[i][4],
-                }) 
-                # s = Song(
-                #     id = single_feats['id'],
-                #     name = track_info[i][0],
-                #     artist = track_info[i][1],
-                #     danceability = single_feats['danceability'],
-                #     energy = single_feats['energy'],
-                #     mode = single_feats['mode'],
-                #     valence = single_feats['valence'],
-                #     tempo = single_feats['tempo'],
-                #     uri = track_info[i][2],
-                #     key = single_feats['key'],
-                #     popularity = track_info[i][3],
-                #     genre = track_info[i][4],
-                
-                # )
-                song_queue.append(s)
-            Song.objects.bulk_create(song_queue)
-            song_queue = []
-            track_ids = []
-            track_info = []
-
-        else:
-            pass
-
-        if len(playlists) % 100 == 0:
-            Playlist.objects.bulk_create(list_queue)
-            playlists = []
-        if playlists:
-            Playlist.objects.bulk_create(playlists)
-        
-        return master_set
-
-
-    @retry(('HTTPError', 'Timeout'), tries=5, base_delay=1, max_delay=30) 
+    @retry(exceptions=Exception, tries=4, delay=4)
     @lru_cache(maxsize=128)
     def crawling(self):
                     
-        try:
-            categories = self._get_categories()
-        except:
-            err = logger.error("Error category pull")
-            return err
-        categories = categories['categories']['items']
-        all_lists = set()
-        playlists_queue = []
-
+        categories = sp.categories(limit=50)
+        all_lists = []
         for category in categories:
-            if category['id'] == 'comedy':
-                continue
-            try:
-                playlists = self._get_category_playlists(category['id'])
-            except:
-                logger.error("Error category playlist pull")
-            for list in playlists['playlists']['items']:
-                try:
-                    self.crawl_bulk_create(playlists_queue, list, all_lists)
-                except Exception:
-                    logger.error("Error in bulk create")
-                
-
-        try:
-            feat_lists = self._get_featured_playlists()
-        except:
-            logging.exception("Error crawling playlist")
-        feat_lists = feat_lists['playlists']['items']
+            playlists = sp.category_playlists(category_id=category, limit=50)
+            all_lists.append(playlists)
+        
+        feat_lists = sp.featured_playlists(limit=50)
         for list in feat_lists:
-            self.crawl_bulk_create(list_queue = playlists_queue, current_list=list, master_set=all_lists)
-
+            all_lists.append(list)
         
 
-        batch_list = {
+        bacth_list = [
             "A playlist for september",
             "Fixing your shitty music taste",
             "axel's release radar",
@@ -861,17 +748,20 @@ class CrawlClass(PlaylistClass):
             "Feels Like A Dream",
             "Songs I Like That You'll Like Too",
             "matcha & granola",
-        }
-        all_lists.add(batch_list)
+        ]
+        all_lists.append(bacth_list)
         count = 0
+        processes = []
         for item in all_lists:
-            try:
-                thisinstance = PlaylistClass(name=item)
-                count += 1
-                print("batch " + str(count) + " done")
-            except:
-                logging.exception(f"Error crawling playlist: {item}")
-                continue
+            processes.append(self.process_item(item))
+
+        # Wait for all processes to complete
+        for process in processes:
+            process.join()
+
+    
+
+
 
 
 
@@ -888,10 +778,28 @@ if __name__ == '__main__':
     #  below is sample code analyzing the POLLEN playlist and how Passionfruit relates and its contents
     passionfruit = TrackClass("Passionfruit")
     passionfruit.song_properties()
-
+    #
+    #     dum_surfer = Track("dum surfer")
+    #     # dum_surfer.song_properties()
+    #
+    #     onetake = Track("onetake interlude")
+    #     # onetake.song_properties()
+    #     sad = Track("cementality")
+    #     sad.song_properties
+    #     # onetake.overlay(passionfruit)
     pollen = PlaylistClass("POLLEN")
-    pollen.similarness()
+    pollen.find_song_relationships()
+    # pollen.track_test(passionfruit)
+    #     # pollen.network_plot()
+    #
     drake = ArtistClass("Drake")
+    # drake.track_test(passionfruit)
+#     # dork = SpotSuper("dork", "track", conn)
+#     # dork.overlay(dum_surfer)
+#     # i_might = SpotSuper("I Might slip away if I don't feel nothing", "track", conn)
+#     # thot = SpotSuper("Thot Tactics", "track", conn)
+#     # i_might.overlay(thot)
+#     conn.close()
 
 # TODO improve searching mechanic so smaller artists will be able to find their stuff
 # TODO  I should combine key and mode for a label on the nodes

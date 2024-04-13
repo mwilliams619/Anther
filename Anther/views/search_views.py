@@ -3,8 +3,11 @@ from django.views.decorators.http import require_GET
 from django.db import connection
 from django.shortcuts import render
 from Anther.Services.spotifyClassDef import PlaylistClass, ArtistClass, TrackClass, CrawlClass
+import logging
+# from Anther.Services.spotifyServices import PlaylistClass, ArtistClass, TrackClass, CrawlClass
 
 db = connection.cursor()
+logger = logging.getLogger(__name__)
 
 # Assuming you have created a template called 'search.html' with the search bar and dropdown menu as described earlier
 
@@ -54,7 +57,11 @@ def search_results(request):
 def crawl(query):
     search_query = query
     spotinstance = CrawlClass(name=search_query)
-    spotinstance.crawling()
+    try:
+        spotinstance.crawling()
+    except TypeError as e:
+        logger.error("TypeError in crawling: %s", e)
+        return "Type Error encountered"
     return "You finished loading the DB"
 
 def search_view(request):
