@@ -13,6 +13,7 @@ class Song(models.Model):
     key = models.IntegerField()
     popularity = models.IntegerField()
     genre = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
     
     # Relationship with Artist model (ForeignKey: Many songs can have one artist)
     artist = models.ForeignKey('Artist', on_delete=models.CASCADE, related_name='songs')

@@ -10,7 +10,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Alegreya&family=Rubik&display=swap" rel="stylesheet">
 
     <title>ANTHER</title>
-    <!-- <link rel="stylesheet" href="{% static 'neumorphism/html&css/css/neumorphism.css' %}" /> -->
 
     <style>
       .card {
@@ -34,126 +33,31 @@
   <body>
     <div class="container">
       <div class="row justify-content-center">
-        <img src="{% static 'images/team-transparent.png' %}" style="height: 100px; width:550px; margin-top: 20px; margin-bottom: 50px;">
+        <!-- <img src="{% static 'images/team-transparent.png' %}" style="height: 100px; width:550px; margin-top: 20px; margin-bottom: 50px;"> -->
+        <h1>About Me</h1>
       </div>
       <div class="row">
         <div class="row">
           <div>
             <div class="card bg-dark" style="height: 550px; margin-left: 50px;margin-top: 50px;">
-              <div id="carouselExampleIndicators" class="carousel slide">
-                
-                <!-- Carousel -->
-                <div class="carousel-inner">
-
-                  <!-- Add your content for the first carousel item -->
-                  <div class="carousel-item active">
-                    <div class="card text-bg-dark" style="height: 550px">
-                      <div class="row g-0">
-                        <div class="col-md-8">
-                          <img src="{% static 'images/Matt.jpg' %}" alt="Matt" class="img-fluid rounded-start">
-                        </div>
-                        <div class="col-md-4">
-                          <div class="card-body">
-                            <h5 class="card-title" style="margin-top: 10px;">Matt Williams</h5>
-                            <p class="card-text small">Founder</p>
-                            <p class="card-text">Matt is a producer and a bassist who has guided multiple acts through project launches. He's currently doing full stack development at Bluestem</p>
-                            <div class="d-grid gap-2 d-md-block">
-                              <a href="https://open.spotify.com/artist/0Uy0vwHJKJO5btcAMnxLqc?si=5sUUxVXiTYKKzxa5n_i3QQ" class="btn btn-success"><i class="fab fa-spotify"></i></a>
-                              <a href="https://www.linkedin.com/in/mattwilliams19/" class="btn btn-primary"><i class="fab fa-linkedin"></i></a>
-                            </div>
-                          </div>
-                        </div>
+              <div class="card text-bg-dark" style="height: 550px">
+                <div class="row g-0">
+                  <div class="col-md-8">
+                    <img src="{% static 'images/Matt.jpg' %}" alt="Matt" class="img-fluid rounded-start">
+                  </div>
+                  <div class="col-md-4">
+                    <div class="card-body">
+                      <h5 class="card-title" style="margin-top: 10px;">Matt Williams</h5>
+                      <p class="card-text small">Founder</p>
+                      <p class="card-text">Matt is a producer and a bassist who has guided multiple acts through project launches. He is a data scientist and a recent Masters of Biotechnolgy graduate studying in Northwestern's McCormick School of Engineering </p>
+                      <div class="d-grid gap-2 d-md-block">
+                        <a href="https://open.spotify.com/artist/0Uy0vwHJKJO5btcAMnxLqc?si=5sUUxVXiTYKKzxa5n_i3QQ" class="btn btn-success"><i class="fab fa-spotify"></i></a>
+                        <a href="https://www.linkedin.com/in/mattwilliams19/" class="btn btn-primary"><i class="fab fa-linkedin"></i></a>
+                        <a href="https://mwilliams619.github.io" class="btn btn-secondary"><i class="fab fa-github"></i></a>
                       </div>
                     </div>
                   </div>
-
-                  <!-- Add your content for the first carousel item -->
-                  <div class="carousel-item">
-                    <div class="card text-bg-dark" style="height: 550px;">
-                      <div class="row g-0">
-                        <div class="col-md-8">
-                          <img src="{% static 'images/Khashiff.jpg' %}" alt="Khashiff" class="img-fluid rounded-start" style="border-radius: 20px;margin-top: -20px;">
-                        </div>
-                        <div class="col-md-4">
-                          <div class="card-body">
-                            <h5 class="card-title" style="margin-top: 10px;">Khashiff Miranda</h5>
-                            <span class="card-text small">CTO</span>
-                            <p class="card-text">With supporting text below as a natural lead-in to additional content.</p>
-                            <div class="d-grid gap-2 d-md-block" style="margin-left: 40%;">
-                              <a href="https://www.linkedin.com/in/khashiff-miranda-a3745877/" class="btn btn-primary"><i class="fab fa-linkedin"></i></a>
-                              <a href="kkmiranda.github.io" class="btn btn-secondary"><i class="fab fa-github"></i></a>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Add your content for the first carousel item -->
-                  <div class="carousel-item">
-                    <div class="card text-bg-dark" style="height: 550px">
-                      <div class="card-body">
-                        <h5 class="card-title">Hank Grier</h5>
-                        <span class="card-text small">AI Expert</span>
-                        <p class="card-text">With supporting text below as a natural lead-in to additional content.</p>
-                        <div class="d-grid gap-2 d-md-block" style="margin-left: 40%;">
-                          <a href="https://open.spotify.com/artist/4yNwxhj2bg1qe1dW9Gak1W?si=3U1Lr2rZS3SllkwUOwqMnA" class="btn btn-success"><i class="fab fa-spotify"></i></a>
-                          <a href="https://pubmed.ncbi.nlm.nih.gov/36424431/" class="btn btn-secondary"><i class="fas fa-book"></i></a>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Add your content for the first carousel item -->
-                  <div class="carousel-item">
-                    <div class="card text-bg-dark" style="height: 550px">
-                      <div class="row g-0">
-                        <div class="col-md-6"> <!-- Use col-md-6 to take up half of the width -->
-                          <img src="{% static 'images/davidxu.png' %}" alt="David" class="img-fluid rounded-start" style="border: 1px solid #ccc; width: 100%; height: auto;">
-                        </div>
-                        <div class="col-md-6"> <!-- Use col-md-6 to take up the other half of the width -->
-                          <div class="card-body">
-                            <h5 class="card-title">David Xu</h5>
-                            <span class="card-text small">Front End Developer</span>
-                            <p class="card-text">David is a sophomore at Northwestern University studying computer science and economics at Northwestern Universty. He is currently performing cybersecurity research at IUPUI.</p>
-                            <div class="d-grid gap-2 d-md-block">
-                              <a href="https://www.linkedin.com/in/david-xu0/" class="btn btn-primary"><i class="fab fa-linkedin"></i> LinkedIn</a>
-                              <a href="https://github.com/xudav001" class="btn btn-secondary"><i class="fab fa-github"></i> GitHub</a>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                <button class="carousel-control-prev" type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide="prev">
-                  <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-                  <span class="visually-hidden">Previous</span>
-                </button>
-                <button class="carousel-control-next" type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide="next">
-                  <span class="carousel-control-next-icon" aria-hidden="true"></span>
-                  <span class="visually-hidden">Next</span>
-                </button>
+                </div>
               </div>
             </div>
           </div>

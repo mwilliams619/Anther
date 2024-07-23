@@ -16,16 +16,26 @@ function charge(d) {
       }
     
 // Make an AJAX call to grab playlist data from the server
-fetch('/get_playlist_data/')
-.then(response => response.json())
-.then(data => {
-// Store the fetched data in a variable or use it as needed
-var playlistData = data;
-playListChart(playlistData)
-})
-.catch(error => {
-console.error("Error fetching playlist data:", error);
-});
+// fetch('/get_playlist_data/')
+// d3.json('sandBox_src/playListData.json')
+// .then(response => response.json())
+// .then(data => {
+// // Store the fetched data in a variable or use it as needed
+// var playlistData = data;
+// playListChart(playlistData)
+// })
+// .catch(error => {
+// console.error("Error fetching playlist data:", error);
+// });
+
+d3.json('/static/sandBox_src/playListData.json', function(error, data) {
+    if (error) {
+      console.error("Error loading playlist data:", error);
+    } else {
+      var playlistData = data;
+      playListChart(playlistData);
+    }
+  });
 
 function playListChart(playlistData) {
     var radiusScale = d3.scaleSqrt()
@@ -53,25 +63,39 @@ function playListChart(playlistData) {
         .attr("id", d => d.id)
         .on("click", function(d) {
             // Send a GET request to the server with the node's id
-            fetch(`/get_tracklist/?name=${d.name}`)
-                .then(response => response.json())
-                .then(graph_data => {
-                    initializeButton();
-                    plID = d3.select(this).attr("id");
-                    nom = d3.select(this).data()[0].name
-                    console.log(plID);
+            // fetch(`/get_tracklist/?name=${d.name}`)
+            d3.json(`/static/sandbox_src/playlist_${d.id}.json`,function(error, graph_data) {
+                if (error) {
+                  console.error("Error loading graph data:", error);
+                } else {
+                  initializeButton();
+                  plID = d3.select(this).attr("id");
+                  nom = d3.select(this).data()[0].name;
+                  console.log(plID);
+            
+                  initializeSimulation(graph_data);
+                  initializeDisplay(plID, nom, graph_data);
+                  initializeForces(graph_data);
+                }
+              });    
+                // .then(response => response.json())
+                // .then(graph_data => {
+                //     initializeButton();
+                //     plID = d3.select(this).attr("id");
+                //     nom = d3.select(this).data()[0].name
+                //     console.log(plID);
 
-                    // Assuming you have a function called 'initializeDisplay' and 'initializeSimulation'
-                    // to visualize the graph_data and initialize the simulation
+                //     // Assuming you have a function called 'initializeDisplay' and 'initializeSimulation'
+                //     // to visualize the graph_data and initialize the simulation
                     
-                    initializeSimulation(graph_data);
-                    initializeDisplay(plID, nom, graph_data);
-                    initializeForces(graph_data);
+                //     initializeSimulation(graph_data);
+                //     initializeDisplay(plID, nom, graph_data);
+                //     initializeForces(graph_data);
                     
-                })
-                .catch(error => {
-                    console.error("Error fetching graph data:", error);
-                });
+                // })
+                // .catch(error => {
+                //     console.error("Error fetching graph data:", error);
+                // });
 
             d3.selectAll(".playlist").style("visibility", "hidden");
         })

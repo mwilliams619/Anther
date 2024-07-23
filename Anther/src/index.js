@@ -1,5 +1,12 @@
 import React from 'react';
-import ReactDOM from 'react-dom';
-import AlphaTicker from '../templates/static/react/ticker';
+import { createRoot } from 'react-dom/client';
+import AlphaTicker from '/static/react/ticker';
 
-ReactDOM.render(<AlphaTicker />, document.getElementById('root'));
+const rootElement = document.getElementById('ticker-container');
+const root = createRoot(rootElement);
+
+root.render(
+  <React.StrictMode>
+    <AlphaTicker />
+  </React.StrictMode>
+);

@@ -1,6 +1,7 @@
 const path = require('path');
 
 module.exports = {
+  mode: 'development', 
   entry: './Anther/src/index.js', // Entry point of your application
   output: {
     filename: 'bundle.js', // Output file name
