@@ -7,7 +7,7 @@
 **/node_modules/
 build/
 env
-/Anther/lib/**
+/Anther/lib/
 /Anther/launch.json
 **/settings.py
 venv/**
