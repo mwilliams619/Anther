@@ -50,58 +50,38 @@ function playListChart(playlistData) {
 
    
     
-    var pl = svg.selectAll('.playlist')
-        .data(playlistData)
-        .enter().append("circle")
-        .call(d3.drag()
-            .on("start", dragstarted)
-            .on("drag", dragged)
-            .on("end", dragended))
-        .attr("class", "playlist")
-        .attr("r", d => radiusScale(d.value))
-        .attr("title", d => d.name)
-        .attr("id", d => d.id)
-        .on("click", function(d) {
-            // Send a GET request to the server with the node's id
-            // fetch(`/get_tracklist/?name=${d.name}`)
-            d3.json(`/static/sandbox_src/playlist_${d.id}.json`,function(error, graph_data) {
-                if (error) {
-                  console.error("Error loading graph data:", error);
-                } else {
-                  initializeButton();
-                  plID = d3.select(this).attr("id");
-                  nom = d3.select(this).data()[0].name;
-                  console.log(plID);
-            
-                  initializeSimulation(graph_data);
-                  initializeDisplay(plID, nom, graph_data);
-                  initializeForces(graph_data);
-                }
-              });    
-                // .then(response => response.json())
-                // .then(graph_data => {
-                //     initializeButton();
-                //     plID = d3.select(this).attr("id");
-                //     nom = d3.select(this).data()[0].name
-                //     console.log(plID);
+        var pl = svg.selectAll('.playlist')
+    .data(playlistData)
+    .enter().append("circle")
+    .call(d3.drag()
+        .on("start", dragstarted)
+        .on("drag", dragged)
+        .on("end", dragended))
+    .attr("class", "playlist")
+    .attr("r", function(d) { return radiusScale(d.value); })
+    .attr("title", function(d) { return d.name; })
+    .attr("id", function(d) { return d.id; })
+    .on("click", function(d) {
+        var clickedElement = this;
+        d3.json(`/static/sandbox_src/playlist_${d.id}.json`, function(error, graph_data) {
+            if (error) {
+                console.error("Error loading graph data:", error);
+            } else {
+                initializeButton();
+                plID = d3.select(clickedElement).attr("id");
+                nom = d3.select(clickedElement).data()[0].name;
+                console.log(plID);
 
-                //     // Assuming you have a function called 'initializeDisplay' and 'initializeSimulation'
-                //     // to visualize the graph_data and initialize the simulation
-                    
-                //     initializeSimulation(graph_data);
-                //     initializeDisplay(plID, nom, graph_data);
-                //     initializeForces(graph_data);
-                    
-                // })
-                // .catch(error => {
-                //     console.error("Error fetching graph data:", error);
-                // });
-
-            d3.selectAll(".playlist").style("visibility", "hidden");
-        })
-        .on('mouseover', mouseover)
-        .on('mousemove', mousemove)
-        .on('mouseout', mouseleave);
+                initializeSimulation(graph_data);
+                initializeDisplay(plID, nom, graph_data);
+                initializeForces(graph_data);
+            }
+        });
+        d3.selectAll(".playlist").style("visibility", "hidden");
+    })
+    .on('mouseover', mouseover)
+    .on('mousemove', mousemove)
+    .on('mouseout', mouseleave);
 
     simulation.nodes(playlistData)
         .on('tick', ticked);
@@ -275,82 +255,72 @@ function initializeDisplay(plID, plName, graph_data) {
     const labelsContainer = d3.select(".labels-container");
 
   // set the data and properties of node circles
-    node = svg.append("g")
-        .attr("class", "nodes")
-        .selectAll(".node")
-        .data(graph_data.nodes)
-    
-    .enter().append("circle")
-        .attr("class", "node")
-        .attr("r", 5) // Initial radius
-        .call(d3.drag()
-            .on("start", dragstarted)
-            .on("drag", dragged)
-            .on("end", dragended))
-        
-    .on('mouseover', function(d) {
-        console.log("Mouseover event triggered.");
-        console.log("Mouse coordinates: x =", d3.event.pageX, ", y =", d3.event.pageY);
-        d3.select(this).transition()
-            .duration('100')
-            .attr('r', "8")
-        let cH = d.id; // Get the ID of the hovered node
-        link.filter(function(linkData) {
-            return linkData.source.id === cH || linkData.target.id === cH;
-          })
-            .transition()
-            .attr('opacity','1');
-
-        const connectedNodeIds = new Set();
-
-        // Find all nodes connected to the hovered node
-        graph_data.links.forEach(linkData => {
-            if (linkData.source.id === d.id) {
-                connectedNodeIds.add(linkData.target.id);
-            } else if (linkData.target.id === d.id) {
-                connectedNodeIds.add(linkData.source.id);
-            }
-        });
-
-        node.transition()
-        .style('opacity', node => {
-            if (connectedNodeIds.has(node.id) || node.id === d.id) {
-                return 1; // Set opacity to 1 for connected nodes and hovered node
-            } else {
-                return 0.2; // Set opacity to 0.2 for non-connected nodes
-            }
-        });
-
-        // Create a tooltip-like text element
-        const nodeLabels = svg.selectAll(".node-label")
-        .data([d, ...graph_data.nodes.filter(node => connectedNodeIds.has(node.id))]);
-        
-        nodeLabels.enter().append("text")
-        .attr("class", "node-label")
-        .text(node => node.id)
-        .attr('opacity', '1')
-        .attr("fill", "black")
-        .attr("transform", function(node) {
-            return `translate(${node.x + 10}, ${node.y - 10})`;
+  node = svg.append("g")
+  .attr("class", "nodes")
+  .selectAll("circle")
+  .data(graph_data.nodes)
+  .enter().append("circle")
+  .attr("class", "node")
+  .attr("r", 5) // Initial radius
+  .call(d3.drag()
+      .on("start", dragstarted)
+      .on("drag", dragged)
+      .on("end", dragended))
+  .on('mouseover', function(d) {
+      console.log("Mouseover event triggered.");
+      console.log("Mouse coordinates: x =", d3.event.pageX, ", y =", d3.event.pageY);
+      d3.select(this).transition()
+          .duration('100')
+          .attr('r', "8")
+      let cH = d.id; // Get the ID of the hovered node
+      link.filter(function(linkData) {
+          return linkData.source.id === cH || linkData.target.id === cH;
         })
-        .each(function() {
-            d3.select(this.parentNode)  // Append to the same parent as the nodes
-                .append(() => this);  // Append the current text element
-            console.log(this)
-        });
+          .transition()
+          .attr('opacity','1');
 
-    })
-    
-    .on('mouseout', function(d, i) {
-        d3.select(this).transition()
-            .duration('100')
-            .attr('r',"5");
-        link.transition()
-            .attr('opacity','0');
-        svg.selectAll(".node-label").remove();
-        node.transition().style('opacity', 1);
+      const connectedNodeIds = new Set();
 
-    });
+      // Find all nodes connected to the hovered node
+      graph_data.links.forEach(linkData => {
+          if (linkData.source.id === d.id) {
+              connectedNodeIds.add(linkData.target.id);
+          } else if (linkData.target.id === d.id) {
+              connectedNodeIds.add(linkData.source.id);
+          }
+      });
+
+      node.transition()
+      .style('opacity', function(node) {
+          if (connectedNodeIds.has(node.id) || node.id === d.id) {
+              return 1; // Set opacity to 1 for connected nodes and hovered node
+          } else {
+              return 0.2; // Set opacity to 0.2 for non-connected nodes
+          }
+      });
+
+      // Create a tooltip-like text element
+      const nodeLabels = svg.selectAll(".node-label")
+      .data([d, ...graph_data.nodes.filter(node => connectedNodeIds.has(node.id))]);
+      
+      nodeLabels.enter().append("text")
+      .attr("class", "node-label")
+      .text(function(node) { return node.id; })
+      .attr('opacity', '1')
+      .attr("fill", "black")
+      .attr("transform", function(node) {
+          return `translate(${node.x + 10}, ${node.y - 10})`;
+      });
+  })
+  .on('mouseout', function(d, i) {
+      d3.select(this).transition()
+          .duration('100')
+          .attr('r',"5");
+      link.transition()
+          .attr('opacity','0');
+      svg.selectAll(".node-label").remove();
+      node.transition().style('opacity', 1);
+  });
   // visualize the graph
   updateDisplay();
 }
