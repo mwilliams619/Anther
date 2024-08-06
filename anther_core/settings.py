@@ -11,14 +11,23 @@ https://docs.djangoproject.com/en/3.0/ref/settings/
 """
 
 import os
+from google.cloud import secretmanager
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from anther_core.localsettings import *
-except ImportError:
-    pass
+    from anther_core.config import *
+    print(f"✅ Successfully loaded config. (Environment: {'Production' if IN_PRODUCTION else 'Development'})")
+    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
+        print("☁️ Running in Google Cloud!")
+    elif os.environ.get("DJANGO_DEBUG", "").lower() == "true":
+        print("🔍 Running in Debug/Local mode!")
+    else:
+        print("🖥️ Running in an unknown environment. Be cautious!")
+except Exception as e:
+    print(f"❌ Failed to load config: {e}")
+    raise  # This will make sure your error appears in logs
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.0/howto/deployment/checklist/
 

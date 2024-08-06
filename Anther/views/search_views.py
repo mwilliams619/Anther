@@ -4,7 +4,6 @@ from django.db import connection
 from django.shortcuts import render
 from Anther.Services.spotifyClassDef import PlaylistClass, ArtistClass, TrackClass, CrawlClass
 
-db = connection.cursor()
 
 # Assuming you have created a template called 'search.html' with the search bar and dropdown menu as described earlier
 

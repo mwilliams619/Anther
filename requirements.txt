@@ -6,3 +6,7 @@ plotly
 statistics
 scikit-learn
 flask
+google-cloud-secret-manager
+google-auth
+google-cloud-storage
+gunicorn 

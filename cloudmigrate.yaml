@@ -1,11 +1,80 @@
-   steps:
-     - name: 'gcr.io/google-appengine/exec-wrapper'
-       args: ['-i', 'gcr.io/${PROJECT_ID}/anther:$SHORT_SHA',
-              '-s', '${PROJECT_ID}:${_REGION}:${_INSTANCE_NAME}',
-              '-e', 'SETTINGS_NAME=${_SECRET_SETTINGS_NAME}',
-              '--', 'python', 'manage.py', 'migrate']
-     - name: 'gcr.io/google-appengine/exec-wrapper'
-       args: ['-i', 'gcr.io/${PROJECT_ID}/anther:$SHORT_SHA',
-              '-s', '${PROJECT_ID}:${_REGION}:${_INSTANCE_NAME}',
-              '-e', 'SETTINGS_NAME=${_SECRET_SETTINGS_NAME}',
-              '--', 'python', 'manage.py', 'collectstatic', '--no-input']
+steps:
+  - id: "build image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "gcr.io/${PROJECT_ID}/${_SERVICE_NAME}", "."]
+
+  - id: "push image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "gcr.io/${PROJECT_ID}/${_SERVICE_NAME}"]
+
+  - id: "apply migrations"
+    name: "gcr.io/google-appengine/exec-wrapper"
+    args:
+      [
+        "-i",
+        "gcr.io/$PROJECT_ID/${_SERVICE_NAME}",
+        "-s",
+        "${PROJECT_ID}:${_REGION}:${_INSTANCE_NAME}",
+        "-e", 
+        "DJANGO_SETTINGS_MODULE=anther_core.settings", 
+        "-e",
+        "DJANGO_ENV=production",  
+        "-e",
+        "CLOUD_BUILD=1",         
+        "-e",
+        "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}",
+        "-e", 
+        "SETTINGS_NAME=${_SECRET_SETTINGS_NAME}",
+        "-e", 
+        "DB_NAME=${_DB_NAME}",   # Use substitution
+        "-e", 
+        "DB_USER=${_DB_USER}",   # Use substitution
+        "-e",
+        "DB_PASSWORD=${_DB_PASSWORD}",  
+        "-e", 
+        "DB_HOST=/cloudsql/${PROJECT_ID}:${_REGION}:${_INSTANCE_NAME}",
+        "--",
+        "python",
+        "manage.py",
+        "migrate",
+        "--noinput",
+      ]
+
+  - id: "collect static"
+    name: "gcr.io/google-appengine/exec-wrapper"
+    args:
+      [
+        "-i",
+        "gcr.io/$PROJECT_ID/${_SERVICE_NAME}",
+        "-s",
+        "${PROJECT_ID}:${_REGION}:${_INSTANCE_NAME}",
+        "-e", 
+        "DJANGO_SETTINGS_MODULE=anther_core.settings",
+        "-e",
+        "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}",  # Add this!
+        "-e",
+        "DJANGO_ENV=production",  # Add this!
+        "-e",
+        "CLOUD_BUILD=1",   # And this!
+        "-e",
+        "SETTINGS_NAME=${_SECRET_SETTINGS_NAME}",
+        "--",
+        "python",
+        "manage.py",
+        "collectstatic",
+        "--verbosity",
+        "2",
+        "--no-input",
+      ]
+
+substitutions:
+  _INSTANCE_NAME: anther-1
+  _REGION: us-central1
+  _SERVICE_NAME: anther
+  _SECRET_SETTINGS_NAME: django_settings
+  _DB_PASSWORD: DB_PASSWORD 
+  _DB_NAME: Anther-1
+  _DB_USER: anther_admin
+
+images:
+  - "gcr.io/${PROJECT_ID}/${_SERVICE_NAME}"
