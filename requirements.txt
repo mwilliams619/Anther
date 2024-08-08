@@ -9,4 +9,5 @@ flask
 google-cloud-secret-manager
 google-auth
 google-cloud-storage
-gunicorn 
+gunicorn
+django-storages[google]

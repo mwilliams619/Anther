@@ -34,15 +34,14 @@ except Exception as e:
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'z@art%abh5w+d!z-^r&j+-q9c%q0x=5&mfr!imsx+$n*(l-boc'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
 
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'actually-elegant-seasnail.ngrok-free.app', 
                  '230c-2601-246-5c81-f200-752f-7e1-7e16-29d1.ngrok-free.app', 'playlitics.com', '68.162.101.147',
-                 'anther.playlitics.com', 'www.anther.playlitics.com']
+                 'anther.playlitics.com', 'www.anther.playlitics.com', 'https://anther-s73ew7cxra-uc.a.run.app']
 
 # Add here your deployment HOSTS
-CSRF_TRUSTED_ORIGINS = ['http://localhost:8000', 'http://localhost:5085', 'http://127.0.0.1:8000', 'http://127.0.0.1:5085']
+CSRF_TRUSTED_ORIGINS = ['http://localhost:8000', 'http://localhost:5085', 'http://127.0.0.1:8000', 'http://127.0.0.1:5085',
+                        'https://anther.playlitics.com', 'https://www.anther.playlitics.com', 'https://anther-s73ew7cxra-uc.a.run.app']
 
 X_FRAME_OPTIONS = "SAMEORIGIN"
 
@@ -56,8 +55,9 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'Anther'   #check this line in other ppls code there was an error here
-]
+    'storages', 
+    'Anther'
+    ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -138,16 +138,13 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/3.0/howto/static-files/
-
-# Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
-STATIC_URL = 'static/'
-STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'static'),
-]
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') 
+# STATIC_URL = 'static/'
+# STATICFILES_DIRS = [
+#     os.path.join(BASE_DIR, 'static'),
+# ]
+# STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') 
 
 
 REST_FRAMEWORK = {
@@ -157,15 +154,18 @@ REST_FRAMEWORK = {
     ],
 }
 
+# Google cloud info for static files
+GS_BUCKET_NAME = 'anther-media'
+STATIC_URL = f'https://storage.googleapis.com/{GS_BUCKET_NAME}/'
+STATICFILES_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
+GS_FILE_OVERWRITE = False
+GS_PROJECT_ID = 'studious-loader-429917-e3'
+GS_LOCATION = 'us-central1'
+GS_DEFAULT_ACL = None  # This disables ACL
+GS_QUERYSTRING_AUTH = False
 
-# Internationalization
-# https://docs.djangoproject.com/en/4.1/topics/i18n/
-
-LANGUAGE_CODE = "en-us"
-
-TIME_ZONE = "UTC"
-
-USE_I18N = True
-
-USE_TZ = True
-
+DEBUG = os.environ.get('DJANGO_DEBUG', '').lower() != 'true'
+if not DEBUG:
+       SECURE_SSL_REDIRECT = True
+       SESSION_COOKIE_SECURE = True
+       CSRF_COOKIE_SECURE = True
