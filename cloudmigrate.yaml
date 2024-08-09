@@ -57,6 +57,10 @@ steps:
         "-e",
         "CLOUD_BUILD=1",   # And this!
         "-e",
+        "GS_BUCKET_NAME=${_GS_BUCKET_NAME}",  # Add this
+        "-e",
+        "STATIC_URL=https://storage.googleapis.com/${_GS_BUCKET_NAME}/",  # Add this
+        "-e",
         "SETTINGS_NAME=${_SECRET_SETTINGS_NAME}",
         "--",
         "python",
@@ -67,6 +71,22 @@ steps:
         "--no-input",
       ]
 
+  - id: "deploy to Cloud Run"
+    name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "run",
+        "deploy",
+        "${_SERVICE_NAME}",
+        "--image",
+        "gcr.io/${PROJECT_ID}/${_SERVICE_NAME}",
+        "--region",
+        "${_REGION}",
+        "--platform",
+        "managed",
+        "--allow-unauthenticated"
+      ]
+
 substitutions:
   _INSTANCE_NAME: anther-1
   _REGION: us-central1
@@ -75,6 +95,7 @@ substitutions:
   _DB_PASSWORD: DB_PASSWORD 
   _DB_NAME: Anther-1
   _DB_USER: anther_admin
+  _GS_BUCKET_NAME: anther-media
 
 images:
   - "gcr.io/${PROJECT_ID}/${_SERVICE_NAME}"

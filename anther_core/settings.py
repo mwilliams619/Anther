@@ -141,9 +141,9 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
 # STATIC_URL = 'static/'
-# STATICFILES_DIRS = [
-#     os.path.join(BASE_DIR, 'static'),
-# ]
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),
+]
 # STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') 
 
 
@@ -160,7 +160,6 @@ STATIC_URL = f'https://storage.googleapis.com/{GS_BUCKET_NAME}/'
 STATICFILES_STORAGE = 'storages.backends.gcloud.GoogleCloudStorage'
 GS_FILE_OVERWRITE = False
 GS_PROJECT_ID = 'studious-loader-429917-e3'
-GS_LOCATION = 'us-central1'
 GS_DEFAULT_ACL = None  # This disables ACL
 GS_QUERYSTRING_AUTH = False
 
