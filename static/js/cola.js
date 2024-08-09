@@ -28,7 +28,7 @@ function charge(d) {
 // console.error("Error fetching playlist data:", error);
 // });
 
-d3.json('/static/sandBox_src/playListData.json', function(error, data) {
+d3.json("{% static 'sandBox_src/playListData.json' %}", function(error, data) {
     if (error) {
       console.error("Error loading playlist data:", error);
     } else {
@@ -63,7 +63,7 @@ function playListChart(playlistData) {
     .attr("id", function(d) { return d.id; })
     .on("click", function(d) {
         var clickedElement = this;
-        d3.json(`/static/sandbox_src/playlist_${d.id}.json`, function(error, graph_data) {
+        d3.json("{% static 'sandbox_src/playlist_' %}" + d.id + ".json", function(error, graph_data) {
             if (error) {
                 console.error("Error loading graph data:", error);
             } else {
