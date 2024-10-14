@@ -9,3 +9,4 @@ Make a postgres server
 6. populate db with current models
     6.1 run python manage.py makemigrations
     6.2 run python manage.py migrate
+<img width="499" alt="Screenshot 2024-10-14 at 1 34 47 PM" src="https://github.com/user-attachments/assets/8e129ab6-e913-4964-9eb4-cb85870ad362">
