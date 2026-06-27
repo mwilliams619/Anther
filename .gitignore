@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+.venv/
+*.egg-info/
+
+# data — large files not committed
+data/audio/
+data/fma_metadata/
+data/*.zip
+
+# model artifacts — all derived, not committed
+models/
+
+# jupyter checkpoints
+.ipynb_checkpoints/
+
+# env
+.env

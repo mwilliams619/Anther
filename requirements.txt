@@ -1,0 +1,15 @@
+librosa>=0.10
+soundfile
+numpy
+pandas
+scikit-learn
+umap-learn
+hdbscan
+torch>=2.1
+transformers>=4.40
+accelerate
+matplotlib
+seaborn
+jupyter
+ipykernel
+tqdm
