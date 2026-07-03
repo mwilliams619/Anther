@@ -34,12 +34,24 @@ def load_fma_tracks(metadata_dir: str | Path) -> pd.DataFrame:
     return tracks
 
 
+# FMA subsets are nested (small ⊂ medium ⊂ large). The ("set","subset")
+# column records the *smallest* subset a track belongs to, so the correct
+# order for comparison is small < medium < large — NOT alphabetical.
+SUBSET_ORDER = ["small", "medium", "large"]
+
+
 def load_fma_features(metadata_dir: str | Path,
                       subset: str = "small") -> pd.DataFrame:
     """
-    Load features.csv (pre-computed audio features, 568 columns).
+    Load features.csv (pre-computed audio features, 518 columns).
     Filtered to the given FMA subset ('small', 'medium', 'large').
     Returns DataFrame indexed by track_id.
+
+    The subset filter uses an *ordered categorical* comparison, not a raw
+    string comparison. String ``<=`` would order the values alphabetically
+    (large < medium < small), so ``<= "small"`` silently matched every track
+    (all 106,574 of FMA-large) instead of the intended 8,000 — see
+    Workstream C. Here small/medium/large are ordered explicitly.
     """
     meta_path = Path(metadata_dir)
     features = pd.read_csv(
@@ -47,9 +59,21 @@ def load_fma_features(metadata_dir: str | Path,
     )
 
     if subset is not None:
+        if subset not in SUBSET_ORDER:
+            raise ValueError(
+                f"subset must be one of {SUBSET_ORDER}, got {subset!r}"
+            )
         tracks = load_fma_tracks(metadata_dir)
-        keep = tracks[tracks[("set", "subset")] <= subset].index
+        subset_col = pd.Categorical(
+            tracks[("set", "subset")], categories=SUBSET_ORDER, ordered=True
+        )
+        keep = tracks.index[subset_col <= subset]
         features = features.loc[features.index.isin(keep)]
+
+    n = len(features)
+    print(f"load_fma_features: subset={subset!r} → {n} tracks")
+    if subset == "small" and n != 8000:
+        print(f"  WARNING: expected 8000 tracks for fma_small, got {n}")
 
     return features
 

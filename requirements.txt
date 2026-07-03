@@ -2,9 +2,15 @@ librosa>=0.10
 soundfile
 numpy
 pandas
+scipy
 scikit-learn
 umap-learn
 hdbscan
+# Workstream D — Leiden graph community detection
+leidenalg
+python-igraph
+# Workstream I — EBU R128 loudness normalization
+pyloudnorm
 torch>=2.1
 transformers>=4.40
 accelerate
@@ -13,3 +19,4 @@ seaborn
 jupyter
 ipykernel
 tqdm
+pytest

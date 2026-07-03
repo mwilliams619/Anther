@@ -18,3 +18,8 @@ models/
 
 # env
 .env
+
+# vendored binaries (not source)
+vendor/
+*.dmg
+docs/*.pdf

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anther-ml"
+version = "0.1.0"
+description = "Two-phase music similarity and clustering pipeline (librosa + MERT)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "librosa>=0.10",
+    "soundfile",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "umap-learn",
+    "hdbscan",
+    # Workstream D — Leiden graph community detection
+    "leidenalg",
+    "python-igraph",
+    # Workstream I — EBU R128 loudness normalization
+    "pyloudnorm",
+    "torch>=2.1",
+    "transformers>=4.40",
+    "accelerate",
+    "matplotlib",
+    "seaborn",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+notebooks = ["jupyter", "ipykernel"]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["anther_ml", "anther_ml.corpus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
