@@ -183,7 +183,10 @@ def build_knn_graph(
             a, b = (i, int(j)) if i < j else (int(j), i)
             if a == b:
                 continue
-            w = 1.0 - float(dist)  # cosine distance → similarity
+            # Cosine distance → similarity, clamped at 0: anti-correlated
+            # neighbors (dist > 1) would give negative weights, which Leiden
+            # rejects outright.
+            w = max(0.0, 1.0 - float(dist))
             # Keep the strongest weight for a mutual/duplicate edge.
             if (a, b) not in edges or w > edges[(a, b)]:
                 edges[(a, b)] = w

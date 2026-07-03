@@ -107,6 +107,20 @@ def test_legacy_v1_index_still_loads(tmp_path):
     assert loaded.metadata == meta
 
 
+def test_transform_query_reproduces_query_scores():
+    """index.embeddings @ transform_query(v) must equal query()'s scores."""
+    emb, meta = _corpus()
+    for standardize in (False, True):
+        idx = SongIndex(emb, meta, standardize=standardize)
+        q = idx.transform_query(emb[0])
+        manual = idx.embeddings @ q
+        via_query = {r["name"]: r["score"] for r in idx.query(emb[0], top_k=3)}
+        for i, m in enumerate(meta):
+            assert manual[i] == pytest.approx(via_query[m["name"]])
+    with pytest.raises(ValueError):
+        idx.transform_query(np.ones(7))
+
+
 def test_assert_compatible_flags_config_mismatch():
     emb, meta = _corpus()
     idx = SongIndex(emb, meta, config={"clip_seconds": 30})
