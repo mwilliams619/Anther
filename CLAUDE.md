@@ -26,19 +26,25 @@ left). Run the test suite with `pytest` from the repo root.
 | Similarity index | touching `similarity.py` / `SongIndex` / index files | [docs/similarity.md](docs/similarity.md) |
 | Phase 1 features | touching `features.py` / `data.py` / FMA feature vectors | [docs/phase1-features.md](docs/phase1-features.md) |
 | Phase 2 embeddings | touching `embedding.py` / `audio.py` / MERT | [docs/phase2-embeddings.md](docs/phase2-embeddings.md) |
-| Reference corpus | touching `anther_ml/corpus/` (build/place/sources/bundle) or MPD ingest | [REFERENCE_CORPUS_DESIGN.md](REFERENCE_CORPUS_DESIGN.md) |
+| Reference corpus | touching `anther_ml/corpus/` (build/place/sources/bundle) or MPD ingest | [REFERENCE_CORPUS_DESIGN.md](REFERENCE_CORPUS_DESIGN.md), perf: [CORPUS_BUILD_EFFICIENCY_PLAN.md](CORPUS_BUILD_EFFICIENCY_PLAN.md) |
+| Cluster labels | touching `anther_ml/corpus/labels.py` or the `corpus label` CLI | [PLAYLIST_LABELS_BUILD_PLAN.md](PLAYLIST_LABELS_BUILD_PLAN.md) |
+| Micro-genre tagging | touching `anther_ml/corpus/tagging/` (per-track genre tags) | [MICROGENRE_TAGGING_BUILD_PLAN.md](MICROGENRE_TAGGING_BUILD_PLAN.md), status: [MICROGENRE_TAGGING_NEXT_STEPS.md](MICROGENRE_TAGGING_NEXT_STEPS.md) |
+| Web UI | touching `ui/` (Flask app, corpus atlas, force-graph frontend) | [docs/architecture.md](docs/architecture.md) § "Top-level scripts & `ui/`" |
 | Evaluation | measuring a change or picking a hyperparameter | [docs/evaluation.md](docs/evaluation.md) |
 | Notebooks, viz & Jupyter | running the pipeline notebooks or `export_viz.py` | [docs/notebooks.md](docs/notebooks.md) |
 
 ## Critical rules (details in [docs/invariants.md](docs/invariants.md))
 
-- **Never use genre** as a clustering input, training signal, or eval metric — display only.
+- **Never use genre** as a clustering input, training signal, or eval metric for the map — display only. (Sole carve-out: the display-only tag probe in `corpus/tagging/`; its metrics never tune the map.)
 - **Cluster the embedding, not UMAP/t-SNE coordinates** — 2D is viz only.
 - **Standardize before cosine** (Phase 1); **align features by label** (`align_to_corpus`) before comparing.
 - **Query and corpus must share the same transform/config**; don't mix indices built differently.
 
 > The `anther_ml/corpus/` subpackage (frozen reference-corpus bundles) is
 > functional — see [REFERENCE_CORPUS_DESIGN.md](REFERENCE_CORPUS_DESIGN.md) for
-> the design and `python -m anther_ml.corpus --help` for the build/place CLI.
-> The full MPD build path is still being scaled up (smoke bundles in
-> `models/corpus_*_smoke/`).
+> the design and `python -m anther_ml.corpus --help` for the build/place/label
+> CLI. The primary bundle is the frozen 100k MPD corpus at
+> `models/corpus_corpus_mpd_100k/` (also: `corpus_mpd_val_25k`, smoke bundles).
+> Micro-genre tagging (`python -m anther_ml.corpus.tagging`) has seed/fit/predict
+> done on the 100k bundle; held-out FMA eval is pending the FMA download — see
+> [MICROGENRE_TAGGING_NEXT_STEPS.md](MICROGENRE_TAGGING_NEXT_STEPS.md).

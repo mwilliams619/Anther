@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Anther — Song Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -14,13 +17,17 @@
   <div class="panel panel-left">
     <div class="header">
       <h1>Anther</h1>
-      <span style="color:var(--muted);font-size:13px">song atlas</span>
+      <span class="subtitle">song atlas</span>
     </div>
 
     <!-- Search -->
     <section>
       <h2>Search &amp; add</h2>
-      <p class="hint-text">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
+      <div class="search-mode" role="tablist">
+        <button id="mode-tracks" class="mode-btn active" role="tab">Tracks</button>
+        <button id="mode-playlists" class="mode-btn" role="tab">Playlists</button>
+      </div>
+      <p class="hint-text" id="search-hint">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
       <div class="search-bar">
         <input id="search-input" type="text" placeholder="Artist, track…" autocomplete="off" />
       </div>
@@ -46,7 +53,11 @@
   <!-- ── Graph ────────────────────────────────────────────────────────────── -->
   <div class="graph-wrap">
     <svg id="graph"></svg>
-    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · ♦ = your songs</div>
+    <aside id="detail-panel" hidden>
+      <button id="detail-close" class="btn-icon" title="Close">×</button>
+      <div id="detail-body"></div>
+    </aside>
+    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs</div>
   </div>
 
 </div><!-- .app -->

@@ -16,6 +16,8 @@ const AtlasGraph = (() => {
   let nodes = [], links = [];
   const byId = new Map();
   let linkSel, nodeSel, tooltip;
+  let pinnedId = null;                  // clicked node: highlight locked until deselect
+  let selectCb = null, deselectCb = null;
 
   function init(containerSel) {
     svg = d3.select(containerSel);
@@ -28,13 +30,18 @@ const AtlasGraph = (() => {
     zoom = d3.zoom().scaleExtent([0.1, 8])
       .on('zoom', () => g.attr('transform', d3.event.transform));
     svg.call(zoom);
+    svg.on('click', () => {             // background click unpins (pans don't: d3
+      if (d3.event.defaultPrevented) return;   // suppresses the click after a drag)
+      clearSelection();
+    });
 
     const W = svg.node().clientWidth, H = svg.node().clientHeight;
     sim = d3.forceSimulation(nodes)
       .force('link',   d3.forceLink(links).id(d => d.id)
                           // closer edge = more-similar songs sit tighter
                           .distance(d => 30 + 60 * (1 - (d.value == null ? 0.5 : d.value)))
-                          .strength(d => d.kind === 'qq' ? 0.35 : 0.15))
+                          .strength(d => d.kind === 'qq' ? 0.35
+                                       : d.kind === 'member' ? 0.3 : 0.15))
       .force('charge', d3.forceManyBody().strength(-90))
       .force('collide', d3.forceCollide(14))
       .force('center', d3.forceCenter(W / 2, H / 2))
@@ -57,7 +64,8 @@ const AtlasGraph = (() => {
     linkSel = gLink.selectAll('line').data(links, d => `${idOf(d.source)}->${idOf(d.target)}`);
     linkSel.exit().remove();
     linkSel = linkSel.enter().append('line')
-      .attr('class', d => 'glink' + (d.kind === 'qq' ? ' glink-qq' : '')).merge(linkSel);
+      .attr('class', d => 'glink' + (d.kind === 'qq' ? ' glink-qq' : '')
+                                  + (d.kind === 'member' ? ' glink-member' : '')).merge(linkSel);
 
     // ── nodes (a <g> per node: circle + label) ──
     nodeSel = gNode.selectAll('g.gnode').data(nodes, d => d.id);
@@ -66,7 +74,8 @@ const AtlasGraph = (() => {
     const enter = nodeSel.enter().append('g')
       .attr('class', 'gnode')
       .call(d3.drag().on('start', dragStart).on('drag', dragged).on('end', dragEnd))
-      .on('mouseover', onHover).on('mousemove', onMove).on('mouseout', onOut);
+      .on('mouseover', onHover).on('mousemove', onMove).on('mouseout', onOut)
+      .on('click', onClick);
 
     enter.append('circle');
     enter.append('text')
@@ -76,22 +85,33 @@ const AtlasGraph = (() => {
     nodeSel = enter.merge(nodeSel);
 
     nodeSel.select('circle')
-      .attr('r', d => d.kind === 'query' ? 9 : 5)
+      .attr('r', d => d.kind === 'playlist' ? 12 : d.kind === 'query' ? 9 : 5)
       .attr('fill', d => clusterColor(d.cluster))
-      .attr('class', d => d.kind === 'query' ? 'query-node' : 'corpus-node');
+      .attr('class', d => d.kind === 'playlist' ? 'playlist-node'
+                        : d.kind === 'query' ? 'query-node' : 'corpus-node');
 
     nodeSel.select('text.glabel')
-      .text(d => d.kind === 'query' ? d.name : '')
-      .attr('class', d => 'glabel ' + (d.kind === 'query' ? 'glabel-query' : ''));
+      .text(d => (d.kind === 'query' || d.kind === 'playlist') ? d.name : '')
+      .attr('class', d => 'glabel ' + (d.kind === 'playlist' ? 'glabel-playlist'
+                                     : d.kind === 'query' ? 'glabel-query' : ''));
 
     sim.nodes(nodes);
     sim.force('link').links(links);
     sim.alpha(0.7).restart();
+
+    // keep the pinned highlight correct across newly entered nodes/links
+    if (pinnedId !== null) {
+      const p = byId.get(pinnedId);
+      if (p) {
+        applyHighlight(p);
+        nodeSel.classed('selected', n => n.id === pinnedId);
+      }
+    }
   }
 
   const idOf = e => (typeof e === 'object' ? e.id : e);
 
-  function mergeFragment(frag) {
+  function mergeFragment(frag, opts) {
     if (!frag) return;
     const W = svg.node().clientWidth, H = svg.node().clientHeight;
     (frag.nodes || []).forEach(n => {
@@ -109,16 +129,17 @@ const AtlasGraph = (() => {
       if (byId.has(l.source) && byId.has(l.target)) links.push(l);
     });
     restart();
-    // gently recentre the view on the newest query node
-    const q = (frag.nodes || []).find(n => n.kind === 'query');
-    if (q) setTimeout(() => zoomTo(q.id), 700);
+    // gently recentre the view on the focus node (or the newest query node)
+    const fid = (opts && opts.focusId)
+      || ((frag.nodes || []).find(n => n.kind === 'query') || {}).id;
+    if (fid) setTimeout(() => zoomTo(fid, opts && opts.zoomScale), 700);
   }
 
-  function zoomTo(id) {
+  function zoomTo(id, scale) {
     const n = byId.get(id);
     if (!n || n.x == null) return;
     const W = svg.node().clientWidth, H = svg.node().clientHeight;
-    const k = 1.4;
+    const k = scale || 1.4;
     svg.transition().duration(600).call(
       zoom.transform,
       d3.zoomIdentity.translate(W / 2, H / 2).scale(k).translate(-n.x, -n.y)
@@ -144,10 +165,43 @@ const AtlasGraph = (() => {
     return s;
   }
 
-  function onHover(d) {
+  function applyHighlight(d) {
     const near = neighborIds(d);
     linkSel.classed('neighbor', l => idOf(l.source) === d.id || idOf(l.target) === d.id);
     nodeSel.classed('dimmed', n => !near.has(n.id));
+    nodeSel.classed('lit',    n => near.has(n.id));   // un-greys corpus neighbors
+  }
+  function clearHighlight() {
+    linkSel.classed('neighbor', false);
+    nodeSel.classed('dimmed', false);
+    nodeSel.classed('lit', false);
+  }
+
+  /* ── click / pin selection ── */
+  function select(id, opts) {
+    const d = byId.get(id);
+    if (!d) return;
+    pinnedId = id;
+    applyHighlight(d);
+    nodeSel.classed('selected', n => n.id === id);
+    if (opts && opts.zoom) zoomTo(id);
+    if (selectCb) selectCb(id);
+  }
+  function clearSelection() {
+    if (pinnedId === null) return;
+    pinnedId = null;
+    clearHighlight();
+    nodeSel.classed('selected', false);
+    if (deselectCb) deselectCb();
+  }
+  function onClick(d) {
+    if (d3.event.defaultPrevented) return;   // drag gesture, not a click
+    d3.event.stopPropagation();
+    select(d.id);
+  }
+
+  function onHover(d) {
+    if (pinnedId === null) applyHighlight(d);   // hover previews only when unpinned
     const conf = d.confidence != null
       ? `<div class="tip-label">cluster ${d.cluster} · conf ${Math.round(d.confidence * 100)}%</div>` : '';
     tooltip.style('display', 'block').html(
@@ -161,8 +215,7 @@ const AtlasGraph = (() => {
     tooltip.style('left', (mx + 14) + 'px').style('top', (my + 14) + 'px');
   }
   function onOut() {
-    linkSel.classed('neighbor', false);
-    nodeSel.classed('dimmed', false);
+    if (pinnedId === null) clearHighlight();
     tooltip.style('display', 'none');
   }
   function dragStart(d) { if (!d3.event.active) sim.alphaTarget(0.2).restart(); d.fx = d.x; d.fy = d.y; }
@@ -179,5 +232,9 @@ const AtlasGraph = (() => {
     mergeFragment,
     zoomTo,
     hasNode: id => byId.has(id),
+    selectNode: select,
+    clearSelection,
+    onSelect:   cb => { selectCb = cb; },
+    onDeselect: cb => { deselectCb = cb; },
   };
 })();

@@ -50,7 +50,12 @@ def place(
 
         {"neighbors":  index.query() rows,
          "cluster":    {"id", "confidence", "profile"},
+         "tags":       [{"genre","score","primary","source"}],  # display only
          "coords_2d":  [x, y] | None}   # UMAP transform — display only
+
+    ``tags`` come from the bundle's tag probe when present, else are
+    inherited from nearest neighbors' track_tags, else ``[]`` — bundles
+    without tag artifacts still place.
     """
     vec = np.asarray(vec, dtype=np.float32).reshape(-1)
     leiden = corpus.leiden
@@ -82,8 +87,40 @@ def place(
             "label": profile.get("label_final", ""),
             "profile": profile,
         },
+        "tags": _query_tags(corpus, vec),
         "coords_2d": coords_2d,
     }
+
+
+def _query_tags(
+    corpus: ReferenceCorpus, vec: np.ndarray, top_k: int = 3, knn: int = 10
+) -> list[dict]:
+    """Micro-genre tags for a query (display only, docs/invariants.md).
+
+    Live probe when the bundle carries one; otherwise inherit from the top-k
+    neighbors' precomputed track_tags; otherwise []."""
+    probe = corpus.tag_probe
+    if probe is not None:
+        from .tagging.probe import predict_tags
+
+        return predict_tags(probe, vec[None], top_k=top_k)[0]["tags"]
+
+    track_tags = corpus.track_tags
+    if track_tags is None:
+        return []
+    q = corpus.index.transform_query(vec)
+    sims = corpus.index.embeddings @ q
+    nbr = np.argsort(sims)[::-1][:knn]
+    score: dict[str, float] = {}
+    for i in nbr:
+        for t in track_tags[int(i)]["tags"]:
+            score[t["genre"]] = score.get(t["genre"], 0.0) + t["score"] / knn
+    top = sorted(score.items(), key=lambda kv: -kv[1])[:top_k]
+    return [
+        {"genre": g, "score": round(s, 4), "primary": rank == 0,
+         "source": "neighbors"}
+        for rank, (g, s) in enumerate(top)
+    ]
 
 
 def _topk_mean(sims: np.ndarray, k: int) -> np.ndarray:

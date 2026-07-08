@@ -84,6 +84,29 @@ def atlas_search():
         return jsonify({'error': str(exc)}), 502
 
 
+@app.route('/api/playlists/search')
+def playlists_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': []})
+    try:
+        limit = int(request.args.get('limit', 20))
+        return jsonify({'results': atlas.search_playlists(q, limit=limit)})
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/playlist/place', methods=['POST'])
+def playlist_place():
+    body = request.get_json(force=True) or {}
+    try:
+        return jsonify(atlas.place_playlist(body.get('pid')))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/place', methods=['POST'])
 def atlas_place():
     result = request.get_json(force=True) or {}
@@ -97,6 +120,17 @@ def atlas_place():
 @app.route('/api/graph')
 def atlas_graph():
     return jsonify(atlas.get_graph())
+
+
+@app.route('/api/song/<path:song_id>')      # <path:> — ids contain ':' and filenames
+def atlas_song(song_id):
+    try:
+        detail = atlas.song_detail(song_id, top_n=int(request.args.get('n', 10)))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    if detail is None:
+        return jsonify({'error': 'unknown song id'}), 404
+    return jsonify(detail)
 
 
 @app.route('/api/stage', methods=['GET'])

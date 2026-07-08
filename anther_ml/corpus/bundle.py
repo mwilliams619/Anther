@@ -36,6 +36,8 @@ from ..similarity import SongIndex
 
 CORPUS_FORMAT_VERSION = 1
 
+_UNSET = object()  # lazy-load sentinel for optional tag artifacts
+
 
 class ReferenceCorpus:
     """In-memory handle on a frozen corpus bundle. See module docstring."""
@@ -57,6 +59,9 @@ class ReferenceCorpus:
         self.centroids = np.asarray(centroids, dtype=np.float32)
         self.profiles = profiles
         self.manifest = manifest
+        self.dir: Path | None = None  # set by load(); tag artifacts live there
+        self._tag_probe = _UNSET
+        self._track_tags = _UNSET
 
     # -- convenience views (single source of truth stays in the parts) --------
 
@@ -111,6 +116,7 @@ class ReferenceCorpus:
             profiles=profiles,
             manifest=manifest,
         )
+        corpus.dir = d
         if verify:
             corpus.verify()
         return corpus
@@ -135,6 +141,30 @@ class ReferenceCorpus:
         }
         if len(set(counts.values())) != 1:
             raise ValueError(f"bundle track counts disagree: {counts}")
+
+    # -- optional tag artifacts (display-only; older bundles lack them) --------
+
+    @property
+    def tag_probe(self):
+        """Frozen TagProbe from the bundle dir, or None (tags are optional —
+        the schema stays additive, format version unchanged)."""
+        if self._tag_probe is _UNSET:
+            self._tag_probe = None
+            if self.dir is not None and (self.dir / "tag_probe.pkl").exists():
+                from .tagging.probe import TagProbe
+
+                self._tag_probe = TagProbe.load(self.dir / "tag_probe.pkl")
+        return self._tag_probe
+
+    @property
+    def track_tags(self) -> list[dict] | None:
+        """track_tags.json rows (metadata order), or None if never built."""
+        if self._track_tags is _UNSET:
+            self._track_tags = None
+            if self.dir is not None and (self.dir / "track_tags.json").exists():
+                with open(self.dir / "track_tags.json") as f:
+                    self._track_tags = json.load(f)
+        return self._track_tags
 
     # -- lookups ---------------------------------------------------------------
 

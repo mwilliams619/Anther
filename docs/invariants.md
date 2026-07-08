@@ -3,8 +3,15 @@
 Break these and results silently become meaningless.
 
 **Never introduce genre** as a clustering input, training signal, or eval
-metric. It may be *displayed* as metadata only. Quality is judged by the
-genre-free eval harness ([evaluation.md](evaluation.md)).
+metric *for the map itself*. Genre never feeds the MERT embedding, the
+`SongIndex`, the Leiden partition, or `anther_ml.eval` — quality of the map is
+judged by the genre-free eval harness ([evaluation.md](evaluation.md)).
+One carve-out: genre may train **display-only artifacts downstream of the
+frozen map** (the micro-genre tag probe in `anther_ml/corpus/tagging/`,
+MICROGENRE_TAGGING_BUILD_PLAN.md). Those artifacts are read-outs, like
+cluster labels: their metrics live in `tagging/evaluate.py`, walled off from
+`build_scorecard`, and must never be used to tune embedding, index, clustering,
+or placement hyperparameters. Two scoreboards, one wall.
 
 **Cluster the embedding, never the UMAP/t-SNE coordinates.** Leiden builds its
 k-NN graph on the PCA/whitened embedding (`clustering_space`); 2D UMAP is

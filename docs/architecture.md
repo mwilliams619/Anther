@@ -58,20 +58,28 @@ CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
 | `sources.py` | Track sources under one item contract (`fma_source`, `local_source`, `mpd_source`) |
 | `build.py` | `build_corpus` — embed (checkpointed/resumable) → dedupe → fit `SongIndex` + Leiden → per-cluster profiles → freeze bundle |
 | `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp) |
-| `place.py` | Placement regime — `place`, `embed_query`, playlist-fit / `rank_playlists` |
-| `__main__.py` | `build` / `place` CLI |
+| `place.py` | Placement regime — `place`, `embed_query`, playlist-fit / `rank_playlists`; returns `tags` from the tag probe when present |
+| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle (PLAYLIST_LABELS_BUILD_PLAN.md) |
+| `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; MICROGENRE_TAGGING_BUILD_PLAN.md) |
+| `__main__.py` | `build` / `place` / `label` CLI |
 
-Bundles are written to `models/corpus_<name>/`. Tests: `tests/test_corpus_{build,bundle,place}.py`.
+Bundles are written to `models/corpus_<name>/` (primary:
+`corpus_corpus_mpd_100k`). Tests: `tests/test_corpus_{build,bundle,place,labels,tagging}.py`.
 
 ## Top-level scripts & `ui/`
 
 | Script | Responsibility |
 |---|---|
 | `export_viz.py` | Bakes an index + 2D embedding into the standalone `song_view.html` d3 map (`PHASE` set at top; re-run after any index rebuild) — see [notebooks.md](notebooks.md) |
-| `ui/app.py` | Flask backend for the song staging + clustering UI |
-| `ui/jobs.py` | Background cluster-job runner (one job at a time; MERT loaded once) |
+| `export_corpus_viz.py` | Canvas scatter-plot viewer for a whole corpus bundle (tens of thousands of points; pan/zoom, no force sim) → `corpus_*_view.html` |
+| `ui/app.py` | Flask backend (thin router) for the song staging + atlas UI — `python ui/app.py`, port 5000 |
+| `ui/atlas.py` | Frozen-corpus atlas: three-tier song search (local corpus → Deezer → Spotify) + `place()` onto the frozen 100k corpus; playlist-name search + one-shot playlist load (`place_playlist` — hub-and-spoke group of all in-corpus members, no neighbor fan-out); owns all corpus/MERT state. Corpus dir via `ANTHER_CORPUS` env var |
+| `ui/jobs.py` | Legacy background cluster-job runner (one job at a time; MERT loaded once) — slated for migration to `place()` |
+| `ui/static/` | d3 force-graph frontend (`graph.js`, `app.js`); session state under `ui/session/` |
 
 ## Tests
 
-`tests/test_{audio,cluster,data,embedding,eval,features,similarity}.py`, one per
-core module. Run with `pytest`.
+`tests/test_{audio,cluster,data,embedding,eval,features,similarity,mpd_sql}.py`
+(one per core module), `tests/test_corpus_*.py` (corpus subpackage), and
+`tests/test_atlas_search.py` (UI atlas search tiers), and
+`tests/test_atlas_playlist.py` (playlist search + hub placement). Run with `pytest`.
