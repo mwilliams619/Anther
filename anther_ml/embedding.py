@@ -123,6 +123,93 @@ def _embed_windows(
     return per_window.mean(dim=0).cpu().numpy().astype(np.float32)
 
 
+def prepare_waveform(item: dict, normalize: bool = True) -> np.ndarray:
+    """
+    Turn a source item into a mono float32 waveform at ``SR``, loudness-normalized
+    when requested — the CPU/IO half of embedding, split out so it can run in the
+    prefetch pool (Tier 1B) while the GPU stays busy.
+
+    Accepts an in-memory ``item['audio']`` (resampled if ``item['sr']`` differs)
+    or an on-disk ``item['path']``.
+    """
+    audio = item.get("audio")
+    if audio is not None:
+        y = np.asarray(audio, dtype=np.float32)
+        sr = int(item.get("sr", SR))
+        if sr != SR:
+            y = librosa.resample(y, orig_sr=sr, target_sr=SR)
+    elif item.get("path"):
+        y, _ = librosa.load(str(item["path"]), sr=SR, mono=True)
+    else:
+        raise ValueError(f"item {item.get('id')!r} has neither path nor audio")
+    if normalize:
+        y = loudness_normalize(y, SR)
+    return y.astype(np.float32)
+
+
+def embed_tracks_batched(
+    model, processor, waveforms: list[np.ndarray], device: str,
+    layer_aggregation: str = "mean",
+    batch_windows: int = 32,
+    use_fp16: bool | None = None,
+) -> np.ndarray:
+    """
+    Embed several prepared waveforms in shared GPU forward passes → ``(N, H)``.
+
+    Windows from all tracks are pooled into batches of up to ``batch_windows``,
+    but **only equal-length windows share a forward pass**, so no padding is ever
+    introduced — each track's pooled vector is identical to the one-track-at-a-time
+    path (``_embed_windows``) up to fp16 rounding. This is the invariant the
+    corpus↔query recipe depends on (``docs/invariants.md``): batching must not
+    change the per-track result.
+
+    On CUDA the forward runs under ``inference_mode`` + fp16 ``autocast`` (MERT is
+    a frozen feature extractor, so fp16 perturbs vectors ~1e-2 cosine while roughly
+    halving VRAM). Set ``use_fp16=False`` to force fp32.
+    """
+    from collections import defaultdict
+
+    if use_fp16 is None:
+        use_fp16 = device == "cuda"
+    if not waveforms:
+        return np.empty((0, 0), dtype=np.float32)
+
+    # Flat list of (track_index, window) across all tracks, plus per-track slots.
+    flat: list[tuple[int, np.ndarray]] = []
+    for ti, y in enumerate(waveforms):
+        for s, e in plan_windows(len(y)):
+            flat.append((ti, y[s:e]))
+    per_track_windows: list[list[np.ndarray]] = [[] for _ in waveforms]
+
+    # Group window positions by exact length so a batch never needs padding.
+    by_length: dict[int, list[int]] = defaultdict(list)
+    for fi, (_, win) in enumerate(flat):
+        by_length[len(win)].append(fi)
+
+    for _, positions in by_length.items():
+        for start in range(0, len(positions), batch_windows):
+            chunk = positions[start : start + batch_windows]
+            wins = [flat[fi][1] for fi in chunk]
+            inputs = processor(
+                wins, sampling_rate=SR, return_tensors="pt", padding=True
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            with torch.inference_mode():
+                if use_fp16:
+                    with torch.autocast("cuda", dtype=torch.float16):
+                        outputs = model(**inputs, output_hidden_states=True)
+                else:
+                    outputs = model(**inputs, output_hidden_states=True)
+            pooled = aggregate_layers(outputs.hidden_states, layer_aggregation)
+            pooled = pooled.float().cpu().numpy().astype(np.float32)  # (B, H)
+            for j, fi in enumerate(chunk):
+                per_track_windows[flat[fi][0]].append(pooled[j])
+
+    return np.vstack(
+        [np.mean(ws, axis=0) for ws in per_track_windows]
+    ).astype(np.float32)
+
+
 def get_embedding(
     model, processor, path: str | Path, device: str,
     layer_aggregation: str = "mean",

@@ -26,6 +26,7 @@ left). Run the test suite with `pytest` from the repo root.
 | Similarity index | touching `similarity.py` / `SongIndex` / index files | [docs/similarity.md](docs/similarity.md) |
 | Phase 1 features | touching `features.py` / `data.py` / FMA feature vectors | [docs/phase1-features.md](docs/phase1-features.md) |
 | Phase 2 embeddings | touching `embedding.py` / `audio.py` / MERT | [docs/phase2-embeddings.md](docs/phase2-embeddings.md) |
+| Reference corpus | touching `anther_ml/corpus/` (build/place/sources/bundle) or MPD ingest | [REFERENCE_CORPUS_DESIGN.md](REFERENCE_CORPUS_DESIGN.md) |
 | Evaluation | measuring a change or picking a hyperparameter | [docs/evaluation.md](docs/evaluation.md) |
 | Notebooks, viz & Jupyter | running the pipeline notebooks or `export_viz.py` | [docs/notebooks.md](docs/notebooks.md) |
 
@@ -36,4 +37,8 @@ left). Run the test suite with `pytest` from the repo root.
 - **Standardize before cosine** (Phase 1); **align features by label** (`align_to_corpus`) before comparing.
 - **Query and corpus must share the same transform/config**; don't mix indices built differently.
 
-> A `corpus/` subpackage is under construction and intentionally undocumented.
+> The `anther_ml/corpus/` subpackage (frozen reference-corpus bundles) is
+> functional — see [REFERENCE_CORPUS_DESIGN.md](REFERENCE_CORPUS_DESIGN.md) for
+> the design and `python -m anther_ml.corpus --help` for the build/place CLI.
+> The full MPD build path is still being scaled up (smoke bundles in
+> `models/corpus_*_smoke/`).

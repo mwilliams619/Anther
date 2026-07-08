@@ -8,6 +8,7 @@ venv/
 # data — large files not committed
 data/audio/
 data/fma_metadata/
+data/mpd_dump/
 data/*.zip
 
 # model artifacts — all derived, not committed

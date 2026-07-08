@@ -348,6 +348,56 @@ tr:hover td { background: var(--surface); }
   text-align: center;
 }
 
+/* ── Atlas: sidebar + force graph ─────────────────────────────────────────── */
+.app { grid-template-columns: 360px 1fr; }
+
+.hint-text { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+
+.graph-wrap { position: relative; overflow: hidden; background: var(--bg); }
+#graph { width: 100%; height: 100vh; display: block; cursor: grab; }
+#graph:active { cursor: grabbing; }
+
+.graph-hint {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--muted); pointer-events: none; white-space: nowrap;
+}
+
+/* graph elements */
+.glink { stroke: #3a3560; stroke-opacity: 0.35; stroke-width: 1px; }
+/* query↔query similarity edges: teal, so added-song ties read distinctly */
+.glink-qq { stroke: #4e9a8a; stroke-opacity: 0.6; stroke-width: 1.5px; }
+.glink.neighbor { stroke: var(--amber); stroke-opacity: 0.85; stroke-width: 2px; }
+.gnode { cursor: grab; }
+.gnode.dimmed { opacity: 0.12; }
+circle.query-node  { stroke: #fff; stroke-width: 2px; }
+circle.corpus-node { stroke: rgba(255,255,255,0.25); stroke-width: 1px; }
+.glabel { fill: var(--muted); font-size: 11px; pointer-events: none; }
+.glabel-query { fill: #fff; font-size: 12px; font-weight: 600; }
+
+/* graph tooltip */
+#graph-tooltip {
+  position: fixed; pointer-events: none; display: none; z-index: 100;
+  background: rgba(14,11,28,0.96); border: 1px solid var(--accent);
+  border-radius: 10px; padding: 10px 14px; font-size: 13px; max-width: 260px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.7);
+}
+#graph-tooltip .tip-title  { font-weight: 700; color: #fff; word-break: break-word; }
+#graph-tooltip .tip-artist { color: var(--muted); font-size: 12px; }
+#graph-tooltip .tip-label  { color: #ffcc88; font-size: 11px; margin-top: 5px;
+                             text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* source badge on search results */
+.src-badge {
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-left: 4px;
+  vertical-align: middle;
+}
+.src-corpus  { background: rgba(123,94,167,0.22); color: var(--accent-hi); }
+.src-deezer  { background: rgba(78,154,138,0.22); color: #4e9a8a; }
+.src-spotify { background: rgba(94,167,74,0.22);  color: #5ea74a; }
+
+.place-status { font-size: 12px; color: var(--accent-hi); min-height: 16px; margin-top: 4px; }
+
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

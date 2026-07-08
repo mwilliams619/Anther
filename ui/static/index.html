@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Anther — Song Clustering</title>
+  <title>Anther — Song Atlas</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -14,23 +14,24 @@
   <div class="panel panel-left">
     <div class="header">
       <h1>Anther</h1>
-      <span style="color:var(--muted);font-size:13px">song clustering</span>
+      <span style="color:var(--muted);font-size:13px">song atlas</span>
     </div>
 
     <!-- Search -->
     <section>
-      <h2>Search Deezer</h2>
+      <h2>Search &amp; add</h2>
+      <p class="hint-text">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
       <div class="search-bar">
-        <input id="search-input" type="text" placeholder="Artist, track, album…" autocomplete="off" />
+        <input id="search-input" type="text" placeholder="Artist, track…" autocomplete="off" />
       </div>
       <div id="search-results" style="margin-top:10px">
-        <div class="empty">Search for tracks to add to your corpus</div>
+        <div class="empty">Search for a song to add it to the atlas</div>
       </div>
     </section>
 
     <!-- Upload -->
     <section>
-      <h2>Upload files</h2>
+      <h2>Upload a track</h2>
       <div id="upload-zone">
         <p style="margin-bottom:8px">Drag &amp; drop audio here</p>
         <label>or <span>browse files</span>
@@ -38,55 +39,23 @@
         </label>
         <p style="margin-top:6px;font-size:11px">MP3, WAV, FLAC, M4A · max 25 MB each</p>
       </div>
+      <div id="place-status" class="place-status"></div>
     </section>
   </div>
 
-  <!-- ── Right panel: Staging + Cluster ───────────────────────────────────── -->
-  <div class="panel panel-right">
-    <div class="header">
-      <h1 id="staging-count">0</h1>
-      <span style="color:var(--muted);font-size:13px">tracks staged</span>
-    </div>
-
-    <div id="staging-list">
-      <div class="empty">Add tracks from search or upload</div>
-    </div>
-
-    <div class="cluster-controls">
-      <p class="staging-meta" id="cluster-hint">Add at least 15 tracks to cluster</p>
-      <button id="cluster-btn" class="btn btn-primary" disabled>Cluster songs</button>
-      <div class="progress-wrap" id="progress-wrap">
-        <div class="progress-bg"><div class="progress-fill" id="progress-fill"></div></div>
-        <div class="progress-msg" id="progress-msg">…</div>
-      </div>
-    </div>
+  <!-- ── Graph ────────────────────────────────────────────────────────────── -->
+  <div class="graph-wrap">
+    <svg id="graph"></svg>
+    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · ♦ = your songs</div>
   </div>
 
 </div><!-- .app -->
 
-<!-- ── Results (full-width below the grid) ───────────────────────────────── -->
-<div id="results-section">
-  <div class="results-header">
-    <h2>Results</h2>
-    <span class="result-summary" id="result-summary"></span>
-  </div>
-  <div id="scatter"></div>
-  <table id="assignments-table">
-    <thead>
-      <tr>
-        <th>Cluster</th>
-        <th>Track</th>
-        <th>Artist</th>
-        <th>Source</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</div>
-
+<div id="graph-tooltip"></div>
 <div id="error-toast"></div>
 
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://d3js.org/d3.v4.js"></script>
+<script src="/static/graph.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -15,6 +15,7 @@ import numpy as np
 
 from anther_ml.spotify_deezer import _deezer_get
 import jobs
+import atlas
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,34 @@ def deezer_search():
     return jsonify(results)
 
 
+# ── Atlas: tiered search + force-graph placement ─────────────────────────────
+
+@app.route('/api/search')
+def atlas_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': [], 'tiers': {}})
+    try:
+        return jsonify(atlas.search(q))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/place', methods=['POST'])
+def atlas_place():
+    result = request.get_json(force=True) or {}
+    try:
+        fragment = atlas.place_song(result)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify(fragment)
+
+
+@app.route('/api/graph')
+def atlas_graph():
+    return jsonify(atlas.get_graph())
+
+
 @app.route('/api/stage', methods=['GET'])
 def stage_get():
     return jsonify(load_manifest())
@@ -110,19 +139,19 @@ def upload():
     dest = UPLOADS_DIR / safe
     dest.write_bytes(data)
 
-    manifest = load_manifest()
-    item_id  = f"upload_{safe}"
-    if not any(m['id'] == item_id for m in manifest):
-        manifest.append({
-            'id':       item_id,
-            'type':     'upload',
-            'filename': safe,
-            'title':    Path(safe).stem,
-            'artist':   'personal',
-            'path':     str(dest),
+    # Place the uploaded file onto the frozen-corpus force graph.
+    try:
+        fragment = atlas.place_song({
+            'source': 'upload',
+            'id':     f'upload:{safe}',
+            'title':  Path(safe).stem,
+            'artist': 'personal',
+            'path':   str(dest),
         })
-        save_manifest(manifest)
-    return jsonify({'status': 'uploaded', 'id': item_id, 'title': Path(safe).stem})
+    except Exception as exc:
+        return jsonify({'error': f'Placement failed: {exc}'}), 500
+    return jsonify({'status': 'uploaded', 'id': f'upload:{safe}',
+                    'title': Path(safe).stem, 'fragment': fragment})
 
 
 @app.route('/api/cluster', methods=['POST'])
@@ -154,4 +183,5 @@ def results():
 
 
 if __name__ == '__main__':
+    atlas.warm()          # load the frozen corpus in the background at startup
     app.run(debug=True, port=5000, use_reloader=False)

@@ -29,10 +29,39 @@ clustering and similarity API — only the input embeddings differ.
 
 | Module | Responsibility |
 |---|---|
-| `mpd_ingest.py` | Spotify Million Playlist Dataset → corpus queries (`build_mpd_queries`, `enrich_isrc`, `ingest_mpd_corpus`) |
-| `spotify_deezer.py` | Spotify metadata → Deezer preview audio (`load_spotify_via_deezer`) |
+| `mpd_sql.py` | **MySQL MPD dump** (`spotifydbdumpshare.sql`) → SQLite → deterministic artist-capped sample (`load_dump_to_sqlite`, `ensure_db`, `sample_tracks`). Streaming, resumable, logged. This is the supported path for our dataset. |
+| `mpd_ingest.py` | Legacy: RecSys `mpd.slice.*.json` files → corpus queries (`build_mpd_queries`, `enrich_isrc`). Kept for JSON-format MPD downloads |
+| `spotify_deezer.py` | Spotify metadata → Deezer preview audio (`load_spotify_via_deezer`); preview fetch/decode reused by both MPD paths |
 
-> A `corpus/` subpackage is under construction and intentionally undocumented for now.
+The corpus `sql_source` (in `corpus/sources.py`) reads the SQL dump via `mpd_sql`
+and fetches audio from each track's Spotify `preview_url` directly (Deezer
+fallback for dead URLs). Build the DB once, then sample many times:
+
+```bash
+python -m anther_ml.mpd_sql --dump data/mpd_dump/spotifydbdumpshare.sql   # one-time
+python -m anther_ml.corpus build --source sql \
+    --sql-dump data/mpd_dump/spotifydbdumpshare.sql --name mpd_25k --sample-n 25000
+```
+
+The full dump is ~13.3M tracks — far past the design's 10k–100k range — so `sql_source`
+always *samples down* (artist-capped, deduped post-embed); it is never used to embed
+the whole dump.
+
+## `anther_ml/corpus/` — frozen reference-corpus bundles
+
+A MERT-space reference corpus that new songs are *placed onto*, never re-clustered
+from scratch. Design rationale in [REFERENCE_CORPUS_DESIGN.md](../REFERENCE_CORPUS_DESIGN.md).
+CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
+
+| Module | Responsibility |
+|---|---|
+| `sources.py` | Track sources under one item contract (`fma_source`, `local_source`, `mpd_source`) |
+| `build.py` | `build_corpus` — embed (checkpointed/resumable) → dedupe → fit `SongIndex` + Leiden → per-cluster profiles → freeze bundle |
+| `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp) |
+| `place.py` | Placement regime — `place`, `embed_query`, playlist-fit / `rank_playlists` |
+| `__main__.py` | `build` / `place` CLI |
+
+Bundles are written to `models/corpus_<name>/`. Tests: `tests/test_corpus_{build,bundle,place}.py`.
 
 ## Top-level scripts & `ui/`
 

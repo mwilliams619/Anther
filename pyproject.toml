@@ -16,6 +16,7 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "umap-learn",
+    "pynndescent",   # Tier 2A — approximate-kNN dedupe at 100k+ scale
     "hdbscan",
     # Workstream D — Leiden graph community detection
     "leidenalg",

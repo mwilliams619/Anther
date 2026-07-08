@@ -39,6 +39,22 @@ def test_dedupe_does_not_drop_distinct_same_blob_tracks():
     assert keep.all()
 
 
+def test_dedupe_ann_matches_exact():
+    # Tier 2A: the ANN path must reproduce the exact O(N²) keep-mask.
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(500, 32)).astype(np.float32)
+    for src, dst in [(10, 50), (10, 51), (200, 480), (5, 6), (300, 301)]:
+        X[dst] = X[src] + rng.normal(scale=1e-4, size=32)  # planted near-dupes
+
+    exact = dedupe_near_identical(X, threshold=0.98, method="exact")
+    ann = dedupe_near_identical(X, threshold=0.98, method="ann", n_neighbors=20)
+
+    np.testing.assert_array_equal(exact, ann)
+    # sanity: first occurrence kept, later duplicates dropped
+    for src, dst in [(10, 50), (10, 51), (200, 480), (5, 6), (300, 301)]:
+        assert exact[src] and not exact[dst]
+
+
 # --------------------------------------------------------------------------- #
 # artist cap
 # --------------------------------------------------------------------------- #

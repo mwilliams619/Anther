@@ -21,8 +21,11 @@ time. Near-duplicate removal needs vectors, so it lives post-embedding in
 build.py.
 """
 
+import logging
 import random
 from pathlib import Path
+
+log = logging.getLogger("anther_ml.corpus.sources")
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aiff"}
 
@@ -196,3 +199,118 @@ def mpd_source(
         }
     if n_missed:
         print(f"mpd_source: {n_missed} tracks had no usable preview (skipped)")
+
+
+def sql_source(
+    db_path: str | Path | None = None,
+    sql_dump: str | Path | None = None,
+    sample_n: int | None = 8000,
+    tracks_per_artist_cap: int | None = 5,
+    seed: int = 42,
+    min_popularity: float | None = None,
+    with_membership: bool = True,
+    prefer_spotify_preview: bool = True,
+    deezer_fallback: bool = True,
+    clip_seconds: float | None = 30.0,
+    min_ratio: float = 0.82,
+    n_workers: int = 12,
+):
+    """
+    MPD tracks from the **MySQL dump** (``spotifydbdumpshare.sql``), streamed one
+    waveform at a time. This is the SQL analogue of :func:`mpd_source`; it reads
+    the normalized ``track``/``artist``/``playlist`` tables via
+    :mod:`anther_ml.mpd_sql` instead of ``mpd.slice.*.json`` files.
+
+    Audio comes from the Spotify ``preview_url`` stored on each ``track`` row —
+    fetched directly, so no Deezer/ISRC matching is needed (``deezer_fallback``
+    covers dead/expired preview URLs). ``db_path`` is built from ``sql_dump`` on
+    first use if it doesn't exist yet (see :func:`mpd_sql.ensure_db`).
+
+    Sampling is deterministic per ``seed``, artist-capped before embedding, and
+    carries playlist membership — the same contract the JSON path provides.
+
+    Previews are fetched with a bounded ``n_workers``-thread pool (Tier 1B): the
+    fetch/decode is I/O-bound, so overlapping it keeps the downstream GPU fed.
+    Results are yielded in sample order (deterministic), so a resumed build and
+    the dedupe "first occurrence wins" rule stay stable.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ..embedding import SR
+    from ..mpd_sql import ensure_db, sample_tracks
+    from ..spotify_deezer import fetch_preview_waveform, match_deezer_track
+
+    db_path = ensure_db(
+        db_path=db_path, sql_dump=sql_dump, with_membership=with_membership
+    )
+    rows, membership = sample_tracks(
+        db_path,
+        sample_n=sample_n,
+        artist_cap=tracks_per_artist_cap,
+        seed=seed,
+        min_popularity=min_popularity,
+    )
+    log.info(
+        "sql_source: fetching audio for %d sampled tracks (%d workers)…",
+        len(rows), n_workers,
+    )
+
+    def fetch_one(row: dict) -> dict | None:
+        track_id, name = row["track_id"], row["name"] or ""
+        artist_name, preview_url = row["artist_name"], row["preview_url"]
+
+        wav = None
+        if prefer_spotify_preview and preview_url:
+            try:
+                wav, _ = fetch_preview_waveform(
+                    preview_url, target_sr=SR, clip_seconds=clip_seconds
+                )
+            except Exception as e:  # noqa: BLE001 — dead/expired URL → try fallback
+                log.debug("spotify preview failed for %s: %s", track_id, e)
+                wav = None
+
+        if wav is None and deezer_fallback:
+            match = match_deezer_track(
+                {"sp_id": track_id, "isrc": None, "title": name,
+                 "artist": artist_name or "", "duration_ms": None},
+                min_ratio=min_ratio,
+            )
+            if "error" not in match:
+                try:
+                    wav, _ = fetch_preview_waveform(
+                        match["preview"], target_sr=SR, clip_seconds=clip_seconds
+                    )
+                except Exception:  # noqa: BLE001 — network flake on one preview
+                    wav = None
+
+        if wav is None:
+            return None
+        return {
+            "id": f"spotify:{track_id}",
+            "name": name,
+            "artist": artist_name or None,
+            "source": "mpd_sql",
+            "genre": None,
+            "playlists": membership.get(track_id, []),
+            "audio": wav,
+            "sr": SR,
+        }
+
+    # Ordered, bounded parallelism: process in windows so at most ~one window of
+    # fetched waveforms is buffered at a time (memory), while up to n_workers
+    # fetches run concurrently.
+    n_missed = 0
+    window = max(n_workers * 4, 1)
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for start in range(0, len(rows), window):
+            for item in pool.map(fetch_one, rows[start : start + window]):
+                if item is None:
+                    n_missed += 1
+                    continue
+                yield item
+
+    if n_missed:
+        log.warning(
+            "sql_source: %d/%d tracks had no usable preview (skipped)",
+            n_missed, len(rows),
+        )

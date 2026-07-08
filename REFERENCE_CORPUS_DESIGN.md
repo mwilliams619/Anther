@@ -1,6 +1,7 @@
 # Design — A Reference Corpus in MERT Space
 
-**For:** `anther-ml`. **Slots into:** Workstream W5 / "the bigger non-immediate item" in `SIMILARITY_REVIEW.md` and `CLUSTERING_FIX_PLAN.md`.
+**For:** `anther-ml`. This is the design rationale for the `anther_ml.corpus`
+subpackage (`build.py`, `bundle.py`, `place.py`, `sources.py`), which implements it.
 **Goal:** Define what a MERT-space reference corpus *is*, why it is the thing that makes clustering of small subsets and new uploads meaningful, and the smartest way to build one.
 
 ---

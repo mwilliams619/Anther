@@ -106,6 +106,36 @@ class _FakeModel:
         return _Out()
 
 
+def test_embed_tracks_batched_matches_per_track():
+    """Tier 1A invariant: batching several tracks into shared forward passes must
+    yield each track's vector bit-for-bit identical to the one-at-a-time path."""
+    from anther_ml.embedding import _embed_windows, embed_tracks_batched
+
+    model, processor = _FakeModel(), _FakeProcessor()
+    rng = np.random.default_rng(1)
+    waveforms = [
+        rng.standard_normal(int(45 * SR)).astype(np.float32),  # 3 full windows
+        rng.standard_normal(int(60 * SR)).astype(np.float32),  # 3 full windows
+        rng.standard_normal(int(4 * SR)).astype(np.float32),   # 1 short window
+    ]
+
+    reference = np.vstack([
+        _embed_windows(
+            model, processor, [y[s:e] for s, e in plan_windows(len(y))],
+            device="cpu", layer_aggregation="mean",
+        )
+        for y in waveforms
+    ])
+
+    # batch_windows small enough to force multiple chunks within a length bucket.
+    got = embed_tracks_batched(
+        model, processor, waveforms, device="cpu",
+        layer_aggregation="mean", batch_windows=4, use_fp16=False,
+    )
+    assert got.shape == reference.shape
+    np.testing.assert_allclose(got, reference, rtol=1e-6, atol=1e-6)
+
+
 def test_get_embedding_end_to_end_mocked(monkeypatch, tmp_path):
     import soundfile as sf
     import anther_ml.embedding as emb_mod

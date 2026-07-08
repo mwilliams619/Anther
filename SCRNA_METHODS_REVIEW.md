@@ -2,6 +2,8 @@
 
 _Scope: canonical single-cell RNA-seq (scRNA-seq) clustering/integration methods, and which of their techniques transfer to `anther-ml`'s problem — meaningful, label-free clustering of noisy high-dimensional audio embeddings. All papers below were retrieved and DOI-verified via OpenAlex; citation counts are as of retrieval._
 
+> **Status:** the recommendations in this review (Leiden graph clustering, cluster-the-embedding-not-UMAP, standardize-before-similarity, stability/ARI eval, loudness-as-batch-effect) are now implemented in `cluster.py`, `similarity.py`, `eval.py`, and `audio.py`. This file is retained for its citations and rationale; the "fix plan" it references has been removed after completion. References to "Workstream A/D/F" are historical labels for those shipped changes.
+
 ## Why this field is the right analogy
 
 Your instinct is correct, and the analogy is unusually tight. scRNA-seq measures ~20,000 gene counts per cell across thousands–millions of cells. The data is **noisy, extremely high-dimensional, has no ground-truth labels, and the goal is to recover meaningful groups (cell types/states) that emerge from the data rather than from pre-assigned categories.** That last point matters for you specifically: single-cell clustering is *definitionally unsupervised* — cell populations are discovered from expression similarity, then characterized after the fact. It never clusters "to a label." That is exactly the genre-free philosophy you asked for, and the field has spent a decade hardening the machinery to do it well.

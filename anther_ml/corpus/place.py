@@ -73,12 +73,14 @@ def place(
             X = leiden["pca"].transform(X)
         coords_2d = leiden["reducer_2d"].transform(X)[0].tolist()
 
+    profile = corpus.cluster_profile(cluster_id)
     return {
         "neighbors": neighbors,
         "cluster": {
             "id": cluster_id,
             "confidence": confidence,
-            "profile": corpus.cluster_profile(cluster_id),
+            "label": profile.get("label_final", ""),
+            "profile": profile,
         },
         "coords_2d": coords_2d,
     }
