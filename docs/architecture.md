@@ -29,7 +29,7 @@ clustering and similarity API — only the input embeddings differ.
 
 | Module | Responsibility |
 |---|---|
-| `mpd_sql.py` | **MySQL MPD dump** (`spotifydbdumpshare.sql`) → SQLite → deterministic artist-capped sample (`load_dump_to_sqlite`, `ensure_db`, `sample_tracks`). Streaming, resumable, logged. This is the supported path for our dataset. |
+| `mpd_sql.py` | **MySQL MPD dump** (`spotifydbdumpshare.sql`) → SQLite → deterministic artist-capped sample (`load_dump_to_sqlite`, `ensure_db`, `sample_tracks`). Streaming, resumable, logged. This is the supported path for our dataset. Also the web UI's full-MPD playlist backend: `--prepare-ui` (one-time index + `playlist_search` table), then `search_playlists_db` / `playlist_tracks` serve any of the 1M playlists |
 | `mpd_ingest.py` | Legacy: RecSys `mpd.slice.*.json` files → corpus queries (`build_mpd_queries`, `enrich_isrc`). Kept for JSON-format MPD downloads |
 | `spotify_deezer.py` | Spotify metadata → Deezer preview audio (`load_spotify_via_deezer`); preview fetch/decode reused by both MPD paths |
 
@@ -41,6 +41,8 @@ fallback for dead URLs). Build the DB once, then sample many times:
 python -m anther_ml.mpd_sql --dump data/mpd_dump/spotifydbdumpshare.sql   # one-time
 python -m anther_ml.corpus build --source sql \
     --sql-dump data/mpd_dump/spotifydbdumpshare.sql --name mpd_25k --sample-n 25000
+# one-time UI prep (playlist_id index + playlist_search table; minutes, ~4 GB growth)
+python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui
 ```
 
 The full dump is ~13.3M tracks — far past the design's 10k–100k range — so `sql_source`
@@ -72,9 +74,9 @@ Bundles are written to `models/corpus_<name>/` (primary:
 |---|---|
 | `export_viz.py` | Bakes an index + 2D embedding into the standalone `song_view.html` d3 map (`PHASE` set at top; re-run after any index rebuild) — see [notebooks.md](notebooks.md) |
 | `export_corpus_viz.py` | Canvas scatter-plot viewer for a whole corpus bundle (tens of thousands of points; pan/zoom, no force sim) → `corpus_*_view.html` |
-| `ui/app.py` | Flask backend (thin router) for the song staging + atlas UI — `python ui/app.py`, port 5000 |
-| `ui/atlas.py` | Frozen-corpus atlas: three-tier song search (local corpus → Deezer → Spotify) + `place()` onto the frozen 100k corpus; playlist-name search + one-shot playlist load (`place_playlist` — hub-and-spoke group of all in-corpus members, no neighbor fan-out); owns all corpus/MERT state. Corpus dir via `ANTHER_CORPUS` env var |
-| `ui/jobs.py` | Legacy background cluster-job runner (one job at a time; MERT loaded once) — slated for migration to `place()` |
+| `ui/app.py` | Flask backend (thin router) for the song atlas UI — `python ui/app.py`, port 5000 |
+| `ui/atlas.py` | Frozen-corpus atlas: three-tier song search (local corpus → Deezer → Spotify) + `place()` onto the frozen 100k corpus; full-MPD playlist search + placement (`place_playlist` — every member becomes an ordinary query node with top-K neighbor fan-out, no hub; in-corpus/cached tracks merge instantly, the rest queue for background embedding); raw-MERT embed cache (`ui/session/embed_cache.sqlite`); owns all corpus/MERT state. Corpus dir via `ANTHER_CORPUS`, MPD DB via `ANTHER_MPD_DB` |
+| `ui/playlist_jobs.py` | Background embed-and-place worker for playlist adds: single queue/thread (one GPU consumer), per-track Spotify-preview→Deezer fallback, progress via `/api/playlist/status/<job_id>` polling |
 | `ui/static/` | d3 force-graph frontend (`graph.js`, `app.js`); session state under `ui/session/` |
 
 ## Tests
@@ -82,4 +84,4 @@ Bundles are written to `models/corpus_<name>/` (primary:
 `tests/test_{audio,cluster,data,embedding,eval,features,similarity,mpd_sql}.py`
 (one per core module), `tests/test_corpus_*.py` (corpus subpackage), and
 `tests/test_atlas_search.py` (UI atlas search tiers), and
-`tests/test_atlas_playlist.py` (playlist search + hub placement). Run with `pytest`.
+`tests/test_atlas_playlist.py` (playlist search + placement). Run with `pytest`.
