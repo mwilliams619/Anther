@@ -29,6 +29,10 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "tqdm",
+    # ui/ — Flask atlas app
+    "flask",
+    "requests",
+    "werkzeug",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +40,7 @@ notebooks = ["jupyter", "ipykernel"]
 dev = ["pytest"]
 
 [tool.setuptools]
-packages = ["anther_ml", "anther_ml.corpus"]
+packages = ["anther_ml", "anther_ml.corpus", "anther_ml.corpus.tagging"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

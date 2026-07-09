@@ -45,7 +45,8 @@ python ui/app.py   # port 5000
   map.
 - **Env vars**: `ANTHER_CORPUS` (corpus bundle dir), `ANTHER_MPD_DB` (MPD
   SQLite DB path), `ANTHER_IMPORT_CAP` (playlist/album placement cap, default
-  100).
+  100), `ANTHER_DEBUG` (Flask debug mode, default off — leave off on any
+  internet-facing host).
 - **Session state** lives under `ui/session/`: `embed_cache.sqlite` (raw
   MERT vectors, avoids re-embedding on repeat placement) and the saved graph
   JSON (persists the map across restarts).

@@ -182,7 +182,7 @@ if __name__ == '__main__':
     # 0.0.0.0 so the UI is reachable from other machines on the LAN
     # (e.g. a laptop browsing to http://<dev-box-ip>:5000) without VS Code
     # port forwarding. Dev server on a trusted network only.
-    app.run(debug=True,
+    app.run(debug=os.environ.get('ANTHER_DEBUG') == '1',
             host=os.environ.get('ANTHER_UI_HOST', '0.0.0.0'),
             port=int(os.environ.get('ANTHER_UI_PORT', '5000')),
             use_reloader=False)

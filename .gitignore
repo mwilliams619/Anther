@@ -11,11 +11,27 @@ data/fma_metadata/
 data/mpd_dump/
 data/*.zip
 
+# derived eval-embedding checkpoints — regenerate via `tagging embed-eval`
+data/fma_eval_embeddings.npz*
+
 # model artifacts — all derived, not committed
 models/
 
+# generated viz exports — regenerate via export_viz.py / export_corpus_viz.py
+/song_view.html
+/corpus_*_view.html
+
+# UI session/runtime state — dirs kept via .gitkeep, contents ignored
+ui/session/*.sqlite
+ui/session/graph.json
+ui/session/uploads/*
+!ui/session/uploads/.gitkeep
+
 # jupyter checkpoints
 .ipynb_checkpoints/
+
+# pytest / build caches
+.pytest_cache/
 
 # env
 .env
