@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=3" />
 </head>
 <body>
 
@@ -26,6 +26,7 @@
       <div class="search-mode" role="tablist">
         <button id="mode-tracks" class="mode-btn active" role="tab">Tracks</button>
         <button id="mode-playlists" class="mode-btn" role="tab">Playlists</button>
+        <button id="mode-albums" class="mode-btn" role="tab">Albums</button>
       </div>
       <p class="hint-text" id="search-hint">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
       <div class="search-bar">
@@ -34,6 +35,27 @@
       <div id="search-results" style="margin-top:10px">
         <div class="empty">Search for a song to add it to the atlas</div>
       </div>
+      <div id="playlist-progress" class="place-status"></div>
+    </section>
+
+    <!-- Map management -->
+    <section>
+      <h2>Map</h2>
+      <div class="filter-box">
+        <div class="search-bar">
+          <input id="filter-input" type="text"
+                 placeholder="Filter by artist, playlist, album…" autocomplete="off" />
+        </div>
+        <div id="filter-suggest"></div>
+      </div>
+      <div id="filter-active"></div>
+      <div id="map-list" class="map-list"></div>
+      <div class="map-actions">
+        <span id="map-count" class="hint-text"></span>
+        <button id="clear-map" title="Remove every node from the map">Clear map</button>
+      </div>
+      <div id="removed-header" class="removed-header" hidden>Recently removed</div>
+      <div id="removed-list" class="map-list"></div>
     </section>
 
     <!-- Upload -->
@@ -53,6 +75,7 @@
   <!-- ── Graph ────────────────────────────────────────────────────────────── -->
   <div class="graph-wrap">
     <svg id="graph"></svg>
+    <div id="graph-loading">loading corpus… the map will appear shortly</div>
     <aside id="detail-panel" hidden>
       <button id="detail-close" class="btn-icon" title="Close">×</button>
       <div id="detail-body"></div>
@@ -66,7 +89,7 @@
 <div id="error-toast"></div>
 
 <script src="https://d3js.org/d3.v4.js"></script>
-<script src="/static/graph.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/graph.js?v=3"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

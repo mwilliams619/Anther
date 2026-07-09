@@ -5,18 +5,30 @@
  * force sim — the exact corpus embedding is intentionally not used.
  */
 const AtlasGraph = (() => {
-  const PALETTE = [
-    '#7b5ea7','#4e9a8a','#c46b3a','#4a7bbf','#a0516a',
-    '#6b9e3c','#9b6b3c','#3c7b9e','#9e3c6b','#5ea74a',
+  // Nodes are NOT colored by cluster — the force layout itself shows song
+  // relationships; cluster info lives only in the click popover. Fills come
+  // from CSS (query = --primary, corpus = grey).
+
+  // Accent ring per playlist/album import: hues chosen to read against the
+  // dark node fills. Assigned in first-seen order.
+  const PLAYLIST_ACCENTS = [
+    '#f2c14e','#5ad1c8','#f27d72','#8fd15a','#d98cf2','#6aa9f2','#f2a25a','#e05a8c',
   ];
-  const clusterColor = c =>
-    (c == null || c === -1) ? '#555577' : PALETTE[c % PALETTE.length];
+  const playlistAccent = new Map();
+  const playlistColor = pid => {
+    if (!playlistAccent.has(pid)) {
+      playlistAccent.set(pid, PLAYLIST_ACCENTS[playlistAccent.size % PLAYLIST_ACCENTS.length]);
+    }
+    return playlistAccent.get(pid);
+  };
 
   let svg, g, gLink, gNode, sim, zoom;
   let nodes = [], links = [];
   const byId = new Map();
   let linkSel, nodeSel, tooltip;
   let pinnedId = null;                  // clicked node: highlight locked until deselect
+  let filterIds = null;                 // active filter: Set of node ids to keep lit
+  let groups = {};                      // gid → {name, kind} for imported playlists/albums
   let selectCb = null, deselectCb = null;
 
   function init(containerSel) {
@@ -40,8 +52,7 @@ const AtlasGraph = (() => {
       .force('link',   d3.forceLink(links).id(d => d.id)
                           // closer edge = more-similar songs sit tighter
                           .distance(d => 30 + 60 * (1 - (d.value == null ? 0.5 : d.value)))
-                          .strength(d => d.kind === 'qq' ? 0.35
-                                       : d.kind === 'member' ? 0.3 : 0.15))
+                          .strength(d => d.kind === 'qq' ? 0.35 : 0.15))
       .force('charge', d3.forceManyBody().strength(-90))
       .force('collide', d3.forceCollide(14))
       .force('center', d3.forceCenter(W / 2, H / 2))
@@ -64,8 +75,7 @@ const AtlasGraph = (() => {
     linkSel = gLink.selectAll('line').data(links, d => `${idOf(d.source)}->${idOf(d.target)}`);
     linkSel.exit().remove();
     linkSel = linkSel.enter().append('line')
-      .attr('class', d => 'glink' + (d.kind === 'qq' ? ' glink-qq' : '')
-                                  + (d.kind === 'member' ? ' glink-member' : '')).merge(linkSel);
+      .attr('class', d => 'glink' + (d.kind === 'qq' ? ' glink-qq' : '')).merge(linkSel);
 
     // ── nodes (a <g> per node: circle + label) ──
     nodeSel = gNode.selectAll('g.gnode').data(nodes, d => d.id);
@@ -85,27 +95,30 @@ const AtlasGraph = (() => {
     nodeSel = enter.merge(nodeSel);
 
     nodeSel.select('circle')
-      .attr('r', d => d.kind === 'playlist' ? 12 : d.kind === 'query' ? 9 : 5)
-      .attr('fill', d => clusterColor(d.cluster))
-      .attr('class', d => d.kind === 'playlist' ? 'playlist-node'
-                        : d.kind === 'query' ? 'query-node' : 'corpus-node');
+      .attr('r', d => d.kind === 'query' ? 9 : 5)
+      // import-group badge: accent-colored ring (via CSS var so the
+      // pinned-selection ring still overrides it)
+      .attr('class', d => (d.kind === 'query' ? 'query-node' : 'corpus-node')
+                        + (d.playlist_pid ? ' in-playlist' : ''))
+      .style('--pl-accent', d => d.playlist_pid ? playlistColor(d.playlist_pid) : null);
 
     nodeSel.select('text.glabel')
-      .text(d => (d.kind === 'query' || d.kind === 'playlist') ? d.name : '')
-      .attr('class', d => 'glabel ' + (d.kind === 'playlist' ? 'glabel-playlist'
-                                     : d.kind === 'query' ? 'glabel-query' : ''));
+      .text(d => d.kind === 'query' ? d.name : '')
+      .attr('class', d => 'glabel ' + (d.kind === 'query' ? 'glabel-query' : ''));
 
     sim.nodes(nodes);
     sim.force('link').links(links);
     sim.alpha(0.7).restart();
 
-    // keep the pinned highlight correct across newly entered nodes/links
+    // keep the pinned highlight / active filter correct across entered elements
     if (pinnedId !== null) {
       const p = byId.get(pinnedId);
       if (p) {
         applyHighlight(p);
         nodeSel.classed('selected', n => n.id === pinnedId);
       }
+    } else if (filterIds !== null) {
+      applyFilterClasses();
     }
   }
 
@@ -129,6 +142,7 @@ const AtlasGraph = (() => {
       if (byId.has(l.source) && byId.has(l.target)) links.push(l);
     });
     restart();
+    if (opts && opts.focus === false) return;   // streamed merges: no camera jumps
     // gently recentre the view on the focus node (or the newest query node)
     const fid = (opts && opts.focusId)
       || ((frag.nodes || []).find(n => n.kind === 'query') || {}).id;
@@ -146,13 +160,26 @@ const AtlasGraph = (() => {
     );
   }
 
+  // Load the saved graph, waiting out the corpus warm-up (~1-2 min after
+  // server start): /api/graph reports ready:false until the corpus is loaded,
+  // and rendering an "empty" graph during that window looks like a dead UI.
   async function load() {
-    try {
-      const data = await fetch('/api/graph').then(r => r.json());
-      nodes = (data.nodes || []).map(n => ({ ...n }));
-      links = (data.links || []);
-      nodes.forEach(n => byId.set(n.id, n));
-    } catch (_) { nodes = []; links = []; }
+    const hint = document.getElementById('graph-loading');
+    for (;;) {
+      try {
+        const data = await fetch('/api/graph').then(r => r.json());
+        if (data.ready !== false) {
+          nodes = (data.nodes || []).map(n => ({ ...n }));
+          links = (data.links || []);
+          groups = data.groups || {};
+          nodes.forEach(n => byId.set(n.id, n));
+          break;
+        }
+      } catch (_) { /* server not up yet — keep retrying */ }
+      if (hint) hint.style.display = 'block';
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    if (hint) hint.style.display = 'none';
   }
 
   /* ── hover / drag ── */
@@ -171,10 +198,50 @@ const AtlasGraph = (() => {
     nodeSel.classed('dimmed', n => !near.has(n.id));
     nodeSel.classed('lit',    n => near.has(n.id));   // un-greys corpus neighbors
   }
-  function clearHighlight() {
+  function applyFilterClasses() {
     linkSel.classed('neighbor', false);
+    linkSel.classed('filter-out',
+      l => !(filterIds.has(idOf(l.source)) && filterIds.has(idOf(l.target))));
+    nodeSel.classed('dimmed', n => !filterIds.has(n.id));
+    nodeSel.classed('lit',    n => filterIds.has(n.id));
+  }
+  function clearHighlight() {
+    if (filterIds !== null) { applyFilterClasses(); return; }   // filter is the rest state
+    linkSel.classed('neighbor', false);
+    linkSel.classed('filter-out', false);
     nodeSel.classed('dimmed', false);
     nodeSel.classed('lit', false);
+  }
+
+  /* ── filter / bulk management (left-panel Map section) ── */
+  function setFilter(ids) {
+    filterIds = ids ? new Set(ids) : null;
+    if (pinnedId !== null) clearSelection();          // filter becomes the rest state
+    if (filterIds === null) {
+      linkSel.classed('filter-out', false);
+      nodeSel.classed('dimmed', false).classed('lit', false);
+    } else {
+      applyFilterClasses();
+    }
+  }
+
+  function removeNodes(ids) {
+    const rm = new Set(ids);
+    if (pinnedId !== null && rm.has(pinnedId)) clearSelection();
+    nodes = nodes.filter(n => !rm.has(n.id));
+    links = links.filter(l => !rm.has(idOf(l.source)) && !rm.has(idOf(l.target)));
+    rm.forEach(id => { byId.delete(id); if (filterIds) filterIds.delete(id); });
+    restart();
+  }
+
+  function reset() {
+    if (pinnedId !== null) clearSelection();
+    nodes = [];
+    links = [];
+    byId.clear();
+    filterIds = null;
+    groups = {};
+    restart();
   }
 
   /* ── click / pin selection ── */
@@ -202,11 +269,11 @@ const AtlasGraph = (() => {
 
   function onHover(d) {
     if (pinnedId === null) applyHighlight(d);   // hover previews only when unpinned
-    const conf = d.confidence != null
-      ? `<div class="tip-label">cluster ${d.cluster} · conf ${Math.round(d.confidence * 100)}%</div>` : '';
+    const pl = d.playlist_pid
+      ? `<div class="tip-label" style="color:${playlistColor(d.playlist_pid)}">● from ${String(d.playlist_pid).startsWith('album:') ? 'album' : 'playlist'}</div>` : '';
     tooltip.style('display', 'block').html(
       `<div class="tip-title">${esc(d.name)}</div>` +
-      `<div class="tip-artist">${esc(d.artist || '')}</div>` + conf
+      `<div class="tip-artist">${esc(d.artist || '')}</div>` + pl
     );
     onMove.call(this, d);
   }
@@ -232,8 +299,15 @@ const AtlasGraph = (() => {
     mergeFragment,
     zoomTo,
     hasNode: id => byId.has(id),
+    getNodes: () => nodes.slice(),
+    getGroups: () => ({ ...groups }),
+    registerGroup: (gid, info) => { groups[String(gid)] = info; },
+    groupColor: pid => playlistColor(pid),
     selectNode: select,
     clearSelection,
+    setFilter,
+    removeNodes,
+    reset,
     onSelect:   cb => { selectCb = cb; },
     onDeselect: cb => { deselectCb = cb; },
   };

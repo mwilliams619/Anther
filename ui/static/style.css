@@ -386,18 +386,173 @@ input[type="text"]::placeholder {
 #graph:active { cursor: grabbing; }
 
 .graph-hint {
-  position: absolute; 
-  bottom: calc(var(--spacing) * 2); 
-  left: 50%; 
+  position: absolute;
+  bottom: calc(var(--spacing) * 2);
+  left: 50%;
   transform: translateX(-50%);
-  font-size: 11px; 
-  color: var(--text-muted); 
-  pointer-events: none; 
+  font-size: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
   white-space: nowrap;
 }
 
+/* corpus warm-up overlay (shown while /api/graph reports ready:false) */
+#graph-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  font-size: 13px;
+  color: var(--text-mid);
+  pointer-events: none;
+}
+
+/* ── Map management panel ────────────────────────────────────────────────── */
+
+.filter-box { position: relative; }
+
+#filter-suggest {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface-hi);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow-y: auto;
+  display: none;
+}
+
+.suggest-row {
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.suggest-row:hover { background: var(--surface); }
+
+.suggest-kind {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 44px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  background: var(--surface-hi);
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  color: var(--text);
+}
+
+.filter-chip button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+
+.map-list {
+  max-height: 30vh;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.map-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing);
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.map-row:hover { background: var(--surface-hi); }
+
+.map-row .track-info { flex: 1; min-width: 0; }
+
+.map-row .track-title,
+.map-row .track-artist {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-row .ring-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  flex-shrink: 0;
+}
+
+.btn-tiny {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+
+.btn-tiny:hover { color: var(--text); background: var(--surface-hi); }
+
+.map-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+#clear-map {
+  background: none;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+#clear-map:hover { background: rgba(204,107,107,0.15); }
+
+.removed-header {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* album search result thumbnail */
+.album-cover {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  margin-right: var(--spacing);
+  flex-shrink: 0;
+}
+
 /* graph elements */
-.glink { 
+.glink {
   stroke: var(--border); 
   stroke-opacity: 0.4; 
   stroke-width: 1px; 
@@ -410,33 +565,43 @@ input[type="text"]::placeholder {
   stroke-width: 1.5px; 
 }
 
-.glink.neighbor { 
-  stroke: var(--warning); 
-  stroke-opacity: 0.8; 
-  stroke-width: 2px; 
+.glink.neighbor {
+  stroke: var(--warning);
+  stroke-opacity: 0.8;
+  stroke-width: 2px;
+}
+
+/* links outside the active artist/playlist/album filter */
+.glink.filter-out {
+  stroke-opacity: 0.06;
 }
 
 .gnode { cursor: grab; }
 
 .gnode.dimmed { opacity: 0.15; }
 
+/* nodes are not colored by cluster — uniform fills; cluster info lives in
+   the click popover only. Relationships come from the force layout itself. */
 circle.query-node {
+  fill: var(--primary);
   stroke: var(--text);
   stroke-width: 2px;
 }
 
-/* playlist membership badge: accent ring (color set per node via --pl-accent);
-   .gnode.selected circle (later in this file) still wins by source order */
+/* playlist/album import badge: accent ring (color set per node via
+   --pl-accent); .gnode.selected circle (later in this file) still wins by
+   source order */
 circle.query-node.in-playlist {
   stroke: var(--pl-accent, var(--text));
   stroke-width: 2.5px;
 }
 
-/* corpus context nodes rest desaturated; full color on hover */
+/* corpus context nodes rest dim; full brightness on hover */
 circle.corpus-node {
-  stroke: var(--border); 
+  fill: #555577;
+  stroke: var(--border);
   stroke-width: 1px;
-  opacity: 0.4; 
+  opacity: 0.4;
   filter: grayscale(0.8) brightness(0.7);
   transition: opacity var(--transition), filter var(--transition);
 }

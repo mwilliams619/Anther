@@ -116,6 +116,20 @@ def atlas_graph():
     return jsonify(atlas.get_graph())
 
 
+@app.route('/api/graph/clear', methods=['POST'])
+def graph_clear():
+    atlas.clear_graph()
+    return jsonify({'status': 'cleared'})
+
+
+@app.route('/api/node/<path:node_id>', methods=['DELETE'])
+def node_remove(node_id):
+    result = atlas.remove_node(node_id)
+    if result is None:
+        return jsonify({'error': 'unknown node id'}), 404
+    return jsonify(result)
+
+
 @app.route('/api/song/<path:song_id>')      # <path:> — ids contain ':' and filenames
 def atlas_song(song_id):
     try:
@@ -163,5 +177,12 @@ def upload():
 
 
 if __name__ == '__main__':
+    import os
     atlas.warm()          # load the frozen corpus in the background at startup
-    app.run(debug=True, port=5000, use_reloader=False)
+    # 0.0.0.0 so the UI is reachable from other machines on the LAN
+    # (e.g. a laptop browsing to http://<dev-box-ip>:5000) without VS Code
+    # port forwarding. Dev server on a trusted network only.
+    app.run(debug=True,
+            host=os.environ.get('ANTHER_UI_HOST', '0.0.0.0'),
+            port=int(os.environ.get('ANTHER_UI_PORT', '5000')),
+            use_reloader=False)

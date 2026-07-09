@@ -13,6 +13,8 @@ This module owns all corpus/MERT state so ui/app.py stays a thin router.
 
 import os
 import json
+import time
+import sqlite3
 import tempfile
 import threading
 from pathlib import Path
@@ -20,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
+from anther_ml import mpd_sql
 from anther_ml.corpus.bundle import ReferenceCorpus
 from anther_ml.corpus.place import embed_query, place
 from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ratio
@@ -27,7 +30,15 @@ from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ra
 # ── Config ───────────────────────────────────────────────────────────────────
 
 CORPUS_DIR      = os.environ.get("ANTHER_CORPUS", "models/corpus_corpus_mpd_100k")
+MPD_DB          = os.environ.get(
+    "ANTHER_MPD_DB",
+    str(Path(__file__).parent.parent / "data" / "mpd_dump" / "spotifydbdumpshare.sqlite"),
+)
+MPD_PREP_HINT   = ("full-MPD playlist data unavailable — run: "
+                   "python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui")
 TOP_K           = 8       # neighbors pulled in per placed song
+QQ_MAX_PER_NODE = 6       # cap on query↔query edges added per placed song
+IMPORT_CAP      = int(os.environ.get("ANTHER_IMPORT_CAP", "100"))  # max songs per playlist/album add
 CORPUS_MIN_HITS = 5       # < this many strong corpus hits → fall through to Deezer
 STRONG_SCORE    = 0.6     # _ratio threshold for a "strong" corpus match
 
@@ -40,8 +51,9 @@ STRONG_SCORE    = 0.6     # _ratio threshold for a "strong" corpus match
 QUERY_LINK_PCTL = float(os.environ.get("ANTHER_QQ_PCTL", "95"))
 _qq_threshold   = 0.981   # replaced at load() with the corpus-calibrated value
 
-SESSION_DIR = Path(__file__).parent / "session"
-GRAPH_PATH  = SESSION_DIR / "graph.json"
+SESSION_DIR      = Path(__file__).parent / "session"
+GRAPH_PATH       = SESSION_DIR / "graph.json"
+EMBED_CACHE_PATH = SESSION_DIR / "embed_cache.sqlite"
 
 # ── Lazy singletons ──────────────────────────────────────────────────────────
 
@@ -58,6 +70,7 @@ _mert_lock = threading.Lock()
 _graph = {"nodes": {}, "links": []}          # nodes keyed by id; links is a list
 _link_keys: set = set()                      # (source, target) dedupe
 _query_vecs: dict = {}                        # placed-song id → index-space unit vec
+_groups: dict = {}                            # gid → {"name", "kind"} for imported playlists/albums
 _graph_lock = threading.Lock()
 
 
@@ -143,6 +156,68 @@ def _mert():
     return _model, _processor, _device
 
 
+# ── Full-MPD playlist DB ─────────────────────────────────────────────────────
+
+_mpd_ready: bool | None = None
+
+
+def mpd_ready() -> bool:
+    """True iff the MPD sqlite DB exists and mpd_sql.prepare_ui() has run."""
+    global _mpd_ready
+    if _mpd_ready is None:
+        _mpd_ready = Path(MPD_DB).exists() and mpd_sql.is_ui_ready(MPD_DB)
+    return _mpd_ready
+
+
+# ── Embedding cache (raw MERT vecs for out-of-corpus tracks) ────────────────
+# Keyed by node id ("spotify:<id>", "deezer:<id>", …) and storing the RAW
+# embedding — pre-standardization — so cached vecs survive a corpus swap and
+# can feed both place() and index.transform_query(). Re-adding a playlist or
+# adding overlapping playlists never re-downloads/re-embeds a track.
+
+_cache_lock = threading.Lock()
+
+
+def cached_vec(track_id: str) -> np.ndarray | None:
+    if not track_id or not EMBED_CACHE_PATH.exists():
+        return None
+    try:
+        con = sqlite3.connect(str(EMBED_CACHE_PATH))
+        try:
+            row = con.execute(
+                "SELECT vec FROM embed_cache WHERE track_id = ?", (track_id,)
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return np.frombuffer(row[0], dtype=np.float32).copy()
+
+
+def cache_vec(track_id: str, vec, name: str = "", artist: str = "") -> None:
+    if not track_id:
+        return
+    v = np.asarray(vec, dtype=np.float32)
+    with _cache_lock:
+        SESSION_DIR.mkdir(exist_ok=True)
+        con = sqlite3.connect(str(EMBED_CACHE_PATH))
+        try:
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS embed_cache ("
+                "track_id TEXT PRIMARY KEY, vec BLOB NOT NULL, dim INTEGER NOT NULL, "
+                "name TEXT, artist TEXT, created REAL)"
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO embed_cache VALUES (?, ?, ?, ?, ?, ?)",
+                (track_id, v.tobytes(), int(v.size), name, artist, time.time()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
 # ── Tiered search ────────────────────────────────────────────────────────────
 
 def spotify_configured() -> bool:
@@ -207,26 +282,40 @@ def _search_corpus(q: str, limit: int) -> list:
     return out
 
 
-def search_playlists(q: str, limit: int = 20) -> list:
-    """Playlist-name search over the corpus playlist index (substring
-    pre-filter then _ratio ranking, ties broken by in-corpus size)."""
+def search_playlists(q: str, limit: int = 20) -> dict:
+    """Playlist-name search. Against the full MPD DB (real track counts, any
+    of the 1M playlists) when prepared; else the corpus playlist index
+    (in-corpus counts only) plus a notice telling the user how to upgrade.
+    Returns {"results": [...], "notice": str|None}."""
     load()
     q = (q or "").strip()
+    if not q:
+        return {"results": [], "notice": None}
+
+    if mpd_ready():
+        hits = mpd_sql.search_playlists_db(MPD_DB, q, limit=limit)
+        for h in hits:
+            entry = _playlist_index.get(h["pid"])
+            h["n_in_corpus"] = len(entry["indices"]) if entry else 0
+            h["source"] = "mpd"
+        return {"results": hits, "notice": None}
+
     tokens = _norm(q).split()
-    if not tokens:
-        return []
     scored = []
     for e in _playlist_rows:
         if not all(t in e["name_norm"] for t in tokens):
             continue
         scored.append((_ratio(q, e["name"]), e))
     scored.sort(key=lambda t: (-t[0], -t[1]["n_tracks"]))
-    return [{
-        "pid":      e["pid"],
-        "name":     e["name"],
-        "n_tracks": e["n_tracks"],
-        "score":    round(float(score), 3),
+    results = [{
+        "pid":         e["pid"],
+        "name":        e["name"],
+        "n_tracks":    e["n_tracks"],
+        "n_in_corpus": e["n_tracks"],
+        "source":      "corpus",
+        "score":       round(float(score), 3),
     } for score, e in scored[:limit]]
+    return {"results": results, "notice": MPD_PREP_HINT}
 
 
 def _search_deezer(q: str, limit: int) -> list:
@@ -295,6 +384,63 @@ def _search_spotify(q: str, limit: int) -> dict:
 
 # ── Placement → graph fragment ───────────────────────────────────────────────
 
+# One CUDA consumer at a time: the Flask request thread (place_song) and the
+# playlist background worker both embed through this lock.
+_embed_lock = threading.Lock()
+
+
+class PlacementSkip(Exception):
+    """A track that can't be placed (no audio resolvable). .reason is a short
+    machine-readable slug surfaced to the UI's skipped-tracks report."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
+    """Place a corpus row by index: exact top-K neighbor fan-out + merge."""
+    corpus = load()
+    self_id = corpus.metadata[idx].get("id")
+    raw_vec = corpus.embeddings[idx]
+    neighbors = corpus.index.query(raw_vec, top_k=TOP_K + 1)
+    neighbors = [n for n in neighbors if n.get("id") != self_id][:TOP_K]
+    node = {
+        "id":         self_id,
+        "name":       corpus.metadata[idx].get("name", ""),
+        "artist":     corpus.metadata[idx].get("artist", ""),
+        "cluster":    _id_to_cluster.get(self_id),
+        "kind":       "query",
+        "confidence": 1.0,
+        "source":     "corpus",
+        **(extra or {}),
+    }
+    return _merge_fragment(node, neighbors, corpus.index.transform_query(raw_vec))
+
+
+def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
+                     source: str, extra: dict | None = None) -> dict:
+    """Place an out-of-corpus track from an already-computed raw MERT vector."""
+    corpus = load()
+    res = place(corpus, raw_vec, top_k=TOP_K)
+    node = {
+        "id":         track_id,
+        "name":       name,
+        "artist":     artist,
+        "cluster":    int(res["cluster"]["id"]),
+        "kind":       "query",
+        "confidence": round(float(res["cluster"]["confidence"]), 3),
+        "source":     source,
+        # persisted at placement time: these can't be recomputed later without
+        # the raw vector (which for non-cached songs isn't kept on disk)
+        "tags":          res["tags"],
+        "cluster_label": res["cluster"].get("label", ""),
+        **(extra or {}),
+    }
+    return _merge_fragment(node, res["neighbors"],
+                           corpus.index.transform_query(raw_vec))
+
+
 def place_song(result: dict) -> dict:
     """
     Place one search result onto the frozen corpus and merge it into the graph.
@@ -303,6 +449,9 @@ def place_song(result: dict) -> dict:
     """
     corpus = load()
     source = result.get("source")
+    # re-placed removed nodes keep their playlist/album ring
+    extra = ({"playlist_pid": result["playlist_pid"]}
+             if result.get("playlist_pid") is not None else None)
 
     if source == "corpus":
         idx = result.get("idx")
@@ -310,49 +459,95 @@ def place_song(result: dict) -> dict:
             idx = _id_to_idx.get(result.get("id"))
         if idx is None:
             raise ValueError("corpus result missing idx/id")
-        self_id = corpus.metadata[idx].get("id")
-        raw_vec = corpus.embeddings[idx]
-        neighbors = corpus.index.query(raw_vec, top_k=TOP_K + 1)
-        neighbors = [n for n in neighbors if n.get("id") != self_id][:TOP_K]
-        node = {
-            "id":         self_id,
-            "name":       corpus.metadata[idx].get("name", ""),
-            "artist":     corpus.metadata[idx].get("artist", ""),
-            "cluster":    _id_to_cluster.get(self_id),
-            "kind":       "query",
-            "confidence": 1.0,
-            "source":     "corpus",
-        }
+        return _place_corpus_track(idx, extra=extra)
+
+    # Cache first: any song embedded before (incl. removed-then-re-placed ones)
+    # skips the download + MERT pass entirely.
+    raw = cached_vec(result.get("id"))
+    if raw is not None:
+        return _place_query_vec(result.get("id"), result.get("title", ""),
+                                result.get("artist", ""), raw, source, extra=extra)
+
+    if source == "upload":
+        path, cleanup = Path(result["path"]), None
     else:
-        if source == "upload":
-            path, cleanup = Path(result["path"]), None
-        else:
-            path, cleanup = _download_preview(result)
-        try:
+        path, cleanup = _download_preview(result)
+    try:
+        with _embed_lock:
             model, processor, device = _mert()
             vec = embed_query(path, corpus, model, processor, device)
-        finally:
-            if cleanup:
-                cleanup()
-        raw_vec = vec
-        res = place(corpus, vec, top_k=TOP_K)
-        neighbors = res["neighbors"]
-        node = {
-            "id":         result.get("id"),
-            "name":       result.get("title", ""),
-            "artist":     result.get("artist", ""),
-            "cluster":    int(res["cluster"]["id"]),
-            "kind":       "query",
-            "confidence": round(float(res["cluster"]["confidence"]), 3),
-            "source":     source,
-            # persisted at placement time: these can't be recomputed later for
-            # deezer/spotify/upload songs (the MERT vector isn't kept on disk)
-            "tags":          res["tags"],
-            "cluster_label": res["cluster"].get("label", ""),
-        }
+    finally:
+        if cleanup:
+            cleanup()
+    cache_vec(result.get("id"), vec, result.get("title", ""), result.get("artist", ""))
+    return _place_query_vec(result.get("id"), result.get("title", ""),
+                            result.get("artist", ""), vec, source, extra=extra)
 
-    qvec = corpus.index.transform_query(raw_vec)
-    return _merge_fragment(node, neighbors, qvec)
+
+def resolve_and_embed(track: dict) -> tuple[np.ndarray, str]:
+    """
+    Audio for one out-of-corpus track → raw MERT vector.
+
+    ``track`` is {"id", "name", "artist", "preview_url"}. Tries the stored
+    Spotify preview URL first (many p.scdn.co links are dead — Spotify
+    deprecated previews in late 2024), then a Deezer name/artist match.
+    Returns (raw_vec, method); raises PlacementSkip when no audio resolves.
+    """
+    corpus = load()
+    path = cleanup = None
+    method = None
+
+    url = track.get("preview_url")
+    if url:
+        try:
+            path, cleanup = _download_url(url)
+            method = "spotify_preview"
+        except Exception:
+            path = None                                     # dead link → Deezer
+
+    if path is None:
+        m = match_deezer_track({"title": track.get("name", ""),
+                                "artist": track.get("artist", "")})
+        if "error" in m or not m.get("preview"):
+            raise PlacementSkip("deezer_no_match" if url else "no_preview")
+        try:
+            path, cleanup = _download_preview(
+                {"preview_url": m["preview"], "deezer_id": m.get("deezer_id")})
+            method = "deezer"
+        except Exception as e:
+            raise PlacementSkip(f"download_failed:{e}")
+
+    try:
+        with _embed_lock:
+            model, processor, device = _mert()
+            vec = embed_query(path, corpus, model, processor, device)
+    except Exception as e:
+        raise PlacementSkip(f"embed_failed:{e}")
+    finally:
+        if cleanup:
+            cleanup()
+    cache_vec(track["id"], vec, track.get("name", ""), track.get("artist", ""))
+    return vec, method
+
+
+def place_external_track(track: dict, raw_vec, playlist_pid=None) -> dict:
+    """Merge one embedded out-of-corpus track into the graph (worker entry)."""
+    extra = {"playlist_pid": playlist_pid} if playlist_pid is not None else None
+    return _place_query_vec(track["id"], track.get("name", ""),
+                            track.get("artist", ""), raw_vec, "mpd", extra=extra)
+
+
+def _download_url(url: str):
+    """Download an audio URL to a temp mp3; returns (path, cleanup)."""
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    if len(r.content) < 1024:                               # error page, not audio
+        raise ValueError(f"suspiciously small response ({len(r.content)} bytes)")
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    tmp.write(r.content)
+    tmp.close()
+    p = Path(tmp.name)
+    return p, lambda: p.unlink(missing_ok=True)
 
 
 def _download_preview(result: dict):
@@ -365,13 +560,7 @@ def _download_preview(result: dict):
             url = fresh
     if not url:
         raise ValueError("no preview URL available")
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    tmp.write(r.content)
-    tmp.close()
-    p = Path(tmp.name)
-    return p, lambda: p.unlink(missing_ok=True)
+    return _download_url(url)
 
 
 def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
@@ -389,10 +578,12 @@ def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
             _graph["nodes"][node["id"]] = node
             added_nodes.append(node)
         else:                                                  # re-add → promote to query
-            existing.update(kind="query", confidence=node.get("confidence"))
+            existing.update(node)                              # carries playlist_pid etc.
 
-        # ── query↔query similarity edges ──
+        # ── query↔query similarity edges (top-QQ_MAX_PER_NODE by score, so a
+        # coherent playlist batch can't flood O(m²) links) ──
         if qvec is not None:
+            cands = []
             for other_id, ovec in _query_vecs.items():
                 if other_id == node["id"]:
                     continue
@@ -403,10 +594,13 @@ def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
                 rkey = (other_id, node["id"])
                 if key in _link_keys or rkey in _link_keys:
                     continue
+                cands.append((score, other_id))
+            cands.sort(reverse=True)
+            for score, other_id in cands[:QQ_MAX_PER_NODE]:
                 link = {"source": node["id"], "target": other_id,
                         "value": round(score, 3), "kind": "qq"}
                 _graph["links"].append(link)
-                _link_keys.add(key)
+                _link_keys.add((node["id"], other_id))
                 added_links.append(link)
             _query_vecs[node["id"]] = qvec
 
@@ -436,15 +630,97 @@ def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
     return {"nodes": added_nodes, "links": added_links}
 
 
+def _place_collection_rows(rows: list, gid, source: str):
+    """Shared playlist/album placement split. ``rows`` are
+    {"id","name","artist","preview_url"}; in-corpus and cached tracks merge into
+    the returned fragment now, the rest come back as the pending embed list.
+    Returns (fragment, n_immediate, pending)."""
+    fragment = {"nodes": [], "links": []}
+    n_immediate = 0
+    pending = []
+    for r in rows:
+        nid = r["id"]
+        idx = _id_to_idx.get(nid)
+        if idx is not None:                                # in-corpus → instant
+            f = _place_corpus_track(idx, extra={"playlist_pid": gid})
+        else:
+            raw = cached_vec(nid)
+            if raw is not None:                            # embedded before → instant
+                f = _place_query_vec(nid, r["name"], r["artist"], raw,
+                                     source, extra={"playlist_pid": gid})
+            else:
+                with _graph_lock:
+                    existing = _graph["nodes"].get(nid)
+                    if existing is not None and existing.get("kind") == "query":
+                        existing["playlist_pid"] = gid     # placed pre-cache: tag only
+                        continue
+                pending.append({"id": nid, "name": r["name"],
+                                "artist": r["artist"],
+                                "preview_url": r.get("preview_url")})
+                continue
+        n_immediate += 1
+        fragment["nodes"] += f["nodes"]
+        fragment["links"] += f["links"]
+    return fragment, n_immediate, pending
+
+
+def _collection_response(gid, name, rows, n_total, fragment, n_immediate,
+                         pending, notice=None) -> dict:
+    with _graph_lock:                                     # remember the group's display name
+        _groups[str(gid)] = {"name": name,
+                             "kind": "album" if str(gid).startswith("album:") else "playlist"}
+        _save_graph()
+    job_id = None
+    if pending:
+        import playlist_jobs
+        job_id = playlist_jobs.start(gid, name, pending)
+    return {
+        "playlist": {
+            "pid":         gid,
+            "name":        name,
+            "n_tracks":    len(rows),
+            "n_total":     n_total,
+            "capped":      n_total > len(rows),
+            "n_immediate": n_immediate,
+            "n_pending":   len(pending),
+        },
+        "fragment": fragment,
+        "job_id":   job_id,
+        "notice":   notice,
+    }
+
+
 def place_playlist(pid) -> dict:
     """
-    Place every in-corpus track of one playlist onto the graph as a single
-    hub-and-spoke group: an artificial hub node (kind "playlist") linked to
-    each member (kind "query", no per-track neighbor fan-out). One lock
-    acquisition and one graph save for the whole batch. Idempotent — reloading
-    a playlist adds nothing and returns an empty fragment.
+    Place a playlist's songs onto the graph as ordinary query nodes — each with
+    its own corpus-neighbor fan-out so it clusters with the rest of the map (no
+    artificial hub; membership is carried on each node as ``playlist_pid``).
+
+    With the prepared MPD DB, membership is pulled from the full dump, capped at
+    the IMPORT_CAP most popular tracks: in-corpus and already-embedded (cached)
+    tracks merge into the returned fragment immediately; the rest are handed to
+    the background embed worker (``playlist_jobs``) and stream in via
+    /api/playlist/status. Without the DB, falls back to the in-corpus subset
+    only, with a notice.
+
+    Returns {"playlist": {...}, "fragment": {nodes, links}, "job_id", "notice"}.
     """
-    corpus = load()
+    load()
+
+    if mpd_ready():
+        pid = str(pid)
+        db_rows = mpd_sql.playlist_tracks(MPD_DB, pid)    # popularity DESC
+        if not db_rows:
+            raise ValueError(f"unknown or empty playlist: {pid!r}")
+        name = mpd_sql.playlist_name(MPD_DB, pid) or ""
+        n_total = len(db_rows)
+        rows = [{"id": f"spotify:{r['track_id']}", "name": r["name"],
+                 "artist": r["artist"], "preview_url": r["preview_url"]}
+                for r in db_rows[:IMPORT_CAP]]            # top-IMPORT_CAP by popularity
+        fragment, n_immediate, pending = _place_collection_rows(rows, pid, "mpd")
+        return _collection_response(pid, name, rows, n_total,
+                                    fragment, n_immediate, pending)
+
     entry = _playlist_index.get(pid)
     if entry is None and pid is not None:                 # JSON may flip int/str
         entry = _playlist_index.get(str(pid))
@@ -455,98 +731,73 @@ def place_playlist(pid) -> dict:
                 pass
     if entry is None:
         raise ValueError(f"unknown playlist: {pid!r}")
+    pid, name = entry["pid"], entry["name"]
+    n_total = len(entry["indices"])
+    idxs = entry["indices"][:IMPORT_CAP]
+    fragment = {"nodes": [], "links": []}
+    for idx in idxs:
+        f = _place_corpus_track(idx, extra={"playlist_pid": pid})
+        fragment["nodes"] += f["nodes"]
+        fragment["links"] += f["links"]
+    return _collection_response(pid, name, idxs, n_total, fragment,
+                                len(idxs), [], notice=MPD_PREP_HINT)
 
-    pid = entry["pid"]
-    hub_id = f"playlist:{pid}"
-    idxs = entry["indices"]
-    member_ids = [corpus.metadata[i].get("id") for i in idxs]
-    member_vecs = corpus.index.embeddings[idxs]           # index-space unit vecs
-    centroid = member_vecs.mean(axis=0)
-    centroid /= (np.linalg.norm(centroid) or 1.0)
-    fit = member_vecs @ centroid                          # member↔centroid cosine
 
-    added_nodes, added_links = [], []
-    already_on_map = 0
-    with _graph_lock:
-        member_id_set = {tid for tid in member_ids if tid}
-        existing_qvecs = {oid: v for oid, v in _query_vecs.items()
-                          if oid not in member_id_set}
+# ── Album search + placement (Deezer-sourced) ────────────────────────────────
 
-        hub = _graph["nodes"].get(hub_id)
-        if hub is None:
-            hub = {
-                "id":       hub_id,
-                "name":     entry["name"],
-                "artist":   f"{entry['n_tracks']} tracks",
-                "cluster":  None,
-                "kind":     "playlist",
-                "source":   "playlist",
-                "pid":      pid,
-                "n_tracks": entry["n_tracks"],
-            }
-            _graph["nodes"][hub_id] = hub
-            added_nodes.append(hub)
+def search_albums(q: str, limit: int = 20) -> dict:
+    """Album-name search against the Deezer catalog (no local DB needed).
+    Returns {"results": [{album_id, name, artist, cover, n_tracks}]}."""
+    q = (q or "").strip()
+    if not q:
+        return {"results": []}
+    data = _deezer_get("search/album", params={"q": q, "limit": limit})
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "Deezer error"))
+    results = [{
+        "album_id": h.get("id"),
+        "name":     h.get("title", ""),
+        "artist":   (h.get("artist") or {}).get("name", ""),
+        "cover":    h.get("cover_small") or "",
+        "n_tracks": h.get("nb_tracks"),
+    } for h in (data.get("data") or [])]
+    return {"results": results}
 
-        for j, (idx, tid) in enumerate(zip(idxs, member_ids)):
-            if not tid:
-                continue
-            existing = _graph["nodes"].get(tid)
-            if existing is None:
-                node = {
-                    "id":           tid,
-                    "name":         corpus.metadata[idx].get("name", ""),
-                    "artist":       corpus.metadata[idx].get("artist", ""),
-                    "cluster":      _id_to_cluster.get(tid),
-                    "kind":         "query",
-                    "confidence":   1.0,
-                    "source":       "corpus",
-                    "playlist_pid": pid,
-                }
-                _graph["nodes"][tid] = node
-                added_nodes.append(node)
-            else:                                          # promote to query
-                already_on_map += 1
-                existing.update(kind="query", confidence=1.0, playlist_pid=pid)
 
-            key, rkey = (hub_id, tid), (tid, hub_id)
-            if key not in _link_keys and rkey not in _link_keys:
-                link = {"source": hub_id, "target": tid,
-                        "value": round(float(fit[j]), 3), "kind": "member"}
-                _graph["links"].append(link)
-                _link_keys.add(key)
-                added_links.append(link)
+def place_album(album_id) -> dict:
+    """
+    Place a Deezer album's tracks onto the graph — same flow as
+    ``place_playlist`` (cached tracks instant, the rest background-embedded),
+    grouped under ``playlist_pid = "album:<id>"`` so they share an accent ring.
+    Every Deezer track carries a fresh preview URL, so placement is reliable.
+    """
+    load()
+    if album_id in (None, ""):
+        raise ValueError("missing album id")
+    info = _deezer_get(f"album/{album_id}")
+    if "error" in info:
+        raise ValueError(f"unknown album: {album_id!r}")
+    album_artist = (info.get("artist") or {}).get("name", "")
+    name = info.get("title", "")
 
-            # qq edges to pre-existing placed songs only — intra-batch pairs
-            # are mutually similar by construction, the hub already groups them
-            for oid, ovec in existing_qvecs.items():
-                score = float(np.dot(member_vecs[j], ovec))
-                if score < _qq_threshold:
-                    continue
-                key, rkey = (tid, oid), (oid, tid)
-                if key in _link_keys or rkey in _link_keys:
-                    continue
-                link = {"source": tid, "target": oid,
-                        "value": round(score, 3), "kind": "qq"}
-                _graph["links"].append(link)
-                _link_keys.add(key)
-                added_links.append(link)
+    tr = _deezer_get(f"album/{album_id}/tracks", params={"limit": max(IMPORT_CAP, 100)})
+    if "error" in tr:
+        raise ValueError(f"album tracks unavailable: {album_id!r}")
+    all_rows = [{
+        "id":          f"deezer:{t.get('id')}",
+        "name":        t.get("title", ""),
+        "artist":      (t.get("artist") or {}).get("name", album_artist),
+        "preview_url": t.get("preview"),
+    } for t in (tr.get("data") or []) if t.get("id")]
+    if not all_rows:
+        raise ValueError(f"album has no tracks: {album_id!r}")
 
-            _query_vecs[tid] = member_vecs[j]
-
-        _save_graph()
-
-    return {
-        "nodes": added_nodes,
-        "links": added_links,
-        "playlist": {
-            "pid":            pid,
-            "name":           entry["name"],
-            "hub_id":         hub_id,
-            "n_tracks":       entry["n_tracks"],
-            "added":          len(member_id_set) - already_on_map,
-            "already_on_map": already_on_map,
-        },
-    }
+    n_total = info.get("nb_tracks") or len(all_rows)
+    rows = all_rows[:IMPORT_CAP]                          # album order
+    gid = f"album:{album_id}"
+    fragment, n_immediate, pending = _place_collection_rows(rows, gid, "deezer")
+    return _collection_response(gid, f"{album_artist} — {name}", rows, n_total,
+                                fragment, n_immediate, pending)
 
 
 # ── Song detail (click panel) ────────────────────────────────────────────────
@@ -653,22 +904,7 @@ def song_detail(song_id: str, top_n: int = 10) -> dict | None:
             "similar":   similar,
         }
 
-    if gnode.get("kind") == "playlist":                 # playlist hub → member list
-        link_rows.sort(key=lambda r: -(r["score"] or 0.0))
-        return {
-            "id":        song_id,
-            "name":      gnode.get("name", ""),
-            "artist":    gnode.get("artist", ""),
-            "kind":      "playlist",
-            "source":    "playlist",
-            "cluster":   {"id": None, "confidence": None, "label": ""},
-            "tags":      [],
-            "genre":     None,
-            "playlists": [],
-            "similar":   link_rows,                     # every member, best fit first
-        }
-
-    # non-corpus query node (deezer / spotify / upload)
+    # non-corpus query node (deezer / spotify / upload / mpd)
     cid = gnode.get("cluster")
     if qvec is not None:
         sims = corpus.index.embeddings @ qvec
@@ -719,37 +955,115 @@ def song_detail(song_id: str, top_n: int = 10) -> dict | None:
 # ── Graph persistence ────────────────────────────────────────────────────────
 
 def get_graph() -> dict:
+    # "ready" lets the frontend tell "corpus still warming up" apart from "empty
+    # session" — before load() finishes, _graph hasn't been read from disk yet.
     with _graph_lock:
-        return {"nodes": list(_graph["nodes"].values()), "links": list(_graph["links"])}
+        return {"ready": is_ready(),
+                "nodes": list(_graph["nodes"].values()),
+                "links": list(_graph["links"]),
+                "groups": dict(_groups)}
+
+
+def clear_graph() -> None:
+    """Wipe the session map (nodes, links, groups). The embed cache is kept, so
+    re-importing previously embedded songs stays instant."""
+    with _graph_lock:
+        _graph["nodes"].clear()
+        _graph["links"].clear()
+        _link_keys.clear()
+        _query_vecs.clear()
+        _groups.clear()
+        _save_graph()
+
+
+def remove_node(node_id: str) -> dict | None:
+    """Remove one placed song from the map, along with its links and any grey
+    corpus-context neighbors that end up with no remaining links. Returns
+    {"removed": [ids...], "node": <the popped node>} (node first in the list),
+    or None if the id isn't on the graph."""
+    with _graph_lock:
+        node = _graph["nodes"].pop(node_id, None)
+        if node is None:
+            return None
+        _query_vecs.pop(node_id, None)
+
+        kept = []
+        for l in _graph["links"]:
+            if l["source"] == node_id or l["target"] == node_id:
+                _link_keys.discard((l["source"], l["target"]))
+                continue
+            kept.append(l)
+        _graph["links"][:] = kept
+
+        linked = {l["source"] for l in kept} | {l["target"] for l in kept}
+        orphans = [nid for nid, n in _graph["nodes"].items()
+                   if n.get("kind") == "corpus" and nid not in linked]
+        for nid in orphans:
+            del _graph["nodes"][nid]
+        _save_graph()
+    return {"removed": [node_id, *orphans], "node": node}
 
 
 def _save_graph() -> None:
     SESSION_DIR.mkdir(exist_ok=True)
     GRAPH_PATH.write_text(json.dumps(
-        {"nodes": list(_graph["nodes"].values()), "links": _graph["links"]}))
+        {"nodes": list(_graph["nodes"].values()), "links": _graph["links"],
+         "groups": _groups}))
 
 
 def _load_graph() -> None:
-    global _graph, _link_keys, _query_vecs
+    global _graph, _link_keys, _query_vecs, _groups
     if not GRAPH_PATH.exists():
         return
     try:
         data = json.loads(GRAPH_PATH.read_text())
     except (json.JSONDecodeError, OSError):
         return
-    nodes = {n["id"]: n for n in data.get("nodes", [])}
-    links = data.get("links", [])
+    # Migration: playlist hub nodes and hub→member spokes are gone (members are
+    # ordinary query nodes now) — strip them from sessions saved by older code.
+    nodes = {n["id"]: n for n in data.get("nodes", [])
+             if n.get("kind") != "playlist"}
+    links = [l for l in data.get("links", [])
+             if l.get("kind") != "member"
+             and l["source"] in nodes and l["target"] in nodes]
     _graph = {"nodes": nodes, "links": links}
     _link_keys = {(l["source"], l["target"]) for l in links}
 
-    # Best-effort: rebuild query→query similarity vecs for corpus-source songs so
-    # newly placed songs can still cross-link against them. Deezer/upload vecs are
-    # not persisted and can't be recovered — those keep their saved edges only.
+    # Groups registry (for the filter UI). Backfill display names for gids
+    # recorded before the registry existed: playlist names from the MPD DB;
+    # unknowns fall back to showing the raw gid.
+    _groups = dict(data.get("groups") or {})
+    seen_gids = {str(n["playlist_pid"]) for n in nodes.values()
+                 if n.get("playlist_pid") is not None}
+    unnamed = {gid for gid, g in _groups.items() if g.get("name") in (None, "", gid)}
+    for gid in (seen_gids - set(_groups)) | unnamed:
+        if gid.startswith("album:"):
+            name = None
+            try:
+                info = _deezer_get(f"album/{gid[len('album:'):]}")
+                if "error" not in info:
+                    artist = (info.get("artist") or {}).get("name", "")
+                    name = f"{artist} — {info.get('title', '')}".strip(" —")
+            except Exception:  # noqa: BLE001 — offline load must not fail
+                pass
+            _groups[gid] = {"name": name or gid, "kind": "album"}
+        else:
+            name = mpd_sql.playlist_name(MPD_DB, gid) if mpd_ready() else None
+            _groups[gid] = {"name": name or gid, "kind": "playlist"}
+
+    # Best-effort: rebuild query→query similarity vecs so newly placed songs can
+    # cross-link against them — from the corpus for corpus-source songs, from the
+    # embed cache for external ones. Uncached external nodes (pre-cache-era
+    # deezer/upload) keep their saved edges only.
     _query_vecs = {}
     for n in nodes.values():
         if n.get("kind") != "query":
             continue
         idx = _id_to_idx.get(n["id"])
-        if idx is None:
-            continue
-        _query_vecs[n["id"]] = _corpus.index.transform_query(_corpus.embeddings[idx])
+        if idx is not None:
+            raw = _corpus.embeddings[idx]
+        else:
+            raw = cached_vec(n["id"])
+            if raw is None:
+                continue
+        _query_vecs[n["id"]] = _corpus.index.transform_query(raw)

@@ -589,6 +589,204 @@ def _fetch_membership(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# UI preparation & playlist queries (full-MPD playlist browse for ui/)
+# ──────────────────────────────────────────────────────────────────────────
+# The corpus samples ~0.75% of MPD tracks; the web UI's playlist placement
+# needs FULL membership (any playlist → all its tracks + preview URLs).
+# track_playlist1 ships indexed only on track_id, and the trimmed playlist
+# table has no track count, so browsing by playlist needs a one-time prep:
+# a playlist_id index plus a materialized playlist_search(name_norm, n_tracks)
+# table. prepare_ui() builds both; a _ui_meta flag written last keeps a
+# crashed build from half-serving.
+
+_UI_READY_KEY = "ui_ready"
+
+
+def _ro_connect(db_path: str | Path) -> sqlite3.Connection:
+    """Fresh read-only connection (connections are thread-bound and cheap)."""
+    return sqlite3.connect(f"file:{Path(db_path)}?mode=ro", uri=True)
+
+
+def is_ui_ready(db_path: str | Path) -> bool:
+    """True iff prepare_ui() has fully completed on ``db_path``."""
+    p = Path(db_path)
+    if not p.exists():
+        return False
+    try:
+        con = _ro_connect(p)
+        try:
+            row = con.execute(
+                "SELECT value FROM _ui_meta WHERE key = ?", (_UI_READY_KEY,)
+            ).fetchone()
+            return row is not None and row[0] == "1"
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return False
+
+
+def prepare_ui(db_path: str | Path, *, force: bool = False) -> Path:
+    """
+    One-time (idempotent) prep for the web UI's full-MPD playlist browse:
+
+    1. ``ix_tp_playlist`` on ``track_playlist1(playlist_id)`` — minutes on
+       125M rows, ~4–6 GB file growth.
+    2. Materialized ``playlist_search(pid, name, name_norm, n_tracks)``.
+    3. ``_ui_meta['ui_ready'] = '1'`` written last.
+
+    Re-running after completion is a no-op unless ``force``.
+    """
+    from .spotify_deezer import _norm  # lazy: pulls librosa etc.
+
+    db_path = Path(db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"SQLite DB not found: {db_path}")
+    if is_ui_ready(db_path) and not force:
+        log.info("UI prep already complete on %s — nothing to do", db_path)
+        return db_path
+
+    # NOT _connect(): its temp_store=MEMORY makes the 125M-row index sort
+    # balloon in RAM (observed glibc abort). Keep temp on disk.
+    con = sqlite3.connect(str(db_path))
+    con.execute("PRAGMA journal_mode=OFF")
+    con.execute("PRAGMA synchronous=OFF")
+    con.execute("PRAGMA cache_size=-262144")
+    try:
+        t0 = time.time()
+        log.info("creating ix_tp_playlist on track_playlist1(playlist_id)…")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS ix_tp_playlist "
+            "ON track_playlist1(playlist_id)"
+        )
+        con.commit()
+        log.info("index built (%.1f min)", (time.time() - t0) / 60)
+
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS _ui_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        con.execute("DELETE FROM _ui_meta WHERE key = ?", (_UI_READY_KEY,))
+        con.execute("DROP TABLE IF EXISTS playlist_search")
+        con.execute(
+            "CREATE TABLE playlist_search ("
+            "pid TEXT PRIMARY KEY, name TEXT, name_norm TEXT, n_tracks INTEGER)"
+        )
+        con.commit()
+
+        log.info("materializing playlist_search (1M playlists + counts)…")
+        t1 = time.time()
+        cur = con.execute(
+            "SELECT p.id, p.name, COALESCE(c.n, 0) "
+            "FROM playlist p "
+            "LEFT JOIN (SELECT playlist_id, COUNT(*) AS n "
+            "           FROM track_playlist1 GROUP BY playlist_id) c "
+            "  ON c.playlist_id = p.id"
+        )
+        batch: list[tuple] = []
+        total = 0
+        while True:
+            rows = cur.fetchmany(10000)
+            if not rows:
+                break
+            batch = [(pid, name, _norm(name or ""), n) for pid, name, n in rows]
+            con.executemany(
+                "INSERT OR REPLACE INTO playlist_search VALUES (?, ?, ?, ?)", batch
+            )
+            total += len(batch)
+            if total % 200000 < 10000:
+                log.info("playlist_search: %s rows", f"{total:,}")
+        con.execute(
+            "INSERT OR REPLACE INTO _ui_meta (key, value) VALUES (?, '1')",
+            (_UI_READY_KEY,),
+        )
+        con.commit()
+        log.info(
+            "playlist_search complete: %s rows (%.1f min) — UI ready",
+            f"{total:,}", (time.time() - t1) / 60,
+        )
+        return db_path
+    finally:
+        con.close()
+
+
+def search_playlists_db(
+    db_path: str | Path, q: str, limit: int = 20, cand_cap: int = 500
+) -> list[dict]:
+    """
+    Full-MPD playlist-name search: tokenized substring pre-filter over
+    ``playlist_search.name_norm`` in SQL (largest playlists first), then
+    fuzzy ``_ratio`` re-rank in Python. Returns
+    ``[{"pid", "name", "n_tracks", "score"}, ...]``.
+    """
+    from .spotify_deezer import _norm, _ratio
+
+    tokens = _norm(q or "").split()
+    if not tokens:
+        return []
+    where = " AND ".join("name_norm LIKE ?" for _ in tokens)
+    params = [f"%{t}%" for t in tokens]
+    con = _ro_connect(db_path)
+    try:
+        rows = con.execute(
+            f"SELECT pid, name, n_tracks FROM playlist_search "
+            f"WHERE n_tracks > 0 AND {where} "
+            f"ORDER BY n_tracks DESC LIMIT ?",
+            [*params, cand_cap],
+        ).fetchall()
+    finally:
+        con.close()
+    scored = [(_ratio(q, name), pid, name, n) for pid, name, n in rows]
+    scored.sort(key=lambda t: (-t[0], -t[3]))
+    return [
+        {"pid": pid, "name": name, "n_tracks": n, "score": round(float(s), 3)}
+        for s, pid, name, n in scored[:limit]
+    ]
+
+
+def playlist_name(db_path: str | Path, pid: str) -> str | None:
+    con = _ro_connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT name FROM playlist_search WHERE pid = ?", (pid,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def playlist_tracks(db_path: str | Path, pid: str) -> list[dict]:
+    """
+    Full membership of one playlist, most-popular first (the junction table
+    has no position column, so original playlist order is unrecoverable).
+    Returns ``[{"track_id", "name", "artist", "preview_url", "popularity"}]``.
+    """
+    con = _ro_connect(db_path)
+    try:
+        cur = con.execute(
+            "SELECT t.id, t.name, t.preview_url, t.popularity, "
+            "  (SELECT a.name FROM track_artist1 ta "
+            "   JOIN artist a ON a.id = ta.artist_id "
+            "   WHERE ta.track_id = t.id LIMIT 1) AS artist_name "
+            "FROM track_playlist1 tp "
+            "JOIN track t ON t.id = tp.track_id "
+            "WHERE tp.playlist_id = ? "
+            "ORDER BY t.popularity DESC",
+            (pid,),
+        )
+        return [
+            {
+                "track_id": tid,
+                "name": name or "",
+                "artist": artist or "",
+                "preview_url": purl,
+                "popularity": pop,
+            }
+            for tid, name, purl, pop, artist in cur.fetchall()
+        ]
+    finally:
+        con.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # CLI: build the DB standalone (also runnable via the corpus builder)
 # ──────────────────────────────────────────────────────────────────────────
 def main(argv: Iterable[str] | None = None) -> None:
@@ -598,10 +796,13 @@ def main(argv: Iterable[str] | None = None) -> None:
         prog="python -m anther_ml.mpd_sql",
         description="Load a MySQL MPD dump into a queryable SQLite DB.",
     )
-    p.add_argument("--dump", required=True, help="path to spotifydbdumpshare.sql")
+    p.add_argument("--dump", default=None, help="path to spotifydbdumpshare.sql")
     p.add_argument("--db", default=None, help="output .sqlite (default: dump + .sqlite)")
     p.add_argument("--no-membership", action="store_true",
                    help="skip the 125M-row track_playlist1 table (much faster)")
+    p.add_argument("--prepare-ui", action="store_true",
+                   help="build the playlist index + search table the web UI needs "
+                        "(one-time; minutes, several GB of file growth)")
     p.add_argument("--force", action="store_true", help="rebuild from scratch")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args(list(argv) if argv is not None else None)
@@ -610,10 +811,15 @@ def main(argv: Iterable[str] | None = None) -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.dump is None and args.db is None:
+        p.error("need --dump (to load) and/or --db (to prepare)")
     db = args.db or str(Path(args.dump).with_suffix(".sqlite"))
-    load_dump_to_sqlite(
-        args.dump, db, with_membership=not args.no_membership, force=args.force
-    )
+    if args.dump is not None:
+        load_dump_to_sqlite(
+            args.dump, db, with_membership=not args.no_membership, force=args.force
+        )
+    if args.prepare_ui:
+        prepare_ui(db, force=args.force and args.dump is None)
 
 
 if __name__ == "__main__":

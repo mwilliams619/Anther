@@ -5,8 +5,13 @@ const state = {
   audioBtn:   null,
   detailId:   null,   // song currently shown in the detail panel
   similar:    [],     // similar-song rows backing the panel's list
-  searchMode: 'tracks',   // 'tracks' | 'playlists'
+  searchMode: 'tracks',   // 'tracks' | 'playlists' | 'albums'
+  playlistPolls: {},  // group id (pid / album:<id>) → interval id (active polls)
+  removed: [],        // recently removed nodes (newest first, session-only)
+  activeFilter: null, // {label, kind, ids:Set} | null
 };
+
+const REMOVED_MAX = 20;
 
 const SEARCH_MODES = {
   tracks: {
@@ -16,8 +21,13 @@ const SEARCH_MODES = {
   },
   playlists: {
     placeholder: 'Playlist name…',
-    hint: 'MPD playlists. Load one to place all its in-corpus tracks at once.',
+    hint: 'All 1M MPD playlists. Load one to place its top tracks — out-of-corpus songs embed in the background.',
     empty: 'Search for a playlist to load its tracks onto the atlas',
+  },
+  albums: {
+    placeholder: 'Album name…',
+    hint: 'Deezer albums — any release. Tracks embed in the background as they download.',
+    empty: 'Search for an album to load its tracks onto the atlas',
   },
 };
 
@@ -27,6 +37,8 @@ async function init() {
   initSearch();
   initUpload();
   initDetail();
+  initMapPanel();
+  renderMapPanel();
 }
 
 /* ── Search (tracks: corpus → deezer → spotify · playlists: corpus) ──────── */
@@ -40,17 +52,18 @@ function initSearch() {
     timer = setTimeout(() => doSearch(q), 420);
   });
 
-  document.getElementById('mode-tracks')
-    .addEventListener('click', () => setSearchMode('tracks'));
-  document.getElementById('mode-playlists')
-    .addEventListener('click', () => setSearchMode('playlists'));
+  Object.keys(SEARCH_MODES).forEach(mode => {
+    document.getElementById(`mode-${mode}`)
+      .addEventListener('click', () => setSearchMode(mode));
+  });
 }
 
 function setSearchMode(mode) {
   if (state.searchMode === mode) return;
   state.searchMode = mode;
-  document.getElementById('mode-tracks').classList.toggle('active', mode === 'tracks');
-  document.getElementById('mode-playlists').classList.toggle('active', mode === 'playlists');
+  Object.keys(SEARCH_MODES).forEach(m => {
+    document.getElementById(`mode-${m}`).classList.toggle('active', m === mode);
+  });
   const input = document.getElementById('search-input');
   input.placeholder = SEARCH_MODES[mode].placeholder;
   document.getElementById('search-hint').textContent = SEARCH_MODES[mode].hint;
@@ -63,17 +76,22 @@ function clearSearchResults() {
     `<div class="empty">${SEARCH_MODES[state.searchMode].empty}</div>`;
 }
 
+const SEARCH_URLS = {
+  tracks:    q => `/api/search?q=${encodeURIComponent(q)}`,
+  playlists: q => `/api/playlists/search?q=${encodeURIComponent(q)}`,
+  albums:    q => `/api/albums/search?q=${encodeURIComponent(q)}`,
+};
+
 async function doSearch(q) {
   const container = document.getElementById('search-results');
   container.innerHTML = '<div class="empty">Searching…</div>';
-  const playlistMode = state.searchMode === 'playlists';
-  const url = playlistMode
-    ? `/api/playlists/search?q=${encodeURIComponent(q)}`
-    : `/api/search?q=${encodeURIComponent(q)}`;
+  const mode = state.searchMode;
   try {
-    const data = await fetch(url).then(r => r.json());
+    const data = await fetch(SEARCH_URLS[mode](q)).then(r => r.json());
     if (data.error) { showError(data.error); clearSearchResults(); return; }
-    if (playlistMode) renderPlaylistResults(data); else renderSearchResults(data);
+    if (mode === 'playlists') renderPlaylistResults(data);
+    else if (mode === 'albums') renderAlbumResults(data);
+    else renderSearchResults(data);
   } catch (err) {
     showError('Search failed: ' + err.message);
     clearSearchResults();
@@ -111,18 +129,47 @@ function renderSearchResults(data) {
 function renderPlaylistResults(data) {
   const el = document.getElementById('search-results');
   const hits = data.results || [];
+  const notice = data.notice
+    ? `<div class="hint-text">${esc(data.notice)}</div>` : '';
   if (!hits.length) {
-    el.innerHTML = '<div class="empty">No playlists found</div>';
+    el.innerHTML = notice + '<div class="empty">No playlists found</div>';
+    return;
+  }
+  el.innerHTML = notice + hits.map(h => {
+    const instant = h.n_in_corpus ? ` · ${h.n_in_corpus} instant` : '';
+    const count = h.source === 'corpus'
+      ? `${h.n_tracks} track${h.n_tracks === 1 ? '' : 's'} in corpus`
+      : `${h.n_tracks} track${h.n_tracks === 1 ? '' : 's'}${instant}`;
+    return `
+    <div class="track-row">
+      <div class="track-info">
+        <div class="track-title">${esc(h.name)}</div>
+        <div class="playlist-count">${count}</div>
+      </div>
+      <div class="track-actions">
+        <button class="btn-add" onclick='loadPlaylist(${JSON.stringify(h)}, this)'>Load</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderAlbumResults(data) {
+  const el = document.getElementById('search-results');
+  const hits = data.results || [];
+  if (!hits.length) {
+    el.innerHTML = '<div class="empty">No albums found</div>';
     return;
   }
   el.innerHTML = hits.map(h => `
     <div class="track-row">
+      ${h.cover ? `<img class="album-cover" src="${esc(h.cover)}" alt="" />` : ''}
       <div class="track-info">
         <div class="track-title">${esc(h.name)}</div>
-        <div class="playlist-count">${h.n_tracks} track${h.n_tracks === 1 ? '' : 's'} in corpus</div>
+        <div class="track-artist">${esc(h.artist)}
+          <span class="playlist-count">· ${h.n_tracks || '?'} tracks</span></div>
       </div>
       <div class="track-actions">
-        <button class="btn-add" onclick='loadPlaylist(${JSON.stringify(h)}, this)'>Load</button>
+        <button class="btn-add" onclick='loadAlbum(${JSON.stringify(h)}, this)'>Load</button>
       </div>
     </div>`).join('');
 }
@@ -145,6 +192,7 @@ async function placeHit(hit, btn) {
     }).then(r => r.json());
     if (frag.error) { showError(frag.error); btn.disabled = false; btn.textContent = 'Add'; return; }
     AtlasGraph.mergeFragment(frag);
+    renderMapPanel();
     btn.textContent = 'Added ✓';
   } catch (err) {
     showError('Placement failed: ' + err.message);
@@ -154,29 +202,269 @@ async function placeHit(hit, btn) {
 }
 
 async function loadPlaylist(hit, btn) {
-  const hubId = 'playlist:' + hit.pid;
-  if (AtlasGraph.hasNode(hubId)) {
-    AtlasGraph.zoomTo(hubId, 0.9);
-    btn.textContent = 'On graph ✓';
+  await loadCollection('/api/playlist/place', { pid: hit.pid }, hit.pid, btn);
+}
+
+async function loadAlbum(hit, btn) {
+  await loadCollection('/api/album/place', { album_id: hit.album_id },
+                       `album:${hit.album_id}`, btn);
+}
+
+/* Shared playlist/album import: place instants, then stream the background
+ * embeds in via the status poll. `gid` is the group id ("<pid>" / "album:<id>"). */
+async function loadCollection(url, body, gid, btn) {
+  if (state.playlistPolls[gid]) {               // already streaming this group
+    btn.textContent = 'Loading…';
     setTimeout(() => { btn.textContent = 'Load'; }, 1800);
     return;
   }
   btn.disabled = true;
   btn.textContent = 'Loading…';
   try {
-    const frag = await fetch('/api/playlist/place', {
+    const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid: hit.pid }),
+      body: JSON.stringify(body),
     }).then(r => r.json());
-    if (frag.error) { showError(frag.error); btn.disabled = false; btn.textContent = 'Load'; return; }
-    AtlasGraph.mergeFragment(frag, { focusId: frag.playlist.hub_id, zoomScale: 0.9 });
-    btn.textContent = 'Loaded ✓';
+    if (resp.error) { showError(resp.error); btn.disabled = false; btn.textContent = 'Load'; return; }
+    if (resp.notice) showError(resp.notice);
+    AtlasGraph.mergeFragment(resp.fragment, { focus: false });
+    const p = resp.playlist;
+    AtlasGraph.registerGroup(p.pid, {
+      name: p.name,
+      kind: String(p.pid).startsWith('album:') ? 'album' : 'playlist',
+    });
+    renderMapPanel();
+    const capped = p.capped ? ` (top ${p.n_tracks} of ${p.n_total})` : '';
+    if (resp.job_id) {
+      setPlaylistProgress(`${p.name} — ${p.n_immediate} of ${p.n_tracks} placed${capped} · embedding ${p.n_pending}…`);
+      startPlaylistPoll(resp.job_id, p);
+      btn.textContent = 'Streaming…';
+    } else {
+      setPlaylistProgress(`${p.name} — ${p.n_immediate} of ${p.n_tracks} placed${capped} ✓`, 4000);
+      btn.textContent = 'Loaded ✓';
+    }
   } catch (err) {
-    showError('Playlist load failed: ' + err.message);
+    showError('Import failed: ' + err.message);
     btn.textContent = 'Error';
   }
   setTimeout(() => { btn.disabled = false; btn.textContent = 'Load'; }, 2000);
+}
+
+/* Background-embed progress: poll /api/playlist/status, splice fragments in
+ * as they arrive (no camera jumps), tick the progress line. */
+function startPlaylistPoll(jobId, playlist) {
+  let cursor = 0;
+  const nImmediate = playlist.n_immediate || 0;
+  const capped = playlist.capped ? ` (top ${playlist.n_tracks} of ${playlist.n_total})` : '';
+  const tick = async () => {
+    let s;
+    try {
+      s = await fetch(`/api/playlist/status/${jobId}?cursor=${cursor}`).then(r => r.json());
+    } catch (_) { return; }                      // transient network error: retry next tick
+    if (s.state === 'not_found') {
+      stopPlaylistPoll(playlist.pid);
+      setPlaylistProgress(`${playlist.name} — job lost (server restarted?) · re-load to resume`, 8000);
+      return;
+    }
+    if ((s.fragments || []).length) {
+      s.fragments.forEach(f => AtlasGraph.mergeFragment(f, { focus: false }));
+      renderMapPanel();
+    }
+    cursor = s.cursor;
+    const placed = nImmediate + s.placed;
+    const skipped = s.failed ? ` · ${s.failed} skipped` : '';
+    if (s.state === 'done') {
+      stopPlaylistPoll(playlist.pid);
+      setPlaylistProgress(`${playlist.name} — ${placed} of ${playlist.n_tracks} placed${capped}${skipped} ✓`, 8000);
+    } else {
+      setPlaylistProgress(`${playlist.name} — ${placed} of ${playlist.n_tracks} placed${capped}${skipped} · ${s.message || ''}`);
+    }
+  };
+  state.playlistPolls[playlist.pid] = setInterval(tick, 1500);
+  tick();
+}
+
+function stopPlaylistPoll(pid) {
+  clearInterval(state.playlistPolls[pid]);
+  delete state.playlistPolls[pid];
+}
+
+let progressTimer;
+function setPlaylistProgress(text, clearAfterMs) {
+  const el = document.getElementById('playlist-progress');
+  el.textContent = text;
+  clearTimeout(progressTimer);
+  if (clearAfterMs) progressTimer = setTimeout(() => { el.textContent = ''; }, clearAfterMs);
+}
+
+/* ── Map panel: filter/highlight, node list, remove / re-place, clear ────── */
+
+function initMapPanel() {
+  const input = document.getElementById('filter-input');
+  let timer;
+  input.addEventListener('input', e => {
+    clearTimeout(timer);
+    timer = setTimeout(() => renderFilterSuggest(e.target.value.trim()), 150);
+  });
+  input.addEventListener('blur', () => {         // let a suggestion click land first
+    setTimeout(() => { document.getElementById('filter-suggest').style.display = 'none'; }, 200);
+  });
+  input.addEventListener('focus', e => {
+    if (e.target.value.trim()) renderFilterSuggest(e.target.value.trim());
+  });
+
+  document.getElementById('clear-map').addEventListener('click', async () => {
+    const n = AtlasGraph.getNodes().length;
+    if (!n) return;
+    if (!confirm(`Remove all ${n} nodes from the map? This cannot be undone.`)) return;
+    try {
+      await fetch('/api/graph/clear', { method: 'POST' });
+    } catch (err) { showError('Clear failed: ' + err.message); return; }
+    AtlasGraph.reset();
+    clearFilter();
+    renderMapPanel();
+  });
+}
+
+/* Candidates: artists on the map + imported playlist/album groups. */
+function filterCandidates(q) {
+  const needle = q.toLowerCase();
+  const nodes = AtlasGraph.getNodes();
+  const artists = new Map();                     // artist → count
+  nodes.forEach(n => {
+    const a = (n.artist || '').trim();
+    if (a && a.toLowerCase().includes(needle)) artists.set(a, (artists.get(a) || 0) + 1);
+  });
+  const out = [];
+  artists.forEach((count, a) =>
+    out.push({ kind: 'artist', label: a, count,
+               ids: new Set(nodes.filter(n => (n.artist || '').trim() === a).map(n => n.id)) }));
+  const groups = AtlasGraph.getGroups();
+  Object.keys(groups).forEach(gid => {
+    const g = groups[gid];
+    if (!(g.name || gid).toLowerCase().includes(needle)) return;
+    const ids = new Set(nodes.filter(n => String(n.playlist_pid) === gid).map(n => n.id));
+    if (ids.size) out.push({ kind: g.kind || 'playlist', label: g.name || gid, count: ids.size, ids });
+  });
+  out.sort((a, b) => b.count - a.count);
+  return out.slice(0, 12);
+}
+
+const FILTER_KIND_ICON = { artist: '♪', playlist: '▤', album: '◉' };
+
+function renderFilterSuggest(q) {
+  const box = document.getElementById('filter-suggest');
+  if (!q) { box.style.display = 'none'; return; }
+  const cands = filterCandidates(q);
+  if (!cands.length) { box.style.display = 'none'; return; }
+  state.filterCands = cands;
+  box.innerHTML = cands.map((c, i) => `
+    <div class="suggest-row" onmousedown="applyFilterCand(${i})">
+      <span class="suggest-kind">${FILTER_KIND_ICON[c.kind] || ''} ${c.kind}</span>
+      <span>${esc(c.label)}</span>
+      <span class="suggest-kind" style="margin-left:auto">${c.count}</span>
+    </div>`).join('');
+  box.style.display = 'block';
+}
+
+function applyFilterCand(i) {
+  const c = state.filterCands && state.filterCands[i];
+  if (!c) return;
+  state.activeFilter = c;
+  AtlasGraph.setFilter(c.ids);
+  const input = document.getElementById('filter-input');
+  input.value = '';
+  document.getElementById('filter-suggest').style.display = 'none';
+  document.getElementById('filter-active').innerHTML = `
+    <span class="filter-chip">${FILTER_KIND_ICON[c.kind] || ''} ${esc(c.label)}
+      <span class="suggest-kind">${c.count}</span>
+      <button onclick="clearFilter()" title="Clear filter">×</button>
+    </span>`;
+  renderMapPanel();
+}
+
+function clearFilter() {
+  state.activeFilter = null;
+  AtlasGraph.setFilter(null);
+  document.getElementById('filter-active').innerHTML = '';
+  renderMapPanel();
+}
+
+function renderMapPanel() {
+  const nodes = AtlasGraph.getNodes();
+  let queries = nodes.filter(n => n.kind === 'query');
+  if (state.activeFilter) queries = queries.filter(n => state.activeFilter.ids.has(n.id));
+
+  document.getElementById('map-count').textContent =
+    state.activeFilter
+      ? `${queries.length} matching · ${nodes.length} nodes total`
+      : `${queries.length} songs · ${nodes.length} nodes`;
+
+  state.mapRows = queries;
+  document.getElementById('map-list').innerHTML = queries.map((n, i) => {
+    const ring = n.playlist_pid
+      ? `<span class="ring-dot" style="border-color:${AtlasGraph.groupColor(n.playlist_pid)}"></span>`
+      : '<span class="ring-dot"></span>';
+    return `
+    <div class="map-row" onclick="gotoMapRow(${i})">
+      ${ring}
+      <div class="track-info">
+        <div class="track-title">${esc(n.name)}</div>
+        <div class="track-artist">${esc(n.artist || '')}</div>
+      </div>
+      <button class="btn-tiny" title="Remove from map"
+              onclick="event.stopPropagation(); removeMapRow(${i})">✕</button>
+    </div>`;
+  }).join('') || '<div class="empty">Nothing on the map yet</div>';
+
+  document.getElementById('removed-header').hidden = !state.removed.length;
+  document.getElementById('removed-list').innerHTML = state.removed.map((n, i) => `
+    <div class="map-row">
+      <span class="ring-dot"></span>
+      <div class="track-info">
+        <div class="track-title">${esc(n.name)}</div>
+        <div class="track-artist">${esc(n.artist || '')}</div>
+      </div>
+      <button class="btn-tiny" title="Re-place on map"
+              onclick="replaceRemoved(${i})">↩</button>
+    </div>`).join('');
+}
+
+function gotoMapRow(i) {
+  const n = state.mapRows[i];
+  if (n) AtlasGraph.selectNode(n.id, { zoom: true });
+}
+
+async function removeMapRow(i) {
+  const n = state.mapRows[i];
+  if (!n) return;
+  try {
+    const resp = await fetch('/api/node/' + encodeURIComponent(n.id), { method: 'DELETE' })
+      .then(r => r.json());
+    if (resp.error) { showError(resp.error); return; }
+    AtlasGraph.removeNodes(resp.removed);
+    state.removed.unshift(resp.node);
+    state.removed.length = Math.min(state.removed.length, REMOVED_MAX);
+  } catch (err) { showError('Remove failed: ' + err.message); }
+  renderMapPanel();
+}
+
+async function replaceRemoved(i) {
+  const n = state.removed[i];
+  if (!n) return;
+  try {
+    const frag = await fetch('/api/place', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: n.source, id: n.id, title: n.name,
+                             artist: n.artist, playlist_pid: n.playlist_pid }),
+    }).then(r => r.json());
+    if (frag.error) { showError(frag.error); return; }
+    AtlasGraph.mergeFragment(frag);
+    state.removed.splice(i, 1);
+  } catch (err) { showError('Re-place failed: ' + err.message); }
+  renderMapPanel();
 }
 
 /* ── Detail panel (click a node → pinned side pop-over) ─────────────────── */
@@ -284,6 +572,7 @@ async function addSimilar(i, btn) {
     }).then(r => r.json());
     if (frag.error) { showError(frag.error); btn.disabled = false; btn.textContent = 'Add'; return; }
     AtlasGraph.mergeFragment(frag);
+    renderMapPanel();
     AtlasGraph.selectNode(s.id, { zoom: true });
   } catch (err) {
     showError('Placement failed: ' + err.message);
@@ -341,7 +630,7 @@ async function uploadFile(file) {
   try {
     const data = await fetch('/api/upload', { method: 'POST', body: fd }).then(r => r.json());
     if (data.error) { showError(data.error); status.textContent = ''; return; }
-    if (data.fragment) AtlasGraph.mergeFragment(data.fragment);
+    if (data.fragment) { AtlasGraph.mergeFragment(data.fragment); renderMapPanel(); }
     status.textContent = `Placed ${data.title} ✓`;
     setTimeout(() => { status.textContent = ''; }, 2500);
   } catch (err) {
