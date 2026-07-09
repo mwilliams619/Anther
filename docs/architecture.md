@@ -52,7 +52,7 @@ the whole dump.
 ## `anther_ml/corpus/` — frozen reference-corpus bundles
 
 A MERT-space reference corpus that new songs are *placed onto*, never re-clustered
-from scratch. Design rationale in [REFERENCE_CORPUS_DESIGN.md](../REFERENCE_CORPUS_DESIGN.md).
+from scratch. Design rationale in [projects/REFERENCE_CORPUS_DESIGN.md](projects/REFERENCE_CORPUS_DESIGN.md).
 CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
 
 | Module | Responsibility |
@@ -61,8 +61,8 @@ CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
 | `build.py` | `build_corpus` — embed (checkpointed/resumable) → dedupe → fit `SongIndex` + Leiden → per-cluster profiles → freeze bundle |
 | `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp) |
 | `place.py` | Placement regime — `place`, `embed_query`, playlist-fit / `rank_playlists`; returns `tags` from the tag probe when present |
-| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle (PLAYLIST_LABELS_BUILD_PLAN.md) |
-| `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; MICROGENRE_TAGGING_BUILD_PLAN.md) |
+| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle ([projects/PLAYLIST_LABELS_BUILD_PLAN.md](projects/PLAYLIST_LABELS_BUILD_PLAN.md)) |
+| `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; see [tagging.md](tagging.md)) |
 | `__main__.py` | `build` / `place` / `label` CLI |
 
 Bundles are written to `models/corpus_<name>/` (primary:
@@ -74,10 +74,7 @@ Bundles are written to `models/corpus_<name>/` (primary:
 |---|---|
 | `export_viz.py` | Bakes an index + 2D embedding into the standalone `song_view.html` d3 map (`PHASE` set at top; re-run after any index rebuild) — see [notebooks.md](notebooks.md) |
 | `export_corpus_viz.py` | Canvas scatter-plot viewer for a whole corpus bundle (tens of thousands of points; pan/zoom, no force sim) → `corpus_*_view.html` |
-| `ui/app.py` | Flask backend (thin router) for the song atlas UI — `python ui/app.py`, port 5000 |
-| `ui/atlas.py` | Frozen-corpus atlas: three-tier song search (local corpus → Deezer → Spotify) + `place()` onto the frozen 100k corpus; full-MPD playlist search + placement (`place_playlist` — every member becomes an ordinary query node with top-K neighbor fan-out, no hub; in-corpus/cached tracks merge instantly, the rest queue for background embedding); raw-MERT embed cache (`ui/session/embed_cache.sqlite`); owns all corpus/MERT state. Corpus dir via `ANTHER_CORPUS`, MPD DB via `ANTHER_MPD_DB` |
-| `ui/playlist_jobs.py` | Background embed-and-place worker for playlist adds: single queue/thread (one GPU consumer), per-track Spotify-preview→Deezer fallback, progress via `/api/playlist/status/<job_id>` polling |
-| `ui/static/` | d3 force-graph frontend (`graph.js`, `app.js`); session state under `ui/session/` |
+| `ui/` | Flask + d3 song atlas UI — search, place songs/playlists/albums onto the frozen corpus, browse the map. `python ui/app.py`, port 5000. Details: [ui.md](ui.md) |
 
 ## Tests
 

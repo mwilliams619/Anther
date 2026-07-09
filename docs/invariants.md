@@ -8,7 +8,7 @@ metric *for the map itself*. Genre never feeds the MERT embedding, the
 judged by the genre-free eval harness ([evaluation.md](evaluation.md)).
 One carve-out: genre may train **display-only artifacts downstream of the
 frozen map** (the micro-genre tag probe in `anther_ml/corpus/tagging/`,
-MICROGENRE_TAGGING_BUILD_PLAN.md). Those artifacts are read-outs, like
+[tagging.md](tagging.md)). Those artifacts are read-outs, like
 cluster labels: their metrics live in `tagging/evaluate.py`, walled off from
 `build_scorecard`, and must never be used to tune embedding, index, clustering,
 or placement hyperparameters. Two scoreboards, one wall.
