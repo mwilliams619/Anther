@@ -533,8 +533,9 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, str]:
 def place_external_track(track: dict, raw_vec, playlist_pid=None) -> dict:
     """Merge one embedded out-of-corpus track into the graph (worker entry)."""
     extra = {"playlist_pid": playlist_pid} if playlist_pid is not None else None
+    source = "deezer" if str(track["id"]).startswith("deezer:") else "mpd"
     return _place_query_vec(track["id"], track.get("name", ""),
-                            track.get("artist", ""), raw_vec, "mpd", extra=extra)
+                            track.get("artist", ""), raw_vec, source, extra=extra)
 
 
 def _download_url(url: str):
