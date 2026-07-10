@@ -4,12 +4,15 @@ Run:  python ui/app.py
 Open: http://localhost:5000
 """
 
+import os
+import secrets
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, request, jsonify, send_from_directory
+import requests
+from flask import Flask, request, jsonify, send_from_directory, session
 from werkzeug.utils import secure_filename
 
 import atlas
@@ -21,10 +24,21 @@ MAX_UPLOAD    = 25 * 1024 * 1024   # 25 MB
 SESSION_DIR   = Path(__file__).parent / 'session'
 UPLOADS_DIR   = SESSION_DIR / 'uploads'
 
+# mentor/service.py — a separate warm process (see mentor/README.md on why
+# the model isn't loaded in this process); started independently.
+MENTOR_HOST    = os.environ.get('ANTHER_MENTOR_HOST', '127.0.0.1')
+MENTOR_PORT    = os.environ.get('ANTHER_MENTOR_PORT', '5100')
+MENTOR_URL     = f'http://{MENTOR_HOST}:{MENTOR_PORT}'
+MENTOR_TIMEOUT = float(os.environ.get('ANTHER_MENTOR_TIMEOUT', '30'))
+
 SESSION_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+# Signed session cookie identifies a browser's mentor chat session; a fresh
+# key each restart just means chat history resets, which is fine since the
+# mentor service's own sessions are keyed the same way and get swept by TTL.
+app.secret_key = os.environ.get('ANTHER_UI_SECRET_KEY', secrets.token_hex(32))
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -111,6 +125,21 @@ def atlas_place():
     return jsonify(fragment)
 
 
+@app.route('/api/recommend', methods=['POST'])
+def atlas_recommend():
+    """Multi-song recommendation: body {seed_ids: [...], top_k?, method?}."""
+    body = request.get_json(force=True) or {}
+    seed_ids = body.get('seed_ids') or []
+    try:
+        top_k  = int(body.get('top_k', 20))
+        method = body.get('method', 'centroid')
+        return jsonify(atlas.recommend(seed_ids, top_k=top_k, method=method))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/graph')
 def atlas_graph():
     return jsonify(atlas.get_graph())
@@ -141,6 +170,53 @@ def atlas_song(song_id):
     return jsonify(detail)
 
 
+@app.route('/api/song/<path:song_id>/preview')
+def atlas_song_preview(song_id):
+    try:
+        url = atlas.get_preview_url(song_id)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'preview_url': url})
+
+
+
+
+@app.route('/api/mentor/chat', methods=['POST'])
+def mentor_chat():
+    """Forward a chat turn to the warm mentor service (mentor/service.py)."""
+    body = request.get_json(force=True) or {}
+    question = (body.get('question') or '').strip()
+    if not question:
+        return jsonify({'error': 'question is required'}), 400
+    session_id = session.get('mentor_session_id')
+    if not session_id:
+        session_id = secrets.token_urlsafe(16)
+        session['mentor_session_id'] = session_id
+    try:
+        resp = requests.post(f'{MENTOR_URL}/chat',
+                              json={'session_id': session_id, 'question': question},
+                              timeout=MENTOR_TIMEOUT)
+    except requests.RequestException:
+        return jsonify({'error': 'Mentor is currently unavailable.'}), 503
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get('error', 'mentor chat failed')
+        except ValueError:
+            err = 'mentor chat failed'
+        return jsonify({'error': err}), 502
+    return jsonify(resp.json())
+
+
+@app.route('/api/mentor/reset', methods=['POST'])
+def mentor_reset():
+    session_id = session.get('mentor_session_id')
+    if not session_id:
+        return jsonify({'ok': True})
+    try:
+        requests.post(f'{MENTOR_URL}/reset', json={'session_id': session_id}, timeout=MENTOR_TIMEOUT)
+    except requests.RequestException:
+        return jsonify({'error': 'Mentor is currently unavailable.'}), 503
+    return jsonify({'ok': True})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -177,7 +253,6 @@ def upload():
 
 
 if __name__ == '__main__':
-    import os
     atlas.warm()          # load the frozen corpus in the background at startup
     # 0.0.0.0 so the UI is reachable from other machines on the LAN
     # (e.g. a laptop browsing to http://<dev-box-ip>:5000) without VS Code

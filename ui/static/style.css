@@ -42,7 +42,7 @@ html, body {
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px 1fr 320px;
   grid-template-rows: 100vh;
   height: 100vh;
   overflow: hidden;
@@ -57,7 +57,7 @@ html, body {
 }
 
 .panel-left  { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); }
-.panel-right { background: var(--surface); }
+.panel-right { border-left: 1px solid var(--border); overflow: hidden; background: var(--surface); }
 
 /* ── Typography ───────────────────────────────────────────────────────────── */
 h1 { 
@@ -362,9 +362,8 @@ input[type="text"]::placeholder {
 }
 
 /* ── Atlas: sidebar + force graph ─────────────────────────────────────────── */
-.app { grid-template-columns: 320px 1fr; }
 
-.hint-text { 
+.hint-text {
   font-size: 12px; 
   color: var(--text-muted); 
   margin-bottom: calc(var(--spacing) * 1.5); 
@@ -683,12 +682,23 @@ circle.corpus-node {
   right: calc(var(--spacing) * 1.5); 
 }
 
-.detail-title { 
-  font-size: 15px; 
-  font-weight: 500; 
+.detail-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing);
+  padding-right: 32px;
+}
+
+.detail-title-row .btn-icon {
+  flex-shrink: 0;
+}
+
+.detail-title {
+  font-size: 15px;
+  font-weight: 500;
   color: var(--text);
-  padding-right: 32px; 
-  word-break: break-word; 
+  word-break: break-word;
 }
 
 .detail-artist { 
@@ -827,3 +837,53 @@ circle.corpus-node {
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius); }
+
+/* ── Mentor chat panel ────────────────────────────────────────────────────── */
+#mentor-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mentor-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 1.5);
+  margin-bottom: var(--spacing);
+}
+
+.mentor-msg {
+  padding: calc(var(--spacing) * 1.25) calc(var(--spacing) * 1.5);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-width: 92%;
+}
+
+.mentor-msg-user {
+  align-self: flex-end;
+  background: var(--surface-hi);
+  color: var(--text);
+}
+
+.mentor-msg-mentor {
+  align-self: flex-start;
+  background: rgba(91,143,204,0.1);
+  border: 1px solid rgba(91,143,204,0.3);
+  color: var(--text);
+}
+
+.mentor-msg-error {
+  align-self: stretch;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  background: rgba(204,107,107,0.08);
+}
+
+.mentor-status {
+  margin-bottom: var(--spacing);
+}

@@ -9,6 +9,8 @@ const state = {
   playlistPolls: {},  // group id (pid / album:<id>) → interval id (active polls)
   removed: [],        // recently removed nodes (newest first, session-only)
   activeFilter: null, // {label, kind, ids:Set} | null
+  recommendRows: [],  // rows backing the recommend-results list
+  mentorBusy: false,
 };
 
 const REMOVED_MAX = 20;
@@ -38,6 +40,8 @@ async function init() {
   initUpload();
   initDetail();
   initMapPanel();
+  initRecommend();
+  initMentor();
   renderMapPanel();
 }
 
@@ -467,6 +471,125 @@ async function replaceRemoved(i) {
   renderMapPanel();
 }
 
+/* ── Recommend from map (seeds = every song currently placed on the map) ─ */
+function initRecommend() {
+  document.getElementById('recommend-btn').addEventListener('click', doRecommend);
+}
+
+async function doRecommend() {
+  const btn = document.getElementById('recommend-btn');
+  const seedIds = AtlasGraph.getNodes().filter(n => n.kind === 'query').map(n => n.id);
+  if (!seedIds.length) { showError('Add a few songs to the map first.'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Recommending…';
+  try {
+    const data = await fetch('/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed_ids: seedIds }),
+    }).then(r => r.json());
+    if (data.error) { showError(data.error); return; }
+    renderRecommendResults(data);
+  } catch (err) {
+    showError('Recommend failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Recommend similar';
+  }
+}
+
+function renderRecommendResults(data) {
+  const el = document.getElementById('recommend-results');
+  const results = data.results || [];
+  if (!results.length) {
+    el.innerHTML = '<div class="empty">No recommendations found</div>';
+    return;
+  }
+  // The backend already splices these into the shared graph (recommend()'s
+  // splice=True) — mirror that locally so the map and this list agree.
+  AtlasGraph.mergeFragment({
+    nodes: results.map(r => ({ id: r.id, name: r.name, artist: r.artist, kind: 'corpus' })),
+    links: [],
+  }, { focus: false });
+  state.recommendRows = results;
+  el.innerHTML = results.map((r, i) => `
+    <div class="map-row" onclick="gotoRecommendRow(${i})">
+      <span class="ring-dot"></span>
+      <div class="track-info">
+        <div class="track-title">${esc(r.name)}</div>
+        <div class="track-artist">${esc(r.artist || '')}</div>
+      </div>
+      <span class="similar-score">${r.score != null ? Number(r.score).toFixed(3) : ''}</span>
+    </div>`).join('');
+}
+
+function gotoRecommendRow(i) {
+  const r = state.recommendRows[i];
+  if (r) AtlasGraph.selectNode(r.id, { zoom: true });
+}
+
+/* ── Mentor chat ──────────────────────────────────────────────────────── */
+function initMentor() {
+  document.getElementById('mentor-send').addEventListener('click', sendMentorMessage);
+  document.getElementById('mentor-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') sendMentorMessage();
+  });
+  document.getElementById('mentor-reset').addEventListener('click', resetMentor);
+}
+
+function appendMentorMessage(role, text) {
+  const el = document.getElementById('mentor-messages');
+  if (el.querySelector('.empty')) el.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'mentor-msg mentor-msg-' + role;
+  div.textContent = text;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setMentorStatus(text) {
+  const el = document.getElementById('mentor-status');
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+
+async function sendMentorMessage() {
+  if (state.mentorBusy) return;
+  const input = document.getElementById('mentor-input');
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = '';
+  appendMentorMessage('user', question);
+  state.mentorBusy = true;
+  setMentorStatus('Mentor is thinking…');
+  try {
+    const data = await fetch('/api/mentor/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    }).then(r => r.json());
+    if (data.error) {
+      appendMentorMessage('error', data.error);
+    } else {
+      appendMentorMessage('mentor', data.answer);
+    }
+  } catch (err) {
+    appendMentorMessage('error', 'Mentor is currently unavailable.');
+  } finally {
+    state.mentorBusy = false;
+    setMentorStatus('');
+  }
+}
+
+async function resetMentor() {
+  try {
+    await fetch('/api/mentor/reset', { method: 'POST' });
+  } catch (err) { /* best-effort — a stale session just times out server-side */ }
+  document.getElementById('mentor-messages').innerHTML =
+    '<div class="empty">Ask what you sound like, who you\'re close to, or for music advice.</div>';
+  setMentorStatus('');
+}
+
 /* ── Detail panel (click a node → pinned side pop-over) ─────────────────── */
 function initDetail() {
   AtlasGraph.onSelect(openDetail);
@@ -511,8 +634,13 @@ function renderDetail(d) {
   if (c.confidence != null) meta.push(`conf ${Math.round(c.confidence * 100)}%`);
 
   let html = `
-    <div class="detail-title">${esc(d.name)}</div>
-    <div class="detail-artist">${esc(d.artist)}</div>
+    <div class="detail-title-row">
+      <div>
+        <div class="detail-title">${esc(d.name)}</div>
+        <div class="detail-artist">${esc(d.artist)}</div>
+      </div>
+      <button class="btn-icon" title="Preview" onclick='playPreview(${JSON.stringify(d.id)}, this)'>▶</button>
+    </div>
     ${meta.length ? `<div class="detail-meta">${meta.join(' · ')}</div>` : ''}
     ${d.genre ? `<div class="detail-genre">${esc(d.genre)}</div>` : ''}`;
 
@@ -538,6 +666,8 @@ function renderDetail(d) {
         ? `<span class="similar-score">${Number(s.score).toFixed(3)}</span>` : '';
       const onGraph = s.on_graph || AtlasGraph.hasNode(s.id);
       const add = onGraph ? '' : `<button class="btn-add" onclick="addSimilar(${i}, this)">Add</button>`;
+      const preview = `<button class="btn-icon" title="Preview"
+           onclick='event.stopPropagation(); playPreview(${JSON.stringify(s.id)}, this)'>▶</button>`;
       return `
       <div class="similar-row${onGraph ? ' on-graph' : ''}"
            ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
@@ -545,7 +675,7 @@ function renderDetail(d) {
           <div class="track-title">${esc(s.name)}</div>
           <div class="track-artist">${esc(s.artist)}</div>
         </div>
-        ${score}${add}
+        ${score}${preview}${add}
       </div>`;
     }).join('') + `</div>`;
   }
@@ -582,6 +712,29 @@ async function addSimilar(i, btn) {
 }
 
 /* ── Preview audio ──────────────────────────────────────────────────────── */
+async function playPreview(id, btn) {
+  if (btn.dataset.url) { togglePreview(btn.dataset.url, btn); return; }
+  if (btn.disabled) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const data = await fetch('/api/song/' + encodeURIComponent(id) + '/preview').then(r => r.json());
+    btn.disabled = false;
+    if (!data.preview_url) {
+      btn.textContent = '✕';
+      btn.title = 'No preview available';
+      return;
+    }
+    btn.dataset.url = data.preview_url;
+    btn.textContent = original;
+    togglePreview(data.preview_url, btn);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
 function togglePreview(url, btn) {
   if (state.audio && state.audioUrl === url) {
     state.audio.pause();

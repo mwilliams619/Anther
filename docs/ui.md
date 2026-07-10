@@ -17,7 +17,8 @@ python ui/app.py   # port 5000
 | `ui/atlas.py` | Corpus warm-up; three-tier song search (local corpus → Deezer → Spotify); `place()` onto the frozen corpus; full-MPD playlist/album search + placement; raw-MERT embed cache |
 | `ui/playlist_jobs.py` | Single background worker thread (one GPU consumer) that embeds and places queued tracks asynchronously, polled via `/api/playlist/status/<job_id>` |
 | `ui/static/graph.js` | d3 force graph — hover highlight/tooltip, click-to-pin, warm-up polling |
-| `ui/static/app.js` | Search UI, mode switching (tracks/playlists/albums), detail popover (`renderDetail`) |
+| `ui/static/app.js` | Search UI, mode switching (tracks/playlists/albums), detail popover (`renderDetail`), recommend-from-map, mentor chat panel |
+| `mentor/service.py` | Separate warm process hosting `MusicMentor` (chat/ReAct) over HTTP; `ui/app.py` forwards `/api/mentor/*` to it (see "Mentor chat" below) |
 
 ## Routes (`ui/app.py`)
 
@@ -31,6 +32,9 @@ python ui/app.py   # port 5000
 | `GET /api/albums/search` | Deezer album search |
 | `POST /api/album/place` | Place an album's tracks onto the map |
 | `POST /api/place` | Place a single song (cache-first: previously embedded ids skip download+MERT) |
+| `POST /api/recommend` | Multi-song recommendation: body `{seed_ids, top_k?, method?}` → similar corpus tracks, spliced into the graph server-side |
+| `POST /api/mentor/chat` | Body `{question}` → `{answer}`; forwards to `mentor/service.py` using a per-browser session cookie. `503` if the mentor service isn't running |
+| `POST /api/mentor/reset` | Clears the caller's mentor conversation state |
 | `GET /api/graph` | Current session graph (nodes/links/groups); `ready: false` during warm-up |
 | `POST /api/graph/clear` | Wipe the map — nodes, links, groups (embed cache kept) |
 | `DELETE /api/node/<id>` | Remove one placed song + its now-orphaned corpus neighbors |
@@ -46,7 +50,11 @@ python ui/app.py   # port 5000
 - **Env vars**: `ANTHER_CORPUS` (corpus bundle dir), `ANTHER_MPD_DB` (MPD
   SQLite DB path), `ANTHER_IMPORT_CAP` (playlist/album placement cap, default
   100), `ANTHER_DEBUG` (Flask debug mode, default off — leave off on any
-  internet-facing host).
+  internet-facing host), `ANTHER_UI_SECRET_KEY` (Flask session-cookie signing
+  key; a random one is generated per restart if unset, which just resets
+  mentor chat sessions), `ANTHER_MENTOR_HOST`/`ANTHER_MENTOR_PORT` (where
+  `ui/app.py` reaches the mentor service, default `127.0.0.1:5100`),
+  `ANTHER_MENTOR_TIMEOUT` (request timeout in seconds, default 30).
 - **Session state** lives under `ui/session/`: `embed_cache.sqlite` (raw
   MERT vectors, avoids re-embedding on repeat placement) and the saved graph
   JSON (persists the map across restarts).
@@ -62,3 +70,34 @@ python ui/app.py   # port 5000
   (`AtlasGraph.setFilter`). Group display names come from a `groups` registry
   persisted inside `graph.json` (backfilled at load from the MPD DB /
   Deezer for pre-registry imports).
+- **Recommend from map**: the "Recommend similar" button (`doRecommend` in
+  `app.js`) seeds `/api/recommend` with every `kind: 'query'` node currently
+  on the map (i.e. what's shown in the Map panel list, not corpus-neighbor
+  context nodes). Results are already spliced into the shared graph
+  server-side (`atlas.recommend`'s `splice=True` default); the frontend just
+  mirrors that into the local d3 model as `kind: 'corpus'` nodes and lists
+  them for click-to-zoom.
+
+## Mentor chat
+
+`mentor/service.py` loads `MusicMentor` once (base model + LoRA + RAG +
+Anther graph tools — ~10s, ~2.6GB VRAM resident per
+[`mentor/README.md`](../mentor/README.md)) and stays warm as its own process,
+independent of `ui/app.py`'s lifecycle:
+
+```bash
+python -m mentor.service   # port 5100, separate process — start alongside ui/app.py
+```
+
+`ui/app.py` never loads the model itself; it forwards `/api/mentor/chat` and
+`/api/mentor/reset` to the service over localhost, using a signed session
+cookie (`ANTHER_UI_SECRET_KEY`) to key each browser's `ConversationState`
+inside the service. If the service isn't running, both routes return `503`
+and the chat panel shows an inline "unavailable" state — the rest of the
+atlas UI keeps working normally.
+
+The web ReAct tool surface is intentionally trimmed to read-only graph
+lookups (`resolve, sounds_like, compare, bridge, crossover, artist_tracks,
+tagmates` — see `mentor/mentor_react.py`'s `REACT_SYSTEM`/`_execute()`).
+Chat cannot place, remove, or otherwise mutate the map; use the atlas UI
+controls for that.

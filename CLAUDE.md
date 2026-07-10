@@ -37,6 +37,7 @@ left). Run the test suite with `pytest` from the repo root.
 | Phase 1 features | touching `features.py` / `data.py` / FMA feature vectors | [docs/phase1-features.md](docs/phase1-features.md) |
 | Phase 2 embeddings | touching `embedding.py` / `audio.py` / MERT | [docs/phase2-embeddings.md](docs/phase2-embeddings.md) |
 | Reference corpus | touching `anther_ml/corpus/` (build/place/sources/bundle) or MPD ingest | [docs/projects/REFERENCE_CORPUS_DESIGN.md](docs/projects/REFERENCE_CORPUS_DESIGN.md), perf: [docs/projects/CORPUS_BUILD_EFFICIENCY_PLAN.md](docs/projects/CORPUS_BUILD_EFFICIENCY_PLAN.md) |
+| MPD playlist DB pruning | touching `anther_ml/mpd_sql.py` or shrinking the 27GB MPD DB for hosting | [docs/projects/MPD_PLAYLIST_PRUNING_NOTES.md](docs/projects/MPD_PLAYLIST_PRUNING_NOTES.md) (not implemented — reference only) |
 | Cluster labels | touching `anther_ml/corpus/labels.py` or the `corpus label` CLI | [docs/projects/PLAYLIST_LABELS_BUILD_PLAN.md](docs/projects/PLAYLIST_LABELS_BUILD_PLAN.md) |
 | Micro-genre tagging | touching `anther_ml/corpus/tagging/` (per-track genre tags) | [docs/tagging.md](docs/tagging.md); build plan: [docs/projects/MICROGENRE_TAGGING_BUILD_PLAN.md](docs/projects/MICROGENRE_TAGGING_BUILD_PLAN.md), status: [docs/projects/MICROGENRE_TAGGING_NEXT_STEPS.md](docs/projects/MICROGENRE_TAGGING_NEXT_STEPS.md) |
 | Web UI | touching `ui/` (Flask app, corpus atlas, force-graph frontend) | [docs/ui.md](docs/ui.md) |

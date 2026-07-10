@@ -21,7 +21,14 @@ from .labels import (
     label_bundle,
     set_cluster_override,
 )
-from .place import calibrate_fit, embed_query, place, playlist_fit, rank_playlists
+from .place import (
+    calibrate_fit,
+    embed_query,
+    place,
+    playlist_fit,
+    rank_playlists,
+    recommend_from_seeds,
+)
 from .sources import fma_source, local_source, mpd_source
 
 __all__ = [
@@ -42,5 +49,6 @@ __all__ = [
     "place",
     "playlist_fit",
     "rank_playlists",
+    "recommend_from_seeds",
     "set_cluster_override",
 ]

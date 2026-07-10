@@ -38,9 +38,20 @@ dependencies = [
 [project.optional-dependencies]
 notebooks = ["jupyter", "ipykernel"]
 dev = ["pytest"]
+# music-mentor feature: QLoRA fine-tune + RAG + serving. torch/transformers
+# are already core deps; this adds only the fine-tuning/serving stack.
+mentor = [
+    "peft",
+    "trl",
+    "bitsandbytes",
+    "accelerate",
+    "datasets",
+    "sentence-transformers",
+    "requests",
+]
 
 [tool.setuptools]
-packages = ["anther_ml", "anther_ml.corpus", "anther_ml.corpus.tagging"]
+packages = ["anther_ml", "anther_ml.corpus", "anther_ml.corpus.tagging", "mentor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

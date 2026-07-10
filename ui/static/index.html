@@ -56,6 +56,11 @@
       </div>
       <div id="removed-header" class="removed-header" hidden>Recently removed</div>
       <div id="removed-list" class="map-list"></div>
+      <button id="recommend-btn" class="btn btn-primary" style="margin-top:10px"
+              title="Get corpus tracks similar to everything currently on your map">
+        Recommend similar
+      </button>
+      <div id="recommend-results" class="map-list"></div>
     </section>
 
     <!-- Upload -->
@@ -81,6 +86,25 @@
       <div id="detail-body"></div>
     </aside>
     <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs</div>
+  </div>
+
+  <!-- ── Mentor chat ──────────────────────────────────────────────────────── -->
+  <div class="panel panel-right">
+    <div class="header">
+      <h1>Mentor</h1>
+      <span class="subtitle">ask about your sound</span>
+    </div>
+    <section id="mentor-panel">
+      <div id="mentor-messages" class="mentor-messages">
+        <div class="empty">Ask what you sound like, who you're close to, or for music advice.</div>
+      </div>
+      <div id="mentor-status" class="hint-text mentor-status" hidden></div>
+      <div class="search-bar">
+        <input id="mentor-input" type="text" placeholder="Ask the mentor…" autocomplete="off" />
+        <button id="mentor-send" class="btn-add">Send</button>
+      </div>
+      <button id="mentor-reset" class="btn-tiny" style="margin-top:6px">Reset conversation</button>
+    </section>
   </div>
 
 </div><!-- .app -->

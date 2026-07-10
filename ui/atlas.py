@@ -3,10 +3,12 @@ Frozen-corpus atlas: tiered search + placement for the d3 force-graph UI.
 
 A song is resolved by a three-tier search — (1) the local corpus embedding,
 (2) Deezer, (3) Spotify (last resort, gated on credentials) — then placed onto
-the frozen 100k reference corpus. Placement returns the song's nearest corpus
-neighbors (with cosine scores) and a cluster id; the frontend grows a d3 force
-graph from these fragments. The corpus is loaded once and never re-fit; the
-exact UMAP coords are irrelevant here (positions come from the force sim).
+the frozen 100k reference corpus as its own node (a cluster id is assigned but
+its nearest corpus neighbors are not added to the graph — that fan-out made
+the map too dense to read; see ``_merge_fragment``). Placed songs still link
+to each other via query↔query similarity edges. The corpus is loaded once and
+never re-fit; the exact UMAP coords are irrelevant here (positions come from
+the force sim).
 
 This module owns all corpus/MERT state so ui/app.py stays a thin router.
 """
@@ -24,7 +26,7 @@ import requests
 
 from anther_ml import mpd_sql
 from anther_ml.corpus.bundle import ReferenceCorpus
-from anther_ml.corpus.place import embed_query, place
+from anther_ml.corpus.place import embed_query, place, recommend_from_seeds
 from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ratio
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -399,12 +401,10 @@ class PlacementSkip(Exception):
 
 
 def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
-    """Place a corpus row by index: exact top-K neighbor fan-out + merge."""
+    """Place a corpus row by index and merge it into the graph."""
     corpus = load()
     self_id = corpus.metadata[idx].get("id")
     raw_vec = corpus.embeddings[idx]
-    neighbors = corpus.index.query(raw_vec, top_k=TOP_K + 1)
-    neighbors = [n for n in neighbors if n.get("id") != self_id][:TOP_K]
     node = {
         "id":         self_id,
         "name":       corpus.metadata[idx].get("name", ""),
@@ -415,7 +415,7 @@ def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
         "source":     "corpus",
         **(extra or {}),
     }
-    return _merge_fragment(node, neighbors, corpus.index.transform_query(raw_vec))
+    return _merge_fragment(node, corpus.index.transform_query(raw_vec))
 
 
 def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
@@ -437,8 +437,7 @@ def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
         "cluster_label": res["cluster"].get("label", ""),
         **(extra or {}),
     }
-    return _merge_fragment(node, res["neighbors"],
-                           corpus.index.transform_query(raw_vec))
+    return _merge_fragment(node, corpus.index.transform_query(raw_vec))
 
 
 def place_song(result: dict) -> dict:
@@ -538,6 +537,63 @@ def place_external_track(track: dict, raw_vec, playlist_pid=None) -> dict:
                             track.get("artist", ""), raw_vec, source, extra=extra)
 
 
+def _seed_vec(seed_id: str) -> np.ndarray | None:
+    """Raw MERT vector for a placed seed id: corpus row if in-corpus, else the
+    embed cache (populated when the song was searched/placed). None if neither."""
+    idx = _id_to_idx.get(seed_id)
+    if idx is not None:
+        return load().embeddings[idx]
+    return cached_vec(seed_id)
+
+
+def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
+              splice: bool = True) -> dict:
+    """
+    Multi-song recommendation (use-case 2): given the ids of several placed seed
+    songs, return corpus tracks similar to the *set* as a whole.
+
+    Every seed must already have a vector available — in-corpus rows and any
+    song previously searched/placed (embed-cached) resolve instantly; a seed
+    with no cached vector is reported in ``skipped`` rather than silently
+    dropped. Seeds are excluded from their own results.
+
+    ``method`` is passed through to ``recommend_from_seeds`` ("centroid" default,
+    "topk" fallback for multi-mood seed sets). When ``splice`` is true the
+    returned tracks are also merged into the shared graph (as corpus nodes wired
+    to the seeds' neighborhood) so the list and the map stay in sync.
+
+    Returns {"results": [...], "n_seeds": int, "skipped": [ids], "method": str}.
+    """
+    ids = [s for s in (seed_ids or []) if s]
+    if not ids:
+        raise ValueError("recommend needs at least one seed id")
+    load()
+
+    vecs, used, skipped = [], [], []
+    for sid in ids:
+        v = _seed_vec(sid)
+        if v is None:
+            skipped.append(sid)
+        else:
+            vecs.append(v)
+            used.append(sid)
+    if not vecs:
+        raise ValueError("no seed ids resolved to a vector (none cached yet)")
+
+    results = recommend_from_seeds(
+        load(), vecs, top_k=top_k, exclude_ids=set(used), method=method
+    )
+
+    if splice:
+        for r in results:
+            idx = _id_to_idx.get(r.get("id"))
+            if idx is not None:
+                _place_corpus_track(idx, extra={"recommended": True})
+
+    return {"results": results, "n_seeds": len(used),
+            "skipped": skipped, "method": method}
+
+
 def _download_url(url: str):
     """Download an audio URL to a temp mp3; returns (path, cleanup)."""
     r = requests.get(url, timeout=20)
@@ -564,13 +620,15 @@ def _download_preview(result: dict):
     return _download_url(url)
 
 
-def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
-    """Upsert the query node + its neighbor nodes/links into the graph.
+def _merge_fragment(node: dict, qvec=None) -> dict:
+    """Upsert the query node into the graph.
 
-    Beyond the query→corpus neighbor edges, this also wires the placed song
-    directly to every *other* placed song whose index-space cosine clears the
-    corpus-calibrated ``_qq_threshold`` — so similar songs you add pull together
-    in the force sim regardless of which Leiden cluster each landed in.
+    Placed songs are *not* fanned out to their nearest corpus neighbors
+    (that flooded the map with grey context nodes and made it too dense to
+    read). Instead this wires the placed song directly to every *other*
+    placed song whose index-space cosine clears the corpus-calibrated
+    ``_qq_threshold`` — so similar songs you add pull together in the force
+    sim regardless of which Leiden cluster each landed in.
     """
     added_nodes, added_links = [], []
     with _graph_lock:
@@ -605,28 +663,6 @@ def _merge_fragment(node: dict, neighbors: list, qvec=None) -> dict:
                 added_links.append(link)
             _query_vecs[node["id"]] = qvec
 
-        for n in neighbors:
-            nid = n.get("id")
-            if not nid:
-                continue
-            if nid not in _graph["nodes"]:
-                nnode = {
-                    "id":      nid,
-                    "name":    n.get("name", ""),
-                    "artist":  n.get("artist", ""),
-                    "cluster": _id_to_cluster.get(nid, n.get("cluster")),
-                    "kind":    "corpus",
-                    "source":  "corpus",
-                }
-                _graph["nodes"][nid] = nnode
-                added_nodes.append(nnode)
-            key = (node["id"], nid)
-            if key not in _link_keys and node["id"] != nid:
-                link = {"source": node["id"], "target": nid,
-                        "value": round(float(n.get("score", 0.0)), 3)}
-                _graph["links"].append(link)
-                _link_keys.add(key)
-                added_links.append(link)
         _save_graph()
     return {"nodes": added_nodes, "links": added_links}
 
@@ -693,8 +729,7 @@ def _collection_response(gid, name, rows, n_total, fragment, n_immediate,
 
 def place_playlist(pid) -> dict:
     """
-    Place a playlist's songs onto the graph as ordinary query nodes — each with
-    its own corpus-neighbor fan-out so it clusters with the rest of the map (no
+    Place a playlist's songs onto the graph as ordinary query nodes (no
     artificial hub; membership is carried on each node as ``playlist_pid``).
 
     With the prepared MPD DB, membership is pulled from the full dump, capped at
@@ -834,6 +869,41 @@ def _inherit_tags(corpus, qvec=None, neighbor_ids=None, top_k: int = 3, knn: int
     top = sorted(score.items(), key=lambda kv: -kv[1])[:top_k]
     return [{"genre": g, "score": round(s, 4), "primary": rank == 0, "source": "neighbors"}
             for rank, (g, s) in enumerate(top)]
+
+
+_preview_cache: dict[str, str | None] = {}   # song_id → Deezer preview url | None (no match)
+
+
+def get_preview_url(song_id: str) -> str | None:
+    """Resolve a 30s preview URL for the detail popover's play button.
+
+    Neither corpus rows nor placed nodes carry a preview URL (only transient
+    search results do), so this matches by title/artist against Deezer on
+    demand and caches the result in-process — None means "no match found",
+    cached too so a repeat click doesn't re-hit Deezer.
+    """
+    if song_id in _preview_cache:
+        return _preview_cache[song_id]
+
+    idx = _id_to_idx.get(song_id)
+    if idx is not None:
+        corpus = load()
+        name = corpus.metadata[idx].get("name", "")
+        artist = corpus.metadata[idx].get("artist", "")
+    else:
+        with _graph_lock:
+            gnode = _graph["nodes"].get(song_id)
+        if gnode is None:
+            return None
+        name, artist = gnode.get("name", ""), gnode.get("artist", "")
+
+    url = None
+    if name and artist:
+        m = match_deezer_track({"title": name, "artist": artist})
+        if "error" not in m:
+            url = m.get("preview")
+    _preview_cache[song_id] = url
+    return url
 
 
 def song_detail(song_id: str, top_n: int = 10) -> dict | None:

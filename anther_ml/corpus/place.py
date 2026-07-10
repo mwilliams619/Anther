@@ -123,6 +123,70 @@ def _query_tags(
     ]
 
 
+def recommend_from_seeds(
+    corpus: ReferenceCorpus,
+    seed_vecs,
+    top_k: int = 20,
+    exclude_ids=None,
+    method: str = "centroid",
+    per_seed_k: int = 3,
+) -> list[dict]:
+    """
+    Recommend corpus tracks similar to a *set* of seed songs — the multi-song
+    "find music like this feeling" query (use-case 2).
+
+    ``seed_vecs`` is an iterable of **raw** query vectors (pre-transform, one per
+    searched song), exactly as passed to ``place``/``index.query``. Each is put
+    through the index's frozen transform (standardize against corpus stats, then
+    L2), so seeds and corpus rows are compared in the same space.
+
+    Scoring (``method``):
+      * ``"centroid"`` (default) — average the transformed unit seed vectors,
+        re-normalize, and rank corpus tracks by cosine to that centroid. Rewards
+        songs near the shared center of all seeds.
+      * ``"topk"`` — score each candidate by the mean of its top-``per_seed_k``
+        cosines across the seeds (the reverse of ``playlist_fit``). Rewards a
+        song strongly similar to a *subset* of seeds, so a two-mood seed set
+        doesn't collapse to an empty midpoint. Interface-compatible drop-in.
+
+    A seed that is itself a corpus track would score ~1.0 against itself; pass
+    the seed ids (plus anything the user already has) via ``exclude_ids`` to
+    drop them. Returns ``top_k`` rows: ``{"rank", "score", **metadata}`` — the
+    same shape as ``SongIndex.query``.
+    """
+    index = corpus.index
+    seeds = list(seed_vecs)
+    if not seeds:
+        raise ValueError("recommend_from_seeds needs at least one seed vector")
+    Q = np.stack([index.transform_query(v) for v in seeds])  # (m, D), unit rows
+
+    if method == "centroid":
+        centroid = Q.mean(axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm == 0:  # seeds cancel exactly (antipodal) — no shared center
+            raise ValueError("seed centroid is degenerate (zero vector)")
+        scores = index.embeddings @ (centroid / norm)
+    elif method == "topk":
+        sims = index.embeddings @ Q.T  # (N, m): candidate × seed cosines
+        scores = _topk_mean(sims, per_seed_k)
+    else:
+        raise ValueError(f"unknown method {method!r} (use 'centroid' or 'topk')")
+
+    drop = set(exclude_ids or ())
+    order = np.argsort(scores)[::-1]
+    results = []
+    for idx in order:
+        meta = index.metadata[int(idx)]
+        if meta.get("id") in drop:
+            continue
+        entry = {"rank": len(results) + 1, "score": float(scores[idx])}
+        entry.update(meta)
+        results.append(entry)
+        if len(results) >= top_k:
+            break
+    return results
+
+
 def _topk_mean(sims: np.ndarray, k: int) -> np.ndarray:
     """Mean of the k largest values along the last axis (k clipped to width)."""
     sims = np.atleast_2d(sims)
