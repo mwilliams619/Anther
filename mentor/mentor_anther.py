@@ -166,17 +166,38 @@ class AntherSoundsLike:
 
         return None, {"input": spec, "type": "name", "resolved": False}
 
-    def resolve_anchor(self, spec, context=None):
+    def _resolve_spec(self, spec_text, graph_ctx=None):
+        """On-screen-first name resolution: live graph tiers, then corpus.
+
+        ``graph_ctx`` is a ``mentor_graphctx.GraphContext`` (or None). When it has
+        placed nodes, we try to resolve the anchor against the on-screen session
+        first; only if that misses do we fall back to the frozen corpus. Passing
+        ``graph_ctx=None`` reproduces the original corpus-only behaviour, so
+        existing callers keep working.
+        """
+        if graph_ctx is not None:
+            try:
+                if graph_ctx.has_nodes():
+                    vec, info = graph_ctx.resolve(spec_text)
+                    if info.get("resolved"):
+                        return vec, info
+            except Exception:
+                pass
+        return self._resolve_name(spec_text)
+
+    def resolve_anchor(self, spec, context=None, graph_ctx=None):
         """Resolve a query anchor from audio path or name string.
 
-        Returns (vec, info) where info contains resolution metadata.
+        Resolution order: context ref ("me") -> audio -> on-screen session
+        (``graph_ctx``) -> frozen corpus. Returns (vec, info) where info carries
+        resolution metadata (``type`` distinguishes onscreen_* from corpus).
         """
         spec_text = str(spec).strip() if spec is not None else ""
         spec_key = self._norm_text(spec_text)
         if spec_key in ("me", "my sound", "my track", "my song", "those artists"):
             ref = getattr(context, "last_anchor", None) if context is not None else None
             if ref:
-                vec, info = self._resolve_name(ref)
+                vec, info = self._resolve_spec(ref, graph_ctx=graph_ctx)
                 if info.get("resolved"):
                     info["input"] = spec_text
                     info["type"] = "context_ref"
@@ -196,11 +217,11 @@ class AntherSoundsLike:
             path = spec["audio_path"]
             vec = self._embed_audio(path)
             return vec, {"input": path, "type": "audio", "resolved": True, "path": path}
-        return self._resolve_name(spec_text)
+        return self._resolve_spec(spec_text, graph_ctx=graph_ctx)
 
-    def resolve_two(self, spec_a, spec_b, context=None):
-        vec_a, info_a = self.resolve_anchor(spec_a, context=context)
-        vec_b, info_b = self.resolve_anchor(spec_b, context=context)
+    def resolve_two(self, spec_a, spec_b, context=None, graph_ctx=None):
+        vec_a, info_a = self.resolve_anchor(spec_a, context=context, graph_ctx=graph_ctx)
+        vec_b, info_b = self.resolve_anchor(spec_b, context=context, graph_ctx=graph_ctx)
         return (vec_a, info_a), (vec_b, info_b)
 
     def _embed_audio(self, audio_path):

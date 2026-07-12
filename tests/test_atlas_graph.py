@@ -46,6 +46,8 @@ def injected(monkeypatch, tmp_path):
     monkeypatch.setattr(atlas, "_id_to_idx", {m["id"]: i for i, m in enumerate(corpus.metadata)})
     monkeypatch.setattr(atlas, "_id_to_cluster",
                         {m["id"]: int(corpus.labels[i]) for i, m in enumerate(corpus.metadata)})
+    monkeypatch.setattr(atlas, "_profile_by_cluster",
+                        {p["cluster_id"]: p for p in (corpus.profiles or [])})
     monkeypatch.setattr(atlas, "_playlist_index", pindex)
     monkeypatch.setattr(atlas, "_playlist_rows", prows)
     monkeypatch.setattr(atlas, "_graph", {"nodes": {}, "links": []})

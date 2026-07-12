@@ -22,6 +22,7 @@ import atlas
 
 _jobs: dict[str, dict] = {}          # job_id → record
 _active_pid: dict[str, str] = {}     # pid → job_id while running (dup-add dedup)
+_stopped_jobs: set[str] = set()      # job_ids that user has requested to stop
 _jobs_lock = threading.Lock()
 _queue: "queue.Queue[tuple[str, dict]]" = queue.Queue()
 _worker: threading.Thread | None = None
@@ -64,6 +65,7 @@ def get_status(job_id: str, cursor: int = 0) -> dict:
         job = _jobs.get(job_id)
         if job is None:
             return {"state": "not_found"}
+        can_stop = job["state"] == "running" and job_id not in _stopped_jobs
         return {
             "state":     job["state"],
             "pid":       job["pid"],
@@ -75,7 +77,25 @@ def get_status(job_id: str, cursor: int = 0) -> dict:
             "fragments": job["fragments"][cursor:],
             "cursor":    len(job["fragments"]),
             "skipped":   list(job["skipped"]),
+            "can_stop":  can_stop,
         }
+
+
+def stop(job_id: str) -> dict:
+    """Request that a running job stop after the current track.
+    Returns the updated job status."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return {"state": "not_found"}
+        if job["state"] != "running":
+            return {"error": f"Job {job_id} is not running", "state": job["state"]}
+        if job_id in _stopped_jobs:
+            return {"error": f"Job {job_id} is already stopping", "state": "stopping"}
+        
+        _stopped_jobs.add(job_id)
+        job["message"] = f"Stopping after current track… ({job['placed']}/{job['total']} placed)"
+        return get_status(job_id)
 
 
 def _worker_loop() -> None:
@@ -83,7 +103,19 @@ def _worker_loop() -> None:
         job_id, track = _queue.get()
         with _jobs_lock:
             job = _jobs.get(job_id)
+            should_stop = job_id in _stopped_jobs if job else False
         if job is None:
+            continue
+
+        # Check if user requested stop — finish this track but then mark done
+        if should_stop:
+            done_before = job["placed"] + len(job["skipped"])
+            job["message"] = f"Stopping… (skipping {job['total'] - done_before} remaining tracks)"
+            with _jobs_lock:
+                job["state"] = "done"
+                if _active_pid.get(job["pid"]) == job_id:
+                    del _active_pid[job["pid"]]
+                _stopped_jobs.discard(job_id)
             continue
 
         done_before = job["placed"] + len(job["skipped"])
@@ -109,7 +141,16 @@ def _worker_loop() -> None:
                                        "name": track.get("name", ""),
                                        "artist": track.get("artist", ""),
                                        "reason": skip})
-            if job["placed"] + len(job["skipped"]) >= job["total"]:
+            # Check if we should stop after this track
+            if job_id in _stopped_jobs:
+                job["state"] = "done"
+                job["message"] = (f"Stopped: {job['placed']}/{job['total']} placed"
+                                  + (f", {len(job['skipped'])} skipped"
+                                     if job["skipped"] else ""))
+                if _active_pid.get(job["pid"]) == job_id:
+                    del _active_pid[job["pid"]]
+                _stopped_jobs.discard(job_id)
+            elif job["placed"] + len(job["skipped"]) >= job["total"]:
                 job["state"] = "done"
                 job["message"] = (f"Done: {job['placed']}/{job['total']} placed"
                                   + (f", {len(job['skipped'])} skipped"

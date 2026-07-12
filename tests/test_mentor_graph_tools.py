@@ -9,6 +9,15 @@ from mentor.mentor_graph import MentorGraphTools
 from mentor.mentor_react import MentorReAct, _fallback_call
 
 
+class _EmptyGraphCtx:
+    """No on-screen nodes -> tools fall through to corpus scope. These legacy
+    tests are corpus-only, so we disable the live-graph path explicitly rather
+    than let MentorGraphTools auto-load the real 1024-dim session graph."""
+
+    def has_nodes(self):
+        return False
+
+
 class _FakeIndex:
     def __init__(self):
         self.embeddings = np.array(
@@ -69,14 +78,15 @@ class _FakeAnther:
             self._name_keys.append(f"{artist} - {name}".strip(" -"))
             self._artist_to_indices.setdefault(artist, []).append(i)
 
-    def resolve_anchor(self, spec, context=None):
+    def resolve_anchor(self, spec, context=None, graph_ctx=None):
         vec = self._anchor_vecs.get(str(spec))
         if vec is None:
             return None, {"input": spec, "resolved": False}
         return vec, {"input": spec, "resolved": True, "match": str(spec)}
 
-    def resolve_two(self, spec_a, spec_b, context=None):
-        return self.resolve_anchor(spec_a, context=context), self.resolve_anchor(spec_b, context=context)
+    def resolve_two(self, spec_a, spec_b, context=None, graph_ctx=None):
+        return (self.resolve_anchor(spec_a, context=context, graph_ctx=graph_ctx),
+                self.resolve_anchor(spec_b, context=context, graph_ctx=graph_ctx))
 
     def cluster_of(self, vec, knn=25):
         vec = np.asarray(vec, dtype=np.float32).reshape(-1)
@@ -84,7 +94,7 @@ class _FakeAnther:
 
 
 def test_artist_tracks_filters_artist_and_ranks_by_anchor():
-    tools = MentorGraphTools(_FakeAnther())
+    tools = MentorGraphTools(_FakeAnther(), graph_ctx=_EmptyGraphCtx())
 
     result = tools.artist_tracks("Halo by Beyonce", "xxxtentacion", top_k=2)
 
@@ -95,7 +105,7 @@ def test_artist_tracks_filters_artist_and_ranks_by_anchor():
 
 
 def test_compare_returns_similarity_and_both_neighbor_lists():
-    tools = MentorGraphTools(_FakeAnther())
+    tools = MentorGraphTools(_FakeAnther(), graph_ctx=_EmptyGraphCtx())
 
     result = tools.compare("Halo by Beyonce", "Take a Step Back", top_k=2)
 
@@ -129,7 +139,7 @@ def test_frontend_wrappers_delegate_to_atlas(monkeypatch):
     )
     monkeypatch.setattr(mentor_graph, "atlas", fake_atlas)
 
-    tools = MentorGraphTools(_FakeAnther())
+    tools = MentorGraphTools(_FakeAnther(), graph_ctx=_EmptyGraphCtx())
     assert tools.search("halo", limit=3)["results"] == ["halo", 3]
     assert tools.search_playlists("wave", limit=4)["results"] == ["wave", 4]
     assert tools.search_albums("pop", limit=5)["results"] == ["pop", 5]
@@ -146,7 +156,7 @@ def test_frontend_wrappers_delegate_to_atlas(monkeypatch):
 
 
 def test_execute_dispatches_compare_and_artist_tracks():
-    react = MentorReAct(_FakeAnther(), generate_fn=lambda *a, **k: "")
+    react = MentorReAct(_FakeAnther(), generate_fn=lambda *a, **k: "", graph_ctx=_EmptyGraphCtx())
 
     compare_obs = react._execute(
         {"tool": "compare", "args": {"anchor_a": "Halo by Beyonce", "anchor_b": "Take a Step Back", "top_k": 2}}
@@ -163,7 +173,7 @@ def test_execute_dispatches_compare_and_artist_tracks():
 
 
 def test_execute_still_rejects_unsupported_map_mutating_tools():
-    react = MentorReAct(_FakeAnther(), generate_fn=lambda *a, **k: "")
+    react = MentorReAct(_FakeAnther(), generate_fn=lambda *a, **k: "", graph_ctx=_EmptyGraphCtx())
 
     obs = react._execute({"tool": "place_song", "args": {"result": {"id": "x"}}})
 

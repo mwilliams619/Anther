@@ -4,7 +4,10 @@ const state = {
   audioUrl:   null,
   audioBtn:   null,
   detailId:   null,   // song currently shown in the detail panel
-  similar:    [],     // similar-song rows backing the panel's list
+  similar:    [],     // similar-song rows backing the panel's list (map-connected
+                      // rows first, then any expanded "show more" rows appended)
+  mapCount:   0,      // how many leading rows of state.similar are map-connected
+  expanded:   false,  // whether "Show more like this" has been fetched for detailId
   searchMode: 'tracks',   // 'tracks' | 'playlists' | 'albums'
   playlistPolls: {},  // group id (pid / album:<id>) → interval id (active polls)
   removed: [],        // recently removed nodes (newest first, session-only)
@@ -42,6 +45,8 @@ async function init() {
   initMapPanel();
   initRecommend();
   initMentor();
+  initMobileSidebar();
+  initHelp();
   renderMapPanel();
 }
 
@@ -282,24 +287,43 @@ function startPlaylistPoll(jobId, playlist) {
       stopPlaylistPoll(playlist.pid);
       setPlaylistProgress(`${playlist.name} — ${placed} of ${playlist.n_tracks} placed${capped}${skipped} ✓`, 8000);
     } else {
-      setPlaylistProgress(`${playlist.name} — ${placed} of ${playlist.n_tracks} placed${capped}${skipped} · ${s.message || ''}`);
+      const canStop = s.can_stop ? ` [<a href="#" onclick="stopPlaylistJob('${jobId}', event)">stop</a>]` : '';
+      setPlaylistProgress(`${playlist.name} — ${placed} of ${playlist.n_tracks} placed${capped}${skipped} · ${s.message || ''}${canStop}`);
     }
   };
   state.playlistPolls[playlist.pid] = setInterval(tick, 1500);
+  state.playlistJobIds = state.playlistJobIds || {};
+  state.playlistJobIds[playlist.pid] = jobId;
   tick();
 }
 
 function stopPlaylistPoll(pid) {
   clearInterval(state.playlistPolls[pid]);
   delete state.playlistPolls[pid];
+  if (state.playlistJobIds) delete state.playlistJobIds[pid];
 }
 
 let progressTimer;
 function setPlaylistProgress(text, clearAfterMs) {
   const el = document.getElementById('playlist-progress');
-  el.textContent = text;
+  el.innerHTML = text;  // Changed from textContent to innerHTML to support links
   clearTimeout(progressTimer);
-  if (clearAfterMs) progressTimer = setTimeout(() => { el.textContent = ''; }, clearAfterMs);
+  if (clearAfterMs) progressTimer = setTimeout(() => { el.innerHTML = ''; }, clearAfterMs);
+}
+
+async function stopPlaylistJob(jobId, event) {
+  event.preventDefault();
+  event.stopPropagation();
+  try {
+    const resp = await fetch(`/api/playlist/stop/${jobId}`, { method: 'POST' }).then(r => r.json());
+    if (resp.error) {
+      showError(`Stop failed: ${resp.error}`);
+    } else if (resp.can_stop === false) {
+      // Already stopped, poll will update shortly
+    }
+  } catch (err) {
+    showError(`Stop failed: ${err.message}`);
+  }
 }
 
 /* ── Map panel: filter/highlight, node list, remove / re-place, clear ────── */
@@ -519,7 +543,7 @@ function renderRecommendResults(data) {
         <div class="track-title">${esc(r.name)}</div>
         <div class="track-artist">${esc(r.artist || '')}</div>
       </div>
-      <span class="similar-score">${r.score != null ? Number(r.score).toFixed(3) : ''}</span>
+      <span class="similar-score">${r.score != null ? 'Similarity score: ' + Math.round(r.score) : ''}</span>
     </div>`).join('');
 }
 
@@ -535,6 +559,10 @@ function initMentor() {
     if (e.key === 'Enter') sendMentorMessage();
   });
   document.getElementById('mentor-reset').addEventListener('click', resetMentor);
+  
+  // Toggle button to open/close mentor panel
+  document.getElementById('mentor-toggle').addEventListener('click', toggleMentorPanel);
+  document.getElementById('mentor-close').addEventListener('click', toggleMentorPanel);
 }
 
 function appendMentorMessage(role, text) {
@@ -602,6 +630,7 @@ async function openDetail(id) {
   const panel = document.getElementById('detail-panel');
   const body  = document.getElementById('detail-body');
   state.detailId = id;
+  state.expanded = false;
   panel.hidden = false;
   body.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -625,62 +654,111 @@ function closeDetail() {
   document.getElementById('detail-panel').hidden = true;
   state.detailId = null;
   state.similar = [];
+  state.expanded = false;
+}
+
+function similarRowHtml(s, i) {
+  const score = s.score != null
+    ? `<span class="similar-score">Similarity score: ${Math.round(s.score)}</span>` : '';
+  const onGraph = s.on_graph || AtlasGraph.hasNode(s.id);
+  const add = onGraph ? '' : `<button class="btn-add" onclick="addSimilar(${i}, this)">Add</button>`;
+  const preview = `<button class="btn-icon" title="Preview"
+       onclick='event.stopPropagation(); playPreview(${JSON.stringify(s.id)}, this)'>▶</button>`;
+  return `
+  <div class="similar-row${onGraph ? ' on-graph' : ''}"
+       ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
+    <div class="track-info">
+      <div class="track-title">${esc(s.name)}</div>
+      <div class="track-artist">${esc(s.artist)}</div>
+    </div>
+    ${score}${preview}${add}
+  </div>`;
 }
 
 function renderDetail(d) {
-  const c = d.cluster || {};
-  const meta = [];
-  if (c.id != null) meta.push(`cluster ${c.id}`);
-  if (c.confidence != null) meta.push(`conf ${Math.round(c.confidence * 100)}%`);
-
   let html = `
     <div class="detail-title-row">
       <div>
         <div class="detail-title">${esc(d.name)}</div>
         <div class="detail-artist">${esc(d.artist)}</div>
       </div>
-      <button class="btn-icon" title="Preview" onclick='playPreview(${JSON.stringify(d.id)}, this)'>▶</button>
+      <div class="detail-btn-group">
+        <button class="btn-icon" title="Preview" onclick='playPreview(${JSON.stringify(d.id)}, this)'>▶</button>
+        <button class="btn-icon" title="Play on Spotify (full track if you're logged in)"
+                onclick='toggleSpotifyEmbed(${JSON.stringify(d.id)}, this)'>🎵</button>
+      </div>
     </div>
-    ${meta.length ? `<div class="detail-meta">${meta.join(' · ')}</div>` : ''}
+    <div id="spotify-embed-wrap" class="spotify-embed-wrap" hidden></div>
     ${d.genre ? `<div class="detail-genre">${esc(d.genre)}</div>` : ''}`;
 
-  const tags = d.tags || [];
-  if (tags.length) {
-    html += `<div class="detail-section"><h3>Micro-genres</h3><div class="tag-chips">`
-      + tags.map(t => `<span class="tag-chip${t.primary ? ' primary' : ''}">${esc(t.genre)}</span>`).join('')
-      + `</div></div>`;
+  // ── Neighborhood label ──────────────────────────────────────────────────
+  const pos = d.positioning;
+  if (pos?.cluster_label) {
+    html += `<div class="detail-section">`;
+    html += `<div class="positioning-label">${esc(pos.cluster_label)}</div>`;
+    if (pos.cluster_size) {
+      html += `<div class="positioning-size">${pos.cluster_size.toLocaleString()} tracks in this corner of the map</div>`;
+    }
+    if (pos.pitch_summary) {
+      html += `<div class="positioning-pitch">${esc(pos.pitch_summary)}</div>`;
+    }
+    html += `</div>`;
   }
 
-  const pls = d.playlists || [];
-  if (pls.length) {
-    const items = pls.slice(0, 8).map(p => `<li>${esc(p.name)}</li>`).join('')
-      + (pls.length > 8 ? `<li class="more">+${pls.length - 8} more</li>` : '');
-    html += `<div class="detail-section"><h3>Playlists</h3><ul class="detail-playlists">${items}</ul></div>`;
-  }
+  // Primary list: songs actually connected to this one on the map (map_neighbors).
+  // A separate "Show more" fetch (see showMoreSimilar) appends corpus-wide
+  // results not already on the map — kept out of the initial payload since
+  // that search is the expensive part of song_detail.
+  const mapNeighbors = d.map_neighbors || [];
+  state.similar = mapNeighbors.slice();
+  state.mapCount = mapNeighbors.length;
 
-  state.similar = d.similar || [];
-  if (state.similar.length) {
-    const listTitle = d.kind === 'playlist' ? 'Tracks' : 'Similar songs';
-    html += `<div class="detail-section"><h3>${listTitle}</h3>` + state.similar.map((s, i) => {
-      const score = s.score != null
-        ? `<span class="similar-score">${Number(s.score).toFixed(3)}</span>` : '';
-      const onGraph = s.on_graph || AtlasGraph.hasNode(s.id);
-      const add = onGraph ? '' : `<button class="btn-add" onclick="addSimilar(${i}, this)">Add</button>`;
-      const preview = `<button class="btn-icon" title="Preview"
-           onclick='event.stopPropagation(); playPreview(${JSON.stringify(s.id)}, this)'>▶</button>`;
-      return `
-      <div class="similar-row${onGraph ? ' on-graph' : ''}"
-           ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
-        <div class="track-info">
-          <div class="track-title">${esc(s.name)}</div>
-          <div class="track-artist">${esc(s.artist)}</div>
-        </div>
-        ${score}${preview}${add}
-      </div>`;
-    }).join('') + `</div>`;
-  }
+  const listTitle = d.kind === 'playlist' ? 'Tracks' : 'Connected on map';
+  html += `<div class="detail-section" id="similar-section"><h3>${listTitle}</h3>`
+    + `<div id="similar-list">`
+    + (mapNeighbors.length
+        ? mapNeighbors.map((s, i) => similarRowHtml(s, i)).join('')
+        : `<div class="empty-hint">Not connected to any songs on your map yet.</div>`)
+    + `</div>`
+    + `<button id="show-more-btn" class="btn-show-more" onclick="showMoreSimilar()">Show more like this</button>`
+    + `</div>`;
+
+
 
   document.getElementById('detail-body').innerHTML = html;
+}
+
+async function showMoreSimilar() {
+  const btn = document.getElementById('show-more-btn');
+  const id = state.detailId;
+  if (!id || state.expanded) return;
+  btn.disabled = true;
+  btn.textContent = 'Loading…';
+  try {
+    const r = await fetch('/api/song/' + encodeURIComponent(id) + '?expand=1');
+    const data = await r.json();
+    if (state.detailId !== id) return;          // superseded by a newer click
+    if (!r.ok || data.error) { showError(data.error || 'Failed to load more songs'); return; }
+    state.expanded = true;
+    const extra = data.similar || [];
+    const list = document.getElementById('similar-list');
+    if (extra.length) {
+      const startIdx = state.similar.length;
+      state.similar = state.similar.concat(extra);
+      if (startIdx === 0) {
+        // primary list was empty ("Not connected..." placeholder) — replace it
+        list.innerHTML = '';
+      }
+      list.insertAdjacentHTML('beforeend',
+        `<div class="more-divider">More like this</div>`
+        + extra.map((s, j) => similarRowHtml(s, startIdx + j)).join(''));
+    }
+    btn.remove();
+  } catch (err) {
+    showError('Failed to load more songs: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = 'Show more like this';
+  }
 }
 
 function gotoSimilar(i) {
@@ -756,6 +834,66 @@ function togglePreview(url, btn) {
   };
 }
 
+/* ── Spotify embed (no login required on our side) ────────────────────────
+ * Uses Spotify's public open.spotify.com/embed/track/<id> iframe — no OAuth,
+ * no app registration, no Development Mode 5-account cap. A visitor already
+ * logged into Spotify in that browser gets full-track playback inside the
+ * iframe off their own session; everyone else gets Spotify's normal 30s
+ * preview. We just need the bare Spotify track id, resolved server-side. */
+async function toggleSpotifyEmbed(id, btn) {
+  const wrap = document.getElementById('spotify-embed-wrap');
+  if (!wrap) return;
+
+  // Toggle closed if this button's embed is already showing.
+  if (!wrap.hidden && wrap.dataset.forId === id) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    wrap.dataset.forId = '';
+    return;
+  }
+
+  if (state.audio) { state.audio.pause(); }   // don't double up with preview audio
+
+  if (btn.dataset.trackId) {
+    renderSpotifyEmbed(wrap, id, btn.dataset.trackId);
+    return;
+  }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  wrap.hidden = false;
+  wrap.dataset.forId = id;
+  wrap.innerHTML = '<div class="empty spotify-embed-status">Looking up on Spotify…</div>';
+  try {
+    const data = await fetch('/api/song/' + encodeURIComponent(id) + '/spotify').then(r => r.json());
+    btn.disabled = false;
+    btn.textContent = original;
+    if (state.detailId !== id && wrap.dataset.forId !== id) return;  // superseded
+    if (!data.track_id) {
+      btn.title = 'Not found on Spotify';
+      wrap.innerHTML = '<div class="empty spotify-embed-status">Not available on Spotify.</div>';
+      return;
+    }
+    btn.dataset.trackId = data.track_id;
+    renderSpotifyEmbed(wrap, id, data.track_id);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = original;
+    wrap.innerHTML = '<div class="empty spotify-embed-status">Lookup failed — try again.</div>';
+  }
+}
+
+function renderSpotifyEmbed(wrap, id, trackId) {
+  wrap.innerHTML = `<iframe
+      style="border-radius:12px" src="https://open.spotify.com/embed/track/${trackId}"
+      width="100%" height="152" frameBorder="0"
+      allowfullscreen="" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+      loading="lazy"></iframe>`;
+  wrap.hidden = false;
+  wrap.dataset.forId = id;
+}
+
 /* ── Upload → place ─────────────────────────────────────────────────────── */
 function initUpload() {
   const zone  = document.getElementById('upload-zone');
@@ -809,3 +947,98 @@ function showError(msg) {
 
 /* ── Boot ───────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', init);
+
+function toggleMentorPanel() {
+  const app = document.querySelector('.app');
+  const mentorPanel = document.querySelector('.mentor-panel');
+  const isOpen = app.classList.toggle('mentor-open');
+  mentorPanel.hidden = !isOpen;
+  if (isOpen) {
+    // Focus input when opening
+    setTimeout(() => document.getElementById('mentor-input').focus(), 100);
+  }
+}
+
+function initMobileSidebar() {
+  const app = document.querySelector('.app');
+  const toggle = document.querySelector('.sidebar-toggle');
+  const panelLeft = document.querySelector('.panel-left');
+  const graphWrap = document.querySelector('.graph-wrap');
+  
+  if (!toggle) return; // Desktop only has toggle hidden
+  
+  // Toggle sidebar on button click
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    app.classList.toggle('sidebar-open');
+  });
+  
+  // Close sidebar when clicking on the graph
+  graphWrap.addEventListener('click', () => {
+    app.classList.remove('sidebar-open');
+  });
+  
+  // Close sidebar when clicking on a panel item (search result, recommendation, etc.)
+  panelLeft.addEventListener('click', (e) => {
+    // Don't close if clicking on interactive elements like inputs
+    if (e.target.closest('input, .btn-primary, .btn-tiny, .mode-btn')) return;
+    // Close on track results, playlist results, etc.
+    if (e.target.closest('.track-row, #filter-active, #map-list .node-row, #removed-list .node-row')) {
+      setTimeout(() => app.classList.remove('sidebar-open'), 100);
+    }
+  });
+  
+  // Close sidebar when clicking the semi-transparent backdrop
+  app.addEventListener('click', (e) => {
+    if (e.target === app && app.classList.contains('sidebar-open')) {
+      app.classList.remove('sidebar-open');
+    }
+  });
+}
+
+/* ── Help Modal ─────────────────────────────────────────────────────────────── */
+function initHelp() {
+  const modal = document.getElementById('help-modal');
+  const helpToggle = document.getElementById('help-toggle');
+  const helpClose = document.getElementById('help-close');
+  const tabs = document.querySelectorAll('.modal-tab');
+  const tabContents = document.querySelectorAll('.modal-tab-content');
+  
+  // Open modal
+  helpToggle.addEventListener('click', () => {
+    modal.removeAttribute('hidden');
+  });
+  
+  // Close modal on close button
+  helpClose.addEventListener('click', () => {
+    modal.setAttribute('hidden', '');
+  });
+  
+  // Close modal on overlay click
+  const overlay = modal.querySelector('.modal-overlay');
+  overlay.addEventListener('click', () => {
+    modal.setAttribute('hidden', '');
+  });
+  
+  // Close modal on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.hasAttribute('hidden')) {
+      modal.setAttribute('hidden', '');
+    }
+  });
+  
+  // Tab switching
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      const tabName = tab.getAttribute('data-tab');
+      
+      // Update active tab button
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      
+      // Update active tab content
+      tabContents.forEach(content => content.classList.remove('active'));
+      document.querySelector(`.modal-tab-content[data-tab="${tabName}"]`).classList.add('active');
+    });
+  });
+}

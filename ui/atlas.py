@@ -53,17 +53,42 @@ STRONG_SCORE    = 0.6     # _ratio threshold for a "strong" corpus match
 QUERY_LINK_PCTL = float(os.environ.get("ANTHER_QQ_PCTL", "95"))
 _qq_threshold   = 0.981   # replaced at load() with the corpus-calibrated value
 
-SESSION_DIR      = Path(__file__).parent / "session"
-GRAPH_PATH       = SESSION_DIR / "graph.json"
-EMBED_CACHE_PATH = SESSION_DIR / "embed_cache.sqlite"
+# ── human-readable similarity score ─────────────────────────────────────────
+# Raw cosine is meaningless to a non-technical user (everything sits at 0.96-
+# 0.99) and, being a fixed *corpus-wide* calibration rather than a per-map
+# rescale, a given pair's displayed score never shifts just because other
+# songs were added to or removed from the map. Two fixed anchors, both drawn
+# from the same one-time 200k-random-pair corpus sample _calibrate_qq_threshold
+# already computes at load():
+#   - SCORE_FLOOR_RAW = _qq_threshold (the QUERY_LINK_PCTL percentile of random
+#     corpus pairs) maps to SCORE_FLOOR_DISPLAY. Any pair that clears the
+#     qq_threshold (i.e. every edge actually drawn on the map) therefore always
+#     reads >= SCORE_FLOOR_DISPLAY — "linked" reliably means "a relatively high
+#     score" to the user, per product decision.
+#   - SCORE_CEILING_RAW = the single highest cosine observed anywhere in that
+#     sample (~0.994, not the unreachable theoretical 1.0 of a song matching
+#     itself) maps to 100 — using an attainable ceiling means realistic pairs
+#     actually spread across most of the 0-100 range instead of bunching near
+#     the bottom.
+# Both anchors are set once in _calibrate_qq_threshold(); _display_score() below
+# does the linear map.
+SCORE_FLOOR_DISPLAY = 55.0
+_score_ceiling_raw   = 0.994   # replaced at load() with the corpus-calibrated value
+
+SESSION_DIR          = Path(__file__).parent / "session"
+GRAPH_PATH           = SESSION_DIR / "graph.json"
+EMBED_CACHE_PATH     = SESSION_DIR / "embed_cache.sqlite"
+CUSTOM_PLAYLISTS_DIR = Path(__file__).parent / "custom_playlists"
 
 # ── Lazy singletons ──────────────────────────────────────────────────────────
 
 _corpus = None
 _id_to_idx: dict = {}
 _id_to_cluster: dict = {}
+_profile_by_cluster: dict = {}   # cluster_id → profile dict
 _playlist_index: dict = {}   # pid -> {"pid","name","name_norm","n_tracks","indices":[int]}
 _playlist_rows: list = []    # _playlist_index values sorted by -n_tracks (search scans)
+_custom_playlist_index: dict = {}  # pid -> {pid, name, name_norm, description, tracks, n_tracks}
 _corpus_lock = threading.Lock()
 
 _model = _processor = _device = None
@@ -80,7 +105,8 @@ _graph_lock = threading.Lock()
 
 def load() -> ReferenceCorpus:
     """Load the frozen corpus once (idempotent, thread-safe)."""
-    global _corpus, _id_to_idx, _id_to_cluster, _playlist_index, _playlist_rows
+    global _corpus, _id_to_idx, _id_to_cluster, _playlist_index, _playlist_rows, _profile_by_cluster
+    global _custom_playlist_index
     with _corpus_lock:
         if _corpus is not None:
             return _corpus
@@ -94,7 +120,9 @@ def load() -> ReferenceCorpus:
             id_to_idx[tid] = i
             id_to_cluster[tid] = int(labels[i])
         _corpus, _id_to_idx, _id_to_cluster = corpus, id_to_idx, id_to_cluster
+        _profile_by_cluster = {p["cluster_id"]: p for p in (corpus.profiles or [])}
         _playlist_index, _playlist_rows = _build_playlist_index(corpus)
+        _custom_playlist_index = _load_custom_playlists()
         _calibrate_qq_threshold(corpus)
         _load_graph()
         return _corpus
@@ -122,11 +150,42 @@ def _build_playlist_index(corpus) -> tuple[dict, list]:
     return index, rows
 
 
+def _load_custom_playlists() -> dict:
+    """Read all *.json files from ui/custom_playlists/ and return a pid-keyed dict.
+    Each file must have at minimum ``pid``, ``name``, and ``tracks``
+    (list of {id, name, artist})."""
+    index: dict = {}
+    if not CUSTOM_PLAYLISTS_DIR.is_dir():
+        return index
+    for path in sorted(CUSTOM_PLAYLISTS_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            continue
+        pid = data.get("pid")
+        if not pid:
+            continue
+        name = data.get("name") or path.stem
+        tracks = data.get("tracks") or []
+        index[str(pid)] = {
+            "pid":         str(pid),
+            "name":        name,
+            "name_norm":   _norm(name),
+            "description": data.get("description", ""),
+            "tracks":      tracks,
+            "n_tracks":    len(tracks),
+        }
+    return index
+
+
 def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
     """Set the query↔query cosine cutoff to the QUERY_LINK_PCTL percentile of
     random corpus-pair cosines (index space) — so an edge means "more similar
-    than that fraction of released music," not an arbitrary absolute cosine."""
-    global _qq_threshold
+    than that fraction of released music," not an arbitrary absolute cosine.
+
+    Reuses the same random-pair sample to also set _score_ceiling_raw (see
+    _display_score) — one 200k-pair draw, two calibrated constants."""
+    global _qq_threshold, _score_ceiling_raw
     E = corpus.index.embeddings                       # standardized + L2-normalized
     n = E.shape[0]
     if n < 2:
@@ -137,6 +196,23 @@ def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
     mask = a != b
     cos = np.einsum("ij,ij->i", E[a[mask]], E[b[mask]])
     _qq_threshold = float(np.percentile(cos, QUERY_LINK_PCTL))
+    _score_ceiling_raw = float(cos.max())
+
+
+def _display_score(raw_cos: float, clip_low: bool = True) -> float:
+    """Map a raw cosine to the 0-100 human-readable similarity score.
+
+    _qq_threshold -> SCORE_FLOOR_DISPLAY, _score_ceiling_raw -> 100, linear
+    between. `clip_low=True` (map edges, which structurally can't fall below
+    _qq_threshold) floors the result at SCORE_FLOOR_DISPLAY; `clip_low=False`
+    (the corpus-wide "show more" search, which can surface pairs that don't
+    clear the link threshold) lets the score read honestly below the floor,
+    only clipping at 0. Both cases clip at 100 on top."""
+    span = _score_ceiling_raw - _qq_threshold
+    frac = (raw_cos - _qq_threshold) / span if span > 0 else 1.0
+    score = SCORE_FLOOR_DISPLAY + (100.0 - SCORE_FLOOR_DISPLAY) * frac
+    lo = SCORE_FLOOR_DISPLAY if clip_low else 0.0
+    return float(np.clip(score, lo, 100.0))
 
 
 def warm() -> None:
@@ -288,11 +364,28 @@ def search_playlists(q: str, limit: int = 20) -> dict:
     """Playlist-name search. Against the full MPD DB (real track counts, any
     of the 1M playlists) when prepared; else the corpus playlist index
     (in-corpus counts only) plus a notice telling the user how to upgrade.
+    Custom playlists from ui/custom_playlists/ are always prepended.
     Returns {"results": [...], "notice": str|None}."""
     load()
     q = (q or "").strip()
     if not q:
         return {"results": [], "notice": None}
+
+    # Custom playlists always searched regardless of MPD availability
+    tokens = _norm(q).split()
+    custom_hits = []
+    for e in _custom_playlist_index.values():
+        if not all(t in e["name_norm"] for t in tokens):
+            continue
+        custom_hits.append({
+            "pid":         e["pid"],
+            "name":        e["name"],
+            "n_tracks":    e["n_tracks"],
+            "n_in_corpus": e["n_tracks"],
+            "source":      "custom",
+            "score":       round(_ratio(q, e["name"]), 3),
+        })
+    custom_hits.sort(key=lambda h: -h["score"])
 
     if mpd_ready():
         hits = mpd_sql.search_playlists_db(MPD_DB, q, limit=limit)
@@ -300,9 +393,8 @@ def search_playlists(q: str, limit: int = 20) -> dict:
             entry = _playlist_index.get(h["pid"])
             h["n_in_corpus"] = len(entry["indices"]) if entry else 0
             h["source"] = "mpd"
-        return {"results": hits, "notice": None}
+        return {"results": custom_hits + hits, "notice": None}
 
-    tokens = _norm(q).split()
     scored = []
     for e in _playlist_rows:
         if not all(t in e["name_norm"] for t in tokens):
@@ -317,7 +409,7 @@ def search_playlists(q: str, limit: int = 20) -> dict:
         "source":      "corpus",
         "score":       round(float(score), 3),
     } for score, e in scored[:limit]]
-    return {"results": results, "notice": MPD_PREP_HINT}
+    return {"results": custom_hits + results, "notice": MPD_PREP_HINT}
 
 
 def _search_deezer(q: str, limit: int) -> list:
@@ -469,15 +561,27 @@ def place_song(result: dict) -> dict:
 
     if source == "upload":
         path, cleanup = Path(result["path"]), None
+        try:
+            with _embed_lock:
+                model, processor, device = _mert()
+                vec = embed_query(path, corpus, model, processor, device)
+        finally:
+            if cleanup:
+                cleanup()
     else:
-        path, cleanup = _download_preview(result)
-    try:
-        with _embed_lock:
-            model, processor, device = _mert()
-            vec = embed_query(path, corpus, model, processor, device)
-    finally:
-        if cleanup:
-            cleanup()
+        # Non-upload sources (deezer, spotify, etc.) use two-tier fallback:
+        # Try the provided preview_url, fall back to Deezer name/artist match
+        # if the URL is dead. Same logic as playlist_jobs.py worker.
+        try:
+            vec, _method = resolve_and_embed({
+                "id": result.get("id"),
+                "name": result.get("title", ""),
+                "artist": result.get("artist", ""),
+                "preview_url": result.get("preview_url"),
+            })
+        except PlacementSkip as e:
+            raise ValueError(f"Could not place song: {e.reason}") from e
+
     cache_vec(result.get("id"), vec, result.get("title", ""), result.get("artist", ""))
     return _place_query_vec(result.get("id"), result.get("title", ""),
                             result.get("artist", ""), vec, source, extra=extra)
@@ -583,6 +687,12 @@ def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
     results = recommend_from_seeds(
         load(), vecs, top_k=top_k, exclude_ids=set(used), method=method
     )
+    # Recommendations aren't guaranteed map edges (seeds' centroid/topk score is
+    # a different quantity than a pairwise qq cosine) so use the same open
+    # floor as the "show more" search — a weak recommendation can honestly
+    # read below 55 rather than being floored to look stronger than it is.
+    for r in results:
+        r["score"] = round(_display_score(float(r["score"]), clip_low=False), 1)
 
     if splice:
         for r in results:
@@ -656,8 +766,14 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
                 cands.append((score, other_id))
             cands.sort(reverse=True)
             for score, other_id in cands[:QQ_MAX_PER_NODE]:
+                # "value" = raw cosine (kept for recalibration/debugging); "score"
+                # = the fixed-calibration 0-100 human-readable number the UI
+                # actually displays (see _display_score) — computed once here so
+                # it never needs recomputing per-request or per-render.
                 link = {"source": node["id"], "target": other_id,
-                        "value": round(score, 3), "kind": "qq"}
+                        "value": round(score, 3),
+                        "score": round(_display_score(score, clip_low=True), 1),
+                        "kind": "qq"}
                 _graph["links"].append(link)
                 _link_keys.add((node["id"], other_id))
                 added_links.append(link)
@@ -742,6 +858,28 @@ def place_playlist(pid) -> dict:
     Returns {"playlist": {...}, "fragment": {nodes, links}, "job_id", "notice"}.
     """
     load()
+
+    # Custom playlists checked before MPD/corpus
+    custom = _custom_playlist_index.get(str(pid))
+    if custom is not None:
+        rows = []
+        for t in custom["tracks"][:IMPORT_CAP]:
+            tid = str(t.get("id", ""))
+            # Prefer bare ID if in corpus; fall back to spotify: prefix
+            if _id_to_idx.get(tid) is None and not tid.startswith(("spotify:", "deezer:")):
+                nid = f"spotify:{tid}"
+            else:
+                nid = tid
+            rows.append({
+                "id":          nid,
+                "name":        t.get("name", ""),
+                "artist":      t.get("artist", ""),
+                "preview_url": t.get("preview_url"),
+            })
+        fragment, n_immediate, pending = _place_collection_rows(
+            rows, str(pid), "custom")
+        return _collection_response(str(pid), custom["name"], rows,
+                                    custom["n_tracks"], fragment, n_immediate, pending)
 
     if mpd_ready():
         pid = str(pid)
@@ -838,13 +976,65 @@ def place_album(album_id) -> dict:
 
 # ── Song detail (click panel) ────────────────────────────────────────────────
 
-def _cluster_label(cid) -> str:
-    if cid is None or int(cid) < 0:
-        return ""
-    try:
-        return _corpus.cluster_profile(int(cid)).get("label_final", "")
-    except KeyError:
-        return ""
+def _nearest_artists(qvec, n: int = 5, exclude_artist: str = "") -> list:
+    """Top-n unique corpus artists nearest to the index-space qvec.
+    exclude_artist (normalised comparison) is the track's own artist."""
+    sims = _corpus.index.embeddings @ qvec
+    order = np.argsort(sims)[::-1][: n * 8]
+    seen, artists = set(), []
+    excl = _norm(exclude_artist)
+    for i in order:
+        a = _corpus.metadata[i].get("artist", "")
+        a_norm = _norm(a)
+        if not a or a_norm == excl or a_norm in seen:
+            continue
+        seen.add(a_norm)
+        artists.append(a)
+        if len(artists) >= n:
+            break
+    return artists
+
+
+def _pitch_summary(label: str, nearest: list, n: int = 3) -> str:
+    """One-line, copy-pasteable positioning sentence for pitching this track
+    (playlist submissions, DSP forms, etc.) — cluster label + top-n nearest
+    artists. Empty string if there isn't enough to say anything (no label and
+    no nearest artists), so the caller can omit the line entirely."""
+    def _join(names):
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return " and ".join(names)
+        return f"{', '.join(names[:-1])}, and {names[-1]}"
+
+    names = nearest[:n]
+    if label and names:
+        return f"Sits in {label} territory — sounds closest to {_join(names)}."
+    if label:
+        return f"Sits in {label} territory."
+    if names:
+        return f"Sounds closest to {_join(names)}."
+    return ""
+
+
+def _positioning(cluster_id, qvec, artist: str) -> dict:
+    """Build the positioning report dict surfaced in the click-detail panel.
+    cluster_id: Leiden cluster assignment for this track.
+    qvec: index-space vector (corpus.index.transform_query output) or None.
+    artist: track's artist string (excluded from nearest-artist list).
+    """
+    profile = _profile_by_cluster.get(cluster_id) if cluster_id is not None else None
+    label = (profile or {}).get("label_final") or (profile or {}).get("label", "")
+    size = (profile or {}).get("size", 0)
+
+    nearest = _nearest_artists(qvec, n=5, exclude_artist=artist) if qvec is not None else []
+
+    return {
+        "cluster_label": label,
+        "cluster_size":  size,
+        "nearest_artists": nearest,
+        "pitch_summary": _pitch_summary(label, nearest),
+    }
 
 
 def _inherit_tags(corpus, qvec=None, neighbor_ids=None, top_k: int = 3, knn: int = 10) -> list:
@@ -906,15 +1096,107 @@ def get_preview_url(song_id: str) -> str | None:
     return url
 
 
-def song_detail(song_id: str, top_n: int = 10) -> dict | None:
-    """
-    Full detail payload for the click panel: identity, cluster, micro-genre
-    tags, playlist membership, and a top-N similar-songs list.
+_spotify_id_cache: dict[str, str | None] = {}   # song_id → bare Spotify track id | None
 
-    Corpus tracks are recomputed on demand from the loaded bundle. Non-corpus
-    query nodes (deezer/spotify/upload) use placement-time data — their similar
-    list comes from the in-memory query vector when this session placed them,
-    else from the node's stored graph edges. Returns None for unknown ids.
+
+def get_spotify_track_id(song_id: str) -> str | None:
+    """Resolve a bare Spotify track id for the no-login iframe embed
+    (open.spotify.com/embed/track/<id>) — this gives logged-in Spotify
+    visitors full-track playback with zero OAuth/app registration, and
+    falls back to a 30s preview automatically for everyone else.
+
+    Every MPD-sourced corpus row already carries its native ``spotify:<id>``
+    node id — free, no lookup. Deezer/upload-origin tracks have no such id
+    on hand; for those we optionally cross-match by title/artist against the
+    Spotify Search API (same SPOTIFY_CLIENT_ID/SECRET-gated client-credentials
+    tier already used by the search fallback), caching the result — None
+    means "no confident match", cached too so a repeat click doesn't re-hit
+    the API.
+    """
+    if song_id in _spotify_id_cache:
+        return _spotify_id_cache[song_id]
+
+    if song_id.startswith("spotify:"):
+        tid = song_id.split(":", 1)[1]
+        _spotify_id_cache[song_id] = tid
+        return tid
+
+    if not spotify_configured():
+        _spotify_id_cache[song_id] = None
+        return None
+
+    idx = _id_to_idx.get(song_id)
+    if idx is not None:
+        corpus = load()
+        name = corpus.metadata[idx].get("name", "")
+        artist = corpus.metadata[idx].get("artist", "")
+    else:
+        with _graph_lock:
+            gnode = _graph["nodes"].get(song_id)
+        if gnode is None:
+            _spotify_id_cache[song_id] = None
+            return None
+        name, artist = gnode.get("name", ""), gnode.get("artist", "")
+
+    tid = None
+    if name and artist:
+        try:
+            from anther_ml.mpd_ingest import get_spotify_token
+            token = get_spotify_token()
+            r = requests.get(
+                "https://api.spotify.com/v1/search",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"q": f"track:{name} artist:{artist}", "type": "track", "limit": 1},
+                timeout=15,
+            )
+            r.raise_for_status()
+            items = ((r.json().get("tracks") or {}).get("items")) or []
+            if items:
+                tid = items[0].get("id")
+        except Exception:
+            tid = None
+    _spotify_id_cache[song_id] = tid
+    return tid
+
+
+def _map_neighbors(song_id: str) -> list:
+    """Songs actually connected to ``song_id`` by a drawn map edge (qq-link),
+    using each edge's persisted display score. This is what the click panel
+    shows by default — cheap (no corpus search, just an in-memory link scan)
+    and guaranteed to match the lines drawn on screen, unlike a fresh
+    nearest-neighbor search which can rank differently than what's linked."""
+    with _graph_lock:
+        rows = []
+        for l in _graph["links"]:
+            other = (l["target"] if l["source"] == song_id
+                     else l["source"] if l["target"] == song_id else None)
+            if other is None:
+                continue
+            on = _graph["nodes"].get(other, {})
+            score = l.get("score")
+            if score is None and l.get("value") is not None:   # pre-migration edge
+                score = round(_display_score(l["value"], clip_low=True), 1)
+            rows.append({
+                "id":       other,
+                "name":     on.get("name", ""),
+                "artist":   on.get("artist", ""),
+                "score":    score,
+                "on_graph": True,
+            })
+    rows.sort(key=lambda r: -(r["score"] or 0.0))
+    return rows
+
+
+def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | None:
+    """
+    Full detail payload for the click panel: identity, micro-genre tags,
+    playlist membership, and the songs it's connected to on the map.
+
+    ``map_neighbors`` (cheap — an in-memory link scan) is always included.
+    The expensive corpus-wide nearest-neighbor search only runs when
+    ``expand=True``, returned separately as ``similar`` with map_neighbors'
+    ids excluded (the "show more like this" list). Returns None for unknown
+    ids.
     """
     corpus = load()
     idx = _id_to_idx.get(song_id)
@@ -924,82 +1206,73 @@ def song_detail(song_id: str, top_n: int = 10) -> dict | None:
         gnode = dict(gnode) if gnode is not None else None
         node_ids = set(_graph["nodes"])
         qvec = _query_vecs.get(song_id)
-        # link-derived fallback rows (resolved here while we hold the lock)
-        link_rows = []
-        if idx is None and gnode is not None and qvec is None:
-            for l in _graph["links"]:
-                other = (l["target"] if l["source"] == song_id
-                         else l["source"] if l["target"] == song_id else None)
-                if other is None:
-                    continue
-                on = _graph["nodes"].get(other, {})
-                link_rows.append({
-                    "id":       other,
-                    "name":     on.get("name", ""),
-                    "artist":   on.get("artist", ""),
-                    "score":    l.get("value"),
-                    "cluster":  on.get("cluster"),
-                    "on_graph": True,
-                })
 
     if idx is None and gnode is None:
         return None
 
+    map_neighbors = _map_neighbors(song_id)
+    seen_ids = {song_id} | {r["id"] for r in map_neighbors}
+
     if idx is not None:                                 # corpus track
         m = corpus.metadata[idx]
-        cid = _id_to_cluster.get(song_id)
         track_tags = corpus.track_tags
         tags = track_tags[idx].get("tags", []) if track_tags is not None else []
-        rows = corpus.index.query(corpus.embeddings[idx], top_k=top_n + 1)
-        rows = [r for r in rows if r.get("id") != song_id][:top_n]
-        similar = [{
-            "id":       r.get("id"),
-            "name":     r.get("name", ""),
-            "artist":   r.get("artist", ""),
-            "score":    round(float(r.get("score", 0.0)), 3),
-            "cluster":  _id_to_cluster.get(r.get("id")),
-            "on_graph": r.get("id") in node_ids,
-        } for r in rows]
+        similar = []
+        if expand:
+            rows = corpus.index.query(corpus.embeddings[idx], top_k=top_n + 1 + len(seen_ids))
+            rows = [r for r in rows if r.get("id") not in seen_ids][:top_n]
+            similar = [{
+                "id":       r.get("id"),
+                "name":     r.get("name", ""),
+                "artist":   r.get("artist", ""),
+                "score":    round(_display_score(float(r.get("score", 0.0)), clip_low=False), 1),
+                "on_graph": r.get("id") in node_ids,
+            } for r in rows]
         return {
-            "id":        song_id,
-            "name":      m.get("name", ""),
-            "artist":    m.get("artist", ""),
-            "kind":      gnode.get("kind", "corpus") if gnode else "corpus",
-            "source":    gnode.get("source", "corpus") if gnode else "corpus",
-            "cluster":   {"id": cid,
-                          "confidence": gnode.get("confidence") if gnode else None,
-                          "label": _cluster_label(cid)},
-            "tags":      tags,
-            "genre":     m.get("genre"),
-            "playlists": m.get("playlists") or [],
-            "similar":   similar,
+            "id":            song_id,
+            "name":          m.get("name", ""),
+            "artist":        m.get("artist", ""),
+            "kind":          gnode.get("kind", "corpus") if gnode else "corpus",
+            "source":        gnode.get("source", "corpus") if gnode else "corpus",
+            "tags":          tags,
+            "genre":         m.get("genre"),
+            "playlists":     m.get("playlists") or [],
+            "map_neighbors": map_neighbors,
+            "similar":       similar,
+            "positioning":   _positioning(
+                _id_to_cluster.get(song_id),
+                corpus.index.embeddings[idx],
+                m.get("artist", ""),
+            ),
         }
 
     # non-corpus query node (deezer / spotify / upload / mpd)
-    cid = gnode.get("cluster")
-    if qvec is not None:
-        sims = corpus.index.embeddings @ qvec
-        order = np.argsort(sims)[::-1][:top_n]
-        similar = []
-        for i in order:
-            i = int(i)
-            nid = corpus.metadata[i].get("id")
-            similar.append({
-                "id":       nid,
-                "name":     corpus.metadata[i].get("name", ""),
-                "artist":   corpus.metadata[i].get("artist", ""),
-                "score":    round(float(sims[i]), 3),
-                "cluster":  int(corpus.labels[i]),
-                "on_graph": nid in node_ids,
-            })
-    else:                                               # pre-session node: stored edges only
-        link_rows.sort(key=lambda r: -(r["score"] or 0.0))
-        similar = link_rows[:top_n]
+    similar = []
+    if expand:
+        if qvec is not None:
+            sims = corpus.index.embeddings @ qvec
+            order = np.argsort(sims)[::-1]
+            for i in order:
+                i = int(i)
+                nid = corpus.metadata[i].get("id")
+                if nid in seen_ids:
+                    continue
+                similar.append({
+                    "id":       nid,
+                    "name":     corpus.metadata[i].get("name", ""),
+                    "artist":   corpus.metadata[i].get("artist", ""),
+                    "score":    round(_display_score(float(sims[i]), clip_low=False), 1),
+                    "on_graph": nid in node_ids,
+                })
+                if len(similar) >= top_n:
+                    break
+        # pre-session node with no cached vector: no corpus-wide search
+        # possible — map_neighbors (already computed above) is all we have.
 
     tags = gnode.get("tags") or []
     if not tags:                                        # placed before tags were persisted
         tags = _inherit_tags(corpus, qvec=qvec,
-                             neighbor_ids=[r["id"] for r in link_rows])
+                             neighbor_ids=[r["id"] for r in map_neighbors])
         if tags:
             with _graph_lock:                           # append the prediction to the track
                 n = _graph["nodes"].get(song_id)
@@ -1008,18 +1281,21 @@ def song_detail(song_id: str, top_n: int = 10) -> dict | None:
                     _save_graph()
 
     return {
-        "id":        song_id,
-        "name":      gnode.get("name", ""),
-        "artist":    gnode.get("artist", ""),
-        "kind":      gnode.get("kind", "query"),
-        "source":    gnode.get("source", ""),
-        "cluster":   {"id": cid,
-                      "confidence": gnode.get("confidence"),
-                      "label": gnode.get("cluster_label") or _cluster_label(cid)},
-        "tags":      tags,
-        "genre":     None,
-        "playlists": [],
-        "similar":   similar,
+        "id":            song_id,
+        "name":          gnode.get("name", ""),
+        "artist":        gnode.get("artist", ""),
+        "kind":          gnode.get("kind", "query"),
+        "source":        gnode.get("source", ""),
+        "tags":          tags,
+        "genre":         None,
+        "playlists":     [],
+        "map_neighbors": map_neighbors,
+        "similar":       similar,
+        "positioning":   _positioning(
+            gnode.get("cluster"),
+            qvec,
+            gnode.get("artist", ""),
+        ),
     }
 
 
@@ -1099,6 +1375,18 @@ def _load_graph() -> None:
              and l["source"] in nodes and l["target"] in nodes]
     _graph = {"nodes": nodes, "links": links}
     _link_keys = {(l["source"], l["target"]) for l in links}
+
+    # Backfill: sessions saved before the "score" field existed only have the
+    # raw cosine ("value"). Compute it once here from the already-calibrated
+    # _qq_threshold/_score_ceiling_raw (set by _calibrate_qq_threshold, called
+    # just before _load_graph in load()) so old sessions don't need re-placing.
+    backfilled = False
+    for l in links:
+        if l.get("kind") == "qq" and l.get("score") is None and l.get("value") is not None:
+            l["score"] = round(_display_score(l["value"], clip_low=True), 1)
+            backfilled = True
+    if backfilled:
+        _save_graph()
 
     # Groups registry (for the filter UI). Backfill display names for gids
     # recorded before the registry existed: playlist names from the MPD DB;

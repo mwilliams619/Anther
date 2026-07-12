@@ -141,7 +141,17 @@ class MusicMentor:
             from mentor_anther import AntherSoundsLike
             from mentor_react import MentorReAct
             self.anther = AntherSoundsLike()
-            self.react = MentorReAct(self.anther, self._generate)
+            # Live on-screen session (graph.json + embed_cache), read fresh per
+            # graph-turn. The mentor runs in a separate process from the UI, so
+            # this reads state from disk rather than the UI's in-memory atlas.
+            graph_ctx = None
+            try:
+                from mentor_graphctx import GraphContext
+                graph_ctx = GraphContext()
+            except Exception:
+                graph_ctx = None
+            self.graph_ctx = graph_ctx
+            self.react = MentorReAct(self.anther, self._generate, graph_ctx=graph_ctx)
 
     # ---- generation --------------------------------------------------------
     @torch.no_grad()
@@ -249,6 +259,13 @@ class MusicMentor:
             "sound like", "sounds like", "similar to", "closest artist",
             "close to", "between me and", "bridge", "crossover", "scene",
             "cluster", "tagmates", "neighbors", "nearest artists",
+            # new question shapes (PR-3/PR-4)
+            "sound closest", "sounds closest", "closest to", "closest match",
+            "between", "sit between", "sits between", "micro-genre", "micro genre",
+            "which genres", "what genres", "sonic territor", "territories",
+            "coherent", "coherence", "outlier", "hold together", "consistent",
+            "adjacent cluster", "recommend", "based on", "songs closest",
+            "compare", "how similar", "how close", "how different",
         ]
         off_terms = [
             "python", "javascript", "recipe", "cook", "weather", "forecast",
@@ -338,7 +355,12 @@ class MusicMentor:
                 self._record_turn(state, "user", question)
                 self._record_turn(state, "assistant", out)
                 return out
-            react = self.react.run(question, max_steps=3, verbose=verbose, context=state)
+            # Reasoning mode: a graph question runs the surprise-routing loop,
+            # which errs toward tool-calling and looping (max_steps=4) and
+            # composes its answer from observations only. The loop already emits
+            # an honest, anchor-specific deflection when it can't resolve — we
+            # surface that rather than the old generic one-liner.
+            react = self.react.run(question, max_steps=4, verbose=verbose, context=state)
             if verbose:
                 print("graph_calls=", [c.get("tool") for c in react.get("calls", [])])
             obs = react.get("observations", [])
@@ -347,14 +369,6 @@ class MusicMentor:
             state.last_graph_observations = obs
             graph_state = react.get("graph_state") or {}
             state.last_anchor = graph_state.get("anchor") or state.last_anchor
-            if obs and all(not o.get("ok", False) for o in obs if isinstance(o, dict) and "ok" in o):
-                out = (
-                    "I can map this, but I need a concrete anchor. Name an artist or track "
-                    "to compare, or upload audio and ask what you sound like."
-                )
-                self._record_turn(state, "user", question)
-                self._record_turn(state, "assistant", out)
-                return out
             out = react.get("answer", "Tell me an anchor artist or upload audio, and I'll map your sound.")
             self._record_turn(state, "user", question)
             self._record_turn(state, "assistant", out)

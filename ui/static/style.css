@@ -10,13 +10,17 @@
   --text:         #FAFAFA;
   --text-mid:     #AFAFAF;
   --text-muted:   #7A7A7A;
+
+  /* Graph-only atmosphere: warm charcoal "dim studio" foundation, kept
+     separate from --bg so the surrounding productivity UI stays untouched */
+  --graph-bg:     #101010;
   
   /* Function-based accents (muted) */
   --primary:      #5B8FCC;
   --primary-hi:   #7AABDD;
-  --warning:      #CC9F5B;
+  --warning:      #957545;
   --danger:       #CC6B6B;
-  --success:      #6BCC8F;
+  --success:      #4e6155;
   
   /* Design tokens */
   --radius:       3px;
@@ -42,10 +46,87 @@ html, body {
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-columns: 320px 1fr 320px;
+  grid-template-columns: 320px 1fr;
   grid-template-rows: 100vh;
   height: 100vh;
   overflow: hidden;
+  transition: grid-template-columns var(--transition);
+}
+
+.app.mentor-open {
+  grid-template-columns: 320px 1fr 320px;
+}
+
+/* Mobile: sidebar collapses off-screen, toggle button visible */
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+  
+  .app.mentor-open {
+    grid-template-columns: 1fr 320px;
+  }
+  
+  .panel-left {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 320px;
+    height: 100vh;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform var(--transition);
+    overflow-y: auto;
+  }
+  
+  .app.sidebar-open .panel-left {
+    transform: translateX(0);
+  }
+  
+  .sidebar-toggle {
+    position: fixed;
+    left: calc(var(--spacing) * 2);
+    top: calc(var(--spacing) * 2);
+    z-index: 99;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 16px;
+    transition: background var(--transition);
+  }
+  
+  .sidebar-toggle:hover {
+    background: var(--surface-hi);
+  }
+  
+  .app.sidebar-open .sidebar-toggle {
+    left: 328px; /* 320px sidebar + 2*padding(16px) */
+  }
+  
+  /* Semi-transparent backdrop when sidebar is open */
+  .app.sidebar-open::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+  }
+}
+
+/* Hidden by default; mobile media query overrides to display:flex */
+.sidebar-toggle {
+  display: none;
 }
 
 .panel {
@@ -58,6 +139,16 @@ html, body {
 
 .panel-left  { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); }
 .panel-right { border-left: 1px solid var(--border); overflow: hidden; background: var(--surface); }
+
+.mentor-panel {
+  opacity: 1;
+  transition: opacity var(--transition);
+}
+
+.mentor-panel[hidden] {
+  display: none;
+  opacity: 0;
+}
 
 /* ── Typography ───────────────────────────────────────────────────────────── */
 h1 { 
@@ -372,7 +463,15 @@ input[type="text"]::placeholder {
 .graph-wrap { 
   position: relative; 
   overflow: hidden; 
-  background: var(--bg); 
+  background: var(--graph-bg); 
+}
+
+/* static film-grain overlay, painted once behind the graph (see the SVG
+   <filter id="grain"> + full-bleed <rect> injected by graph.js). Not
+   animated — a per-frame-redrawn grain would cost a repaint every tick
+   for an effect meant to be barely noticed. */
+.grain-rect {
+  pointer-events: none;
 }
 
 #graph { 
@@ -553,31 +652,77 @@ input[type="text"]::placeholder {
 /* graph elements */
 .glink {
   stroke: var(--border); 
-  stroke-opacity: 0.4; 
+  stroke-opacity: 0.008;   /* almost invisible by default — constellations
+                             only reveal themselves on hover/selection */
   stroke-width: 1px; 
+  pointer-events: none;   /* too thin to hover reliably; .glink-hit below catches it */
+  transition: stroke-opacity var(--transition);
 }
 
-/* query↔query similarity edges: distinct color */
+/* invisible wide twin of each .glink, purely so hovering near a thin edge
+   still shows the similarity-score tooltip (see onLinkHover in graph.js) */
+.glink-hit {
+  stroke: transparent;
+  stroke-width: 10px;
+  cursor: pointer;
+}
+
+/* query↔query similarity edges: distinct color, and allowed to stay more
+   visible than corpus edges at rest — these are your own songs' relationships */
 .glink-qq { 
   stroke: var(--success); 
-  stroke-opacity: 0.5; 
-  stroke-width: 1.5px; 
+  stroke-opacity: 0.05; 
+  stroke-width: 1.2px; 
 }
 
 .glink.neighbor {
   stroke: var(--warning);
-  stroke-opacity: 0.8;
-  stroke-width: 2px;
+  stroke-opacity: 0.6;
+  stroke-width: 1.4px;
+  /* cheap bloom: GPU-composited drop-shadow, not an SVG feGaussianBlur
+     filter graph — scoped to the handful of edges actually lit */
+  filter: drop-shadow(0 0 2px var(--warning));
+}
+
+/* graduated depth: 2-hop edges (between 1-hop and 3+ nodes) fade partially
+   to match the .dimmed-mid nodes on either end — same middle opacity (0.45)
+   divided by the number of edges so each one is a bit fainter, visually
+   connecting the brighter cluster to the rest without shouting. */
+.glink.neighbor-mid {
+  stroke: var(--border);
+  stroke-opacity: 0.12;
+  stroke-width: 1px;
+  transition: stroke-opacity var(--transition);
 }
 
 /* links outside the active artist/playlist/album filter */
 .glink.filter-out {
-  stroke-opacity: 0.06;
+  stroke-opacity: 0.05;
 }
 
 .gnode { cursor: grab; }
 
-.gnode.dimmed { opacity: 0.15; }
+/* graduated depth relative to the selected/hovered node: 1-hop neighbors
+   stay full brightness (no class), 2-hop neighbors fade partially, and
+   everything further recedes to near-invisible. Hop distance is computed
+   once per selection/hover in applyHighlight() — not per animation frame. */
+.gnode.dimmed-mid,
+.gnode.dimmed {
+  transition: opacity 200ms ease;
+}
+
+.gnode.dimmed-mid { opacity: 0.05; }
+
+.gnode.dimmed { opacity: 0.01; }
+
+/* when a node is clicked, its 1-hop neighbors stay visible but dim to 0.8
+   opacity to reduce visual crowding around the selected node. The selected
+   node itself grows slightly (see graph.js) and neighbors are pushed away
+   via increased force repulsion. */
+.gnode.selected-neighbor {
+  opacity: 0.8;
+  transition: opacity 200ms ease;
+}
 
 /* nodes are not colored by cluster — uniform fills; cluster info lives in
    the click popover only. Relationships come from the force layout itself. */
@@ -616,12 +761,26 @@ circle.corpus-node {
   font-size: 11px; 
   pointer-events: none;
   font-family: 'Inter', sans-serif;
+  transition: fill var(--transition), filter var(--transition);
 }
 
 .glabel-query { 
   fill: var(--text); 
   font-size: 12px; 
   font-weight: 500; 
+}
+
+/* labels of 1-hop neighbors of selected node: slightly gray so they don't
+   visually compete with the selected node's label. */
+.glabel.selected-neighbor-label {
+  fill: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* label of the currently hovered or selected node: subtle drop shadow to
+   make it float above the graph and stand out in dense clusters. */
+.glabel.highlighted-label {
+  filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.4));
 }
 
 /* graph tooltip */
@@ -694,6 +853,27 @@ circle.corpus-node {
   flex-shrink: 0;
 }
 
+.detail-btn-group {
+  display: flex;
+  gap: calc(var(--spacing) * 0.5);
+  flex-shrink: 0;
+}
+
+.spotify-embed-wrap {
+  margin-top: var(--spacing);
+}
+
+.spotify-embed-wrap[hidden] { display: none; }
+
+.spotify-embed-wrap iframe {
+  display: block;
+}
+
+.spotify-embed-status {
+  padding: calc(var(--spacing) * 0.75) 0;
+  text-align: left;
+}
+
 .detail-title {
   font-size: 15px;
   font-weight: 500;
@@ -718,6 +898,28 @@ circle.corpus-node {
   font-size: 12px; 
   color: var(--text-mid); 
   margin-top: calc(var(--spacing) * 0.5); 
+}
+
+.positioning-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: calc(var(--spacing) * 0.5);
+}
+
+.positioning-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: calc(var(--spacing) * 1.5);
+}
+
+.positioning-pitch {
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.4;
+  color: var(--text-mid);
+  margin-top: calc(var(--spacing) * -0.75);
+  margin-bottom: calc(var(--spacing) * 1.5);
 }
 
 .detail-section { 
@@ -791,12 +993,91 @@ circle.corpus-node {
   font-size: 11px; 
   color: var(--text-muted); 
   flex-shrink: 0; 
+  white-space: nowrap;
 }
 
-/* pinned node ring */
+.empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: var(--spacing) 0;
+}
+
+.more-divider {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: calc(var(--spacing) * 1.5) 0 var(--spacing);
+  padding-top: var(--spacing);
+  border-top: 1px solid var(--border);
+}
+
+.btn-show-more {
+  display: block;
+  width: 100%;
+  margin-top: var(--spacing);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-mid);
+  padding: calc(var(--spacing) * 0.75) calc(var(--spacing) * 1.5);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.btn-show-more:hover:not(:disabled) {
+  background: var(--surface-hi);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-show-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* pinned node ring, with a very subtle organic bloom — same cheap
+   drop-shadow approach as .glink.neighbor, applied only to the one
+   selected node rather than the whole graph. The circle grows to 1.2x
+   (via scale transform) so it stands out from neighbors and gains visual
+   real estate as they're pushed away (see repulsion adjustment in JS). */
 .gnode.selected circle { 
   stroke: var(--warning); 
   stroke-width: 2.5px; 
+  filter: drop-shadow(0 0 4px var(--warning));
+  transform: scale(1.2);
+  transform-origin: center;
+  transform-box: fill-box;
+  transition: transform 200ms ease;
+}
+
+/* ── Ambient idle motion ──────────────────────────────────────────────────
+ * After a period of no interaction (mouse move / drag / click — see the
+ * idle timer in graph.js), the whole node layer gets this class and every
+ * node breathes very slightly in and out. Transform-only (scale), so it's
+ * GPU-composited and costs nothing per animation frame beyond what the
+ * browser already does for a CSS transform. The keyframe itself is a tiny
+ * ±1.5% scale — meant to be almost subliminal, "living specimen under a
+ * microscope," not a visible pulse.
+ */
+@keyframes gnode-breathe {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.015); }
+  100% { transform: scale(1); }
+}
+
+.nodes.idle-breathing .gnode circle {
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: gnode-breathe 4.5s ease-in-out infinite;
+}
+
+/* stagger so the whole graph doesn't pulse in lockstep — offset assigned
+   per-node in graph.js via --breathe-delay */
+.nodes.idle-breathing .gnode circle {
+  animation-delay: var(--breathe-delay, 0s);
 }
 
 /* source badge on search results */
@@ -886,4 +1167,207 @@ circle.corpus-node {
 
 .mentor-status {
   margin-bottom: var(--spacing);
+}
+
+/* ── Mentor toggle button ────────────────────────────────────────────────── */
+.mentor-toggle-btn {
+  position: absolute;
+  bottom: calc(var(--spacing) * 3);
+  right: calc(var(--spacing) * 2);
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+  z-index: 40;
+}
+
+.mentor-toggle-btn:hover {
+  background: var(--surface-hi);
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(91,143,204,0.2);
+}
+
+.app.mentor-open .mentor-toggle-btn {
+  display: none;
+}
+
+/* ── Help Modal ─────────────────────────────────────────────────────────────── */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: modal-fade-in 150ms ease;
+}
+
+.modal[hidden] {
+  display: none;
+  animation: none;
+}
+
+@keyframes modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.modal-content {
+  position: relative;
+  z-index: 501;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 80vh;
+  width: 90%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
+  animation: modal-slide-up 150ms ease;
+}
+
+@keyframes modal-slide-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(var(--spacing) * 2);
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.modal-tabs {
+  display: flex;
+  gap: var(--spacing);
+  padding: var(--spacing) calc(var(--spacing) * 2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.modal-tab {
+  background: transparent;
+  border: none;
+  color: var(--text-mid);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 0;
+  padding-bottom: calc(var(--spacing) * 0.75);
+  border-bottom: 2px solid transparent;
+  transition: color var(--transition), border-color var(--transition);
+}
+
+.modal-tab:hover {
+  color: var(--text);
+}
+
+.modal-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: calc(var(--spacing) * 2);
+}
+
+.modal-tab-content {
+  display: none;
+  animation: fade-in 150ms ease;
+}
+
+.modal-tab-content.active {
+  display: block;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-tab-content h3 {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  margin-top: calc(var(--spacing) * 2);
+  margin-bottom: var(--spacing);
+}
+
+.modal-tab-content h3:first-child {
+  margin-top: 0;
+}
+
+.modal-tab-content p {
+  font-size: 13px;
+  color: var(--text-mid);
+  line-height: 1.6;
+  margin-bottom: var(--spacing);
+}
+
+.modal-tab-content ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 calc(var(--spacing) * 1.5) 0;
+}
+
+.modal-tab-content li {
+  font-size: 13px;
+  color: var(--text-mid);
+  line-height: 1.6;
+  padding-left: calc(var(--spacing) * 2);
+  position: relative;
+  margin-bottom: calc(var(--spacing) * 0.75);
+}
+
+.modal-tab-content li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.modal-tab-content strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.modal-tab-content em {
+  color: var(--text-mid);
+  font-style: italic;
 }

@@ -11,6 +11,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
+def _load_dotenv(path: Path) -> None:
+    """Populate os.environ from a KEY=VALUE .env file (repo root), without
+    a new dependency and without clobbering real exported env vars — those
+    still win over the file. Must run before `import atlas`, since its
+    module-level config (CORPUS_DIR, MPD_DB, …) reads os.environ at import
+    time; SPOTIFY_CLIENT_ID/SECRET are read lazily so either order works
+    for those, but loading first covers both."""
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, val = line.partition('=')
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        os.environ.setdefault(key, val)
+
+
+_load_dotenv(Path(__file__).parent.parent / '.env')
+
 import requests
 from flask import Flask, request, jsonify, send_from_directory, session
 from werkzeug.utils import secure_filename
@@ -92,6 +114,15 @@ def playlist_status(job_id):
     return jsonify(playlist_jobs.get_status(job_id, cursor))
 
 
+@app.route('/api/playlist/stop/<job_id>', methods=['POST'])
+def playlist_stop(job_id):
+    import playlist_jobs
+    try:
+        return jsonify(playlist_jobs.stop(job_id))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/albums/search')
 def albums_search():
     q = request.args.get('q', '').strip()
@@ -161,8 +192,10 @@ def node_remove(node_id):
 
 @app.route('/api/song/<path:song_id>')      # <path:> — ids contain ':' and filenames
 def atlas_song(song_id):
+    expand = request.args.get('expand', '').lower() in ('1', 'true', 'yes')
     try:
-        detail = atlas.song_detail(song_id, top_n=int(request.args.get('n', 10)))
+        detail = atlas.song_detail(song_id, top_n=int(request.args.get('n', 10)),
+                                   expand=expand)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
     if detail is None:
@@ -177,6 +210,18 @@ def atlas_song_preview(song_id):
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
     return jsonify({'preview_url': url})
+
+
+@app.route('/api/song/<path:song_id>/spotify')
+def atlas_song_spotify(song_id):
+    """Bare Spotify track id for the no-login iframe embed (full track for
+    visitors already logged into Spotify in that browser; 30s preview
+    otherwise — no OAuth, no app registration, no per-user quota)."""
+    try:
+        track_id = atlas.get_spotify_track_id(song_id)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'track_id': track_id})
 
 
 
