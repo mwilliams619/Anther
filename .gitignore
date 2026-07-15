@@ -26,7 +26,7 @@ ui/session/*.sqlite
 ui/session/graph.json
 ui/session/uploads/*
 !ui/session/uploads/.gitkeep
-ui/sessions/*
+ui/session/*
 
 # jupyter checkpoints
 .ipynb_checkpoints/
