@@ -8,9 +8,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css?v=4" />
+  <link rel="icon" type="image/x-icon" href="anther_logo.png" />
 </head>
 <body>
 
+  <div id="loader">
+  <img src="/static/images/anther.webp" alt="Loading">
+</div>
 <div class="app">
 
   <!-- Mobile sidebar toggle -->
@@ -151,6 +155,12 @@
         
         <h3>Filter and manage</h3>
         <p>The <strong>Map</strong> section lets you filter by artist, playlist, or album. Clear the map at any time to start fresh.</p>
+        
+        <div style="margin-top:20px;padding:12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border)">
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px 0"><strong>Want to see it in action?</strong></p>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">Load the <strong>2025 Year-End Top 20</strong> — a chart-spanning mix of pop, hip-hop, and R&B hits to explore how music clusters by genre, vibe, and similarity.</p>
+          <button id="try-demo-btn" class="btn btn-primary" style="width:100%">Load Top 20 demo →</button>
+        </div>
       </div>
 
       <!-- Examples -->

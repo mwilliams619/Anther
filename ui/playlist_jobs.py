@@ -20,12 +20,32 @@ import time
 
 import atlas
 
-_jobs: dict[str, dict] = {}          # job_id → record
-_active_pid: dict[str, str] = {}     # pid → job_id while running (dup-add dedup)
+_jobs: dict[str, dict] = {}          # job_id → record (record carries session_id)
+_active_pid: dict[tuple, str] = {}   # (session_id, pid) → job_id while running (dup-add dedup)
 _stopped_jobs: set[str] = set()      # job_ids that user has requested to stop
 _jobs_lock = threading.Lock()
 _queue: "queue.Queue[tuple[str, dict]]" = queue.Queue()
 _worker: threading.Thread | None = None
+
+
+def forget_all() -> None:
+    """Drop the *current session's* job bookkeeping (called on that session's
+    map clear). Any worker thread still draining the queue for a forgotten job
+    finds it gone from _jobs and just no-ops that track; new placements start a
+    fresh job_id instead of being folded into a stale 'running' job that no one
+    is polling for anymore. Other sessions' jobs are left untouched, so one
+    user clearing their map can't kill another user's background placement."""
+    sid = atlas.current_session_id()
+    with _jobs_lock:
+        drop = {jid for jid, j in _jobs.items() if j.get("session_id") == sid}
+        for jid in drop:
+            _jobs.pop(jid, None)
+            _stopped_jobs.discard(jid)
+        for key in [k for k in _active_pid if k[0] == sid]:
+            del _active_pid[key]
+    # Queued tasks for dropped jobs are left in the queue; the worker no-ops
+    # them (their job_id is no longer in _jobs), which is cheap and avoids
+    # disturbing other sessions' interleaved tasks in the shared queue.
 
 
 def start(pid: str, name: str, pending: list[dict]) -> str:
@@ -33,23 +53,29 @@ def start(pid: str, name: str, pending: list[dict]) -> str:
     ({"id","name","artist","preview_url"}). Idempotent per playlist: a second
     add while a job is running returns the existing job_id."""
     global _worker
+    # Bind this job to the session that requested it (start runs in the Flask
+    # request context, so the contextvar is set). The worker thread — which has
+    # no request context — re-binds this id before placing, so tracks land in
+    # the right user's map.
+    sid = atlas.current_session_id()
     with _jobs_lock:
-        existing = _active_pid.get(pid)
+        existing = _active_pid.get((sid, pid))
         if existing is not None and _jobs[existing]["state"] == "running":
             return existing
         job_id = f"pl-{pid[:8]}-{int(time.time() * 1000)}"
         _jobs[job_id] = {
-            "job_id":    job_id,
-            "pid":       pid,
-            "name":      name,
-            "state":     "running",
-            "total":     len(pending),
-            "placed":    0,
-            "skipped":   [],
-            "fragments": [],
-            "message":   f"Queued {len(pending)} tracks…",
+            "job_id":     job_id,
+            "session_id": sid,
+            "pid":        pid,
+            "name":       name,
+            "state":      "running",
+            "total":      len(pending),
+            "placed":     0,
+            "skipped":    [],
+            "fragments":  [],
+            "message":    f"Queued {len(pending)} tracks…",
         }
-        _active_pid[pid] = job_id
+        _active_pid[(sid, pid)] = job_id
         if _worker is None or not _worker.is_alive():
             _worker = threading.Thread(target=_worker_loop, daemon=True)
             _worker.start()
@@ -113,8 +139,9 @@ def _worker_loop() -> None:
             job["message"] = f"Stopping… (skipping {job['total'] - done_before} remaining tracks)"
             with _jobs_lock:
                 job["state"] = "done"
-                if _active_pid.get(job["pid"]) == job_id:
-                    del _active_pid[job["pid"]]
+                akey = (job["session_id"], job["pid"])
+                if _active_pid.get(akey) == job_id:
+                    del _active_pid[akey]
                 _stopped_jobs.discard(job_id)
             continue
 
@@ -125,8 +152,13 @@ def _worker_loop() -> None:
 
         fragment, skip = None, None
         try:
-            vec, _method = atlas.resolve_and_embed(track)
-            fragment = atlas.place_external_track(track, vec, playlist_pid=job["pid"])
+            # Bind the requesting session so the embed cache read/write and the
+            # graph merge land in that user's session, not the worker thread's
+            # default. resolve_and_embed → cached_vec/cache_vec and
+            # place_external_track → _merge_fragment all read the contextvar.
+            with atlas.use_session(job["session_id"]):
+                vec, _method = atlas.resolve_and_embed(track)
+                fragment = atlas.place_external_track(track, vec, playlist_pid=job["pid"])
         except atlas.PlacementSkip as e:
             skip = e.reason
         except Exception as e:  # noqa: BLE001 — one bad track never kills the job
@@ -147,13 +179,15 @@ def _worker_loop() -> None:
                 job["message"] = (f"Stopped: {job['placed']}/{job['total']} placed"
                                   + (f", {len(job['skipped'])} skipped"
                                      if job["skipped"] else ""))
-                if _active_pid.get(job["pid"]) == job_id:
-                    del _active_pid[job["pid"]]
+                akey = (job["session_id"], job["pid"])
+                if _active_pid.get(akey) == job_id:
+                    del _active_pid[akey]
                 _stopped_jobs.discard(job_id)
             elif job["placed"] + len(job["skipped"]) >= job["total"]:
                 job["state"] = "done"
                 job["message"] = (f"Done: {job['placed']}/{job['total']} placed"
                                   + (f", {len(job['skipped'])} skipped"
                                      if job["skipped"] else ""))
-                if _active_pid.get(job["pid"]) == job_id:
-                    del _active_pid[job["pid"]]
+                akey = (job["session_id"], job["pid"])
+                if _active_pid.get(akey) == job_id:
+                    del _active_pid[akey]

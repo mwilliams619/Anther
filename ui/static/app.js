@@ -38,7 +38,9 @@ const SEARCH_MODES = {
 
 /* ── Init ───────────────────────────────────────────────────────────────── */
 async function init() {
+  console.log("starting graph");
   await AtlasGraph.init('#graph');
+  console.log("graph finished");
   initSearch();
   initUpload();
   initDetail();
@@ -1001,8 +1003,14 @@ function initHelp() {
   const modal = document.getElementById('help-modal');
   const helpToggle = document.getElementById('help-toggle');
   const helpClose = document.getElementById('help-close');
+  const demoBtnEl = document.getElementById('try-demo-btn');
   const tabs = document.querySelectorAll('.modal-tab');
   const tabContents = document.querySelectorAll('.modal-tab-content');
+
+  if (!sessionStorage.getItem('atlas-help-seen')) {
+    modal.removeAttribute('hidden');
+    sessionStorage.setItem('atlas-help-seen', 'true');
+  }
   
   // Open modal
   helpToggle.addEventListener('click', () => {
@@ -1040,5 +1048,17 @@ function initHelp() {
       tabContents.forEach(content => content.classList.remove('active'));
       document.querySelector(`.modal-tab-content[data-tab="${tabName}"]`).classList.add('active');
     });
+  });
+  
+  // Try demo button: load the 2025 year-end top 20 chart, via the same
+  // loadCollection() path albums/playlists use (instant + streaming fragments,
+  // no page refresh needed).
+  demoBtnEl.addEventListener('click', async () => {
+    modal.setAttribute('hidden', '');
+    // gid must match the pid loadCollection()/startPlaylistPoll() actually key
+    // polling state on (playlist.pid from the response, i.e. the demo's fixed
+    // custom-playlist id) — a mismatched guard key here let duplicate clicks
+    // fire overlapping loads instead of being coalesced.
+    await loadCollection('/api/demo/load', {}, 'demo_top20_2025', demoBtnEl);
   });
 }

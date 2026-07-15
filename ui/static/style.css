@@ -169,6 +169,30 @@ h2 {
 
 section { display: flex; flex-direction: column; }
 
+/* ── Loader ───────────────────────────────────────────────────────────────── */
+#loader {
+  position: fixed;
+  inset: 0;
+  background: #101010; 
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+
+  opacity: 1;
+  transition: opacity 250ms ease;
+}
+
+#loader.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#loader img {
+  width: min(900px, 90vw);
+  height: auto;
+}
+
 /* ── Search ───────────────────────────────────────────────────────────────── */
 .search-mode { 
   display: flex; 

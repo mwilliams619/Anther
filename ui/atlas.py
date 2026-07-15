@@ -19,6 +19,8 @@ import time
 import sqlite3
 import tempfile
 import threading
+import contextlib
+import contextvars
 from pathlib import Path
 
 import numpy as np
@@ -76,8 +78,7 @@ SCORE_FLOOR_DISPLAY = 55.0
 _score_ceiling_raw   = 0.994   # replaced at load() with the corpus-calibrated value
 
 SESSION_DIR          = Path(__file__).parent / "session"
-GRAPH_PATH           = SESSION_DIR / "graph.json"
-EMBED_CACHE_PATH     = SESSION_DIR / "embed_cache.sqlite"
+DEFAULT_SESSION_ID   = "default"   # single-user / no-cookie fallback
 CUSTOM_PLAYLISTS_DIR = Path(__file__).parent / "custom_playlists"
 
 # ── Lazy singletons ──────────────────────────────────────────────────────────
@@ -94,11 +95,125 @@ _corpus_lock = threading.Lock()
 _model = _processor = _device = None
 _mert_lock = threading.Lock()
 
-_graph = {"nodes": {}, "links": []}          # nodes keyed by id; links is a list
-_link_keys: set = set()                      # (source, target) dedupe
-_query_vecs: dict = {}                        # placed-song id → index-space unit vec
-_groups: dict = {}                            # gid → {"name", "kind"} for imported playlists/albums
-_graph_lock = threading.Lock()
+# ── Per-session state (Option 1: session-scoped isolation) ───────────────────
+# Every browser session gets its own map (graph + links + query vectors +
+# group registry) and its own on-disk files under session/<sid>/. State is
+# selected per-request via a ContextVar bound in app.py's before_request hook;
+# code paths that run off-request (the playlist background worker) bind it
+# explicitly with `use_session(sid)`. The reserved "default" session is the
+# single-user / no-cookie fallback and inherits the legacy flat files
+# (session/graph.json, session/uploads/) via a one-time migration.
+
+
+def _safe_session_id(session_id: str | None) -> str:
+    """Filesystem-safe session id (alnum/_/- only) so it can name a subdir
+    without traversal. Falls back to DEFAULT_SESSION_ID for empty/None."""
+    if not session_id:
+        return DEFAULT_SESSION_ID
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
+    return safe or DEFAULT_SESSION_ID
+
+
+class _SessionState:
+    """One browser session's map. Holds the in-memory graph and the paths to
+    its persisted files. `lock` guards all mutation of graph/link_keys/
+    query_vecs/groups, mirroring the old module-level _graph_lock."""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.dir = SESSION_DIR / session_id
+        self.graph_path = self.dir / "graph.json"
+        self.embed_cache_path = self.dir / "embed_cache.sqlite"
+        self.uploads_dir = self.dir / "uploads"
+        self.graph = {"nodes": {}, "links": []}   # nodes keyed by id; links is a list
+        self.link_keys: set = set()                # (source, target) dedupe
+        self.query_vecs: dict = {}                 # placed-song id → index-space unit vec
+        self.groups: dict = {}                     # gid → {"name", "kind"}
+        self.lock = threading.Lock()
+        self._loaded = False
+
+    def ensure_dirs(self) -> None:
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    def ensure_loaded(self) -> None:
+        """Lazily read this session's graph from disk. Deferred until the
+        corpus is ready, since _load_graph rebuilds query vectors from it."""
+        if self._loaded or not is_ready():
+            return
+        with self.lock:
+            if self._loaded:
+                return
+            # Set the flag BEFORE loading: _load_graph → cached_vec → get_session
+            # re-enters ensure_loaded on this same session, and threading.Lock is
+            # not reentrant, so the flag must already be True to short-circuit.
+            self._loaded = True
+            _load_graph(self)
+
+
+# Registry of live sessions, and the request-scoped selector.
+_sessions: dict[str, _SessionState] = {}
+_sessions_lock = threading.Lock()
+_session_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "anther_session_id", default=DEFAULT_SESSION_ID)
+
+
+def _migrate_legacy_default(st: _SessionState) -> None:
+    """One-time: fold the pre-multi-session flat files (session/graph.json,
+    session/embed_cache.sqlite, session/uploads/) into the default session
+    dir so existing maps and uploads survive the upgrade."""
+    st.dir.mkdir(parents=True, exist_ok=True)
+    moves = [
+        (SESSION_DIR / "graph.json",         st.graph_path),
+        (SESSION_DIR / "embed_cache.sqlite", st.embed_cache_path),
+        (SESSION_DIR / "uploads",            st.uploads_dir),
+    ]
+    for old, new in moves:
+        if old.exists() and not new.exists():
+            try:
+                old.rename(new)
+            except OSError:
+                pass
+
+
+def set_session(session_id: str | None) -> contextvars.Token:
+    """Bind the current session for this request/thread. Returns a token that
+    `reset_session` restores. Called once per request by app.py."""
+    return _session_id_var.set(_safe_session_id(session_id))
+
+
+def reset_session(token: contextvars.Token) -> None:
+    _session_id_var.reset(token)
+
+
+@contextlib.contextmanager
+def use_session(session_id: str | None):
+    """Context manager form for off-request threads (background workers)."""
+    token = set_session(session_id)
+    try:
+        yield get_session()
+    finally:
+        reset_session(token)
+
+
+def current_session_id() -> str:
+    return _session_id_var.get()
+
+
+def get_session() -> _SessionState:
+    """The _SessionState for the current contextvar id, created + loaded on
+    first use (thread-safe). Off-request threads must bind via use_session
+    first, else they get the default session."""
+    sid = current_session_id()
+    with _sessions_lock:
+        st = _sessions.get(sid)
+        if st is None:
+            st = _SessionState(sid)
+            if sid == DEFAULT_SESSION_ID:
+                _migrate_legacy_default(st)
+            st.ensure_dirs()
+            _sessions[sid] = st
+    st.ensure_loaded()
+    return st
 
 
 # ── Corpus + MERT loading ────────────────────────────────────────────────────
@@ -124,7 +239,8 @@ def load() -> ReferenceCorpus:
         _playlist_index, _playlist_rows = _build_playlist_index(corpus)
         _custom_playlist_index = _load_custom_playlists()
         _calibrate_qq_threshold(corpus)
-        _load_graph()
+        # Per-session graphs are loaded lazily on first access (see
+        # _SessionState.ensure_loaded); nothing to load here.
         return _corpus
 
 
@@ -257,10 +373,11 @@ _cache_lock = threading.Lock()
 
 
 def cached_vec(track_id: str) -> np.ndarray | None:
-    if not track_id or not EMBED_CACHE_PATH.exists():
+    cache_path = get_session().embed_cache_path
+    if not track_id or not cache_path.exists():
         return None
     try:
-        con = sqlite3.connect(str(EMBED_CACHE_PATH))
+        con = sqlite3.connect(str(cache_path))
         try:
             row = con.execute(
                 "SELECT vec FROM embed_cache WHERE track_id = ?", (track_id,)
@@ -278,9 +395,10 @@ def cache_vec(track_id: str, vec, name: str = "", artist: str = "") -> None:
     if not track_id:
         return
     v = np.asarray(vec, dtype=np.float32)
+    st = get_session()
     with _cache_lock:
-        SESSION_DIR.mkdir(exist_ok=True)
-        con = sqlite3.connect(str(EMBED_CACHE_PATH))
+        st.ensure_dirs()
+        con = sqlite3.connect(str(st.embed_cache_path))
         try:
             con.execute(
                 "CREATE TABLE IF NOT EXISTS embed_cache ("
@@ -740,20 +858,27 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
     ``_qq_threshold`` — so similar songs you add pull together in the force
     sim regardless of which Leiden cluster each landed in.
     """
+    st = get_session()
     added_nodes, added_links = [], []
-    with _graph_lock:
-        existing = _graph["nodes"].get(node["id"])
+    with st.lock:
+        existing = st.graph["nodes"].get(node["id"])
         if existing is None:
-            _graph["nodes"][node["id"]] = node
-            added_nodes.append(node)
+            st.graph["nodes"][node["id"]] = node
         else:                                                  # re-add → promote to query
             existing.update(node)                              # carries playlist_pid etc.
+            node = existing
+        # Always report the node in this call's fragment — callers (playlist/
+        # album/demo placement) rely on getting back every track they asked to
+        # place, not just ones that were brand-new to the graph. Omitting
+        # "already there" nodes here is what made freshly-cleared-then-reloaded
+        # collections render incomplete until a full page refresh.
+        added_nodes.append(node)
 
         # ── query↔query similarity edges (top-QQ_MAX_PER_NODE by score, so a
         # coherent playlist batch can't flood O(m²) links) ──
         if qvec is not None:
             cands = []
-            for other_id, ovec in _query_vecs.items():
+            for other_id, ovec in st.query_vecs.items():
                 if other_id == node["id"]:
                     continue
                 score = float(np.dot(qvec, ovec))
@@ -761,7 +886,7 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
                     continue
                 key = (node["id"], other_id)
                 rkey = (other_id, node["id"])
-                if key in _link_keys or rkey in _link_keys:
+                if key in st.link_keys or rkey in st.link_keys:
                     continue
                 cands.append((score, other_id))
             cands.sort(reverse=True)
@@ -774,12 +899,12 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
                         "value": round(score, 3),
                         "score": round(_display_score(score, clip_low=True), 1),
                         "kind": "qq"}
-                _graph["links"].append(link)
-                _link_keys.add((node["id"], other_id))
+                st.graph["links"].append(link)
+                st.link_keys.add((node["id"], other_id))
                 added_links.append(link)
-            _query_vecs[node["id"]] = qvec
+            st.query_vecs[node["id"]] = qvec
 
-        _save_graph()
+        _save_graph(st)
     return {"nodes": added_nodes, "links": added_links}
 
 
@@ -802,8 +927,9 @@ def _place_collection_rows(rows: list, gid, source: str):
                 f = _place_query_vec(nid, r["name"], r["artist"], raw,
                                      source, extra={"playlist_pid": gid})
             else:
-                with _graph_lock:
-                    existing = _graph["nodes"].get(nid)
+                st = get_session()
+                with st.lock:
+                    existing = st.graph["nodes"].get(nid)
                     if existing is not None and existing.get("kind") == "query":
                         existing["playlist_pid"] = gid     # placed pre-cache: tag only
                         continue
@@ -819,10 +945,11 @@ def _place_collection_rows(rows: list, gid, source: str):
 
 def _collection_response(gid, name, rows, n_total, fragment, n_immediate,
                          pending, notice=None) -> dict:
-    with _graph_lock:                                     # remember the group's display name
-        _groups[str(gid)] = {"name": name,
-                             "kind": "album" if str(gid).startswith("album:") else "playlist"}
-        _save_graph()
+    st = get_session()
+    with st.lock:                                         # remember the group's display name
+        st.groups[str(gid)] = {"name": name,
+                               "kind": "album" if str(gid).startswith("album:") else "playlist"}
+        _save_graph(st)
     job_id = None
     if pending:
         import playlist_jobs
@@ -841,6 +968,21 @@ def _collection_response(gid, name, rows, n_total, fragment, n_immediate,
         "job_id":   job_id,
         "notice":   notice,
     }
+
+
+DEMO_PLAYLIST_PID = "demo_top20_2025"
+
+
+def place_demo_top20() -> dict:
+    """
+    Demo cluster: place the pre-resolved 2025 year-end top-20 tracks stored in
+    ``ui/custom_playlists/demo_top20_2025.json`` (Deezer track ids baked in —
+    no live search). Every track was embedded once and is cached in
+    session/embed_cache.sqlite, so this is now instant: place_playlist()
+    picks the custom-playlist branch, which resolves each id straight from
+    the cache with zero network calls.
+    """
+    return place_playlist(DEMO_PLAYLIST_PID)
 
 
 def place_playlist(pid) -> dict:
@@ -1081,8 +1223,9 @@ def get_preview_url(song_id: str) -> str | None:
         name = corpus.metadata[idx].get("name", "")
         artist = corpus.metadata[idx].get("artist", "")
     else:
-        with _graph_lock:
-            gnode = _graph["nodes"].get(song_id)
+        st = get_session()
+        with st.lock:
+            gnode = st.graph["nodes"].get(song_id)
         if gnode is None:
             return None
         name, artist = gnode.get("name", ""), gnode.get("artist", "")
@@ -1131,8 +1274,9 @@ def get_spotify_track_id(song_id: str) -> str | None:
         name = corpus.metadata[idx].get("name", "")
         artist = corpus.metadata[idx].get("artist", "")
     else:
-        with _graph_lock:
-            gnode = _graph["nodes"].get(song_id)
+        st = get_session()
+        with st.lock:
+            gnode = st.graph["nodes"].get(song_id)
         if gnode is None:
             _spotify_id_cache[song_id] = None
             return None
@@ -1165,14 +1309,15 @@ def _map_neighbors(song_id: str) -> list:
     shows by default — cheap (no corpus search, just an in-memory link scan)
     and guaranteed to match the lines drawn on screen, unlike a fresh
     nearest-neighbor search which can rank differently than what's linked."""
-    with _graph_lock:
+    st = get_session()
+    with st.lock:
         rows = []
-        for l in _graph["links"]:
+        for l in st.graph["links"]:
             other = (l["target"] if l["source"] == song_id
                      else l["source"] if l["target"] == song_id else None)
             if other is None:
                 continue
-            on = _graph["nodes"].get(other, {})
+            on = st.graph["nodes"].get(other, {})
             score = l.get("score")
             if score is None and l.get("value") is not None:   # pre-migration edge
                 score = round(_display_score(l["value"], clip_low=True), 1)
@@ -1201,11 +1346,12 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
     corpus = load()
     idx = _id_to_idx.get(song_id)
 
-    with _graph_lock:
-        gnode = _graph["nodes"].get(song_id)
+    st = get_session()
+    with st.lock:
+        gnode = st.graph["nodes"].get(song_id)
         gnode = dict(gnode) if gnode is not None else None
-        node_ids = set(_graph["nodes"])
-        qvec = _query_vecs.get(song_id)
+        node_ids = set(st.graph["nodes"])
+        qvec = st.query_vecs.get(song_id)
 
     if idx is None and gnode is None:
         return None
@@ -1274,11 +1420,11 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
         tags = _inherit_tags(corpus, qvec=qvec,
                              neighbor_ids=[r["id"] for r in map_neighbors])
         if tags:
-            with _graph_lock:                           # append the prediction to the track
-                n = _graph["nodes"].get(song_id)
+            with st.lock:                               # append the prediction to the track
+                n = st.graph["nodes"].get(song_id)
                 if n is not None and not n.get("tags"):
                     n["tags"] = tags
-                    _save_graph()
+                    _save_graph(st)
 
     return {
         "id":            song_id,
@@ -1304,23 +1450,35 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
 def get_graph() -> dict:
     # "ready" lets the frontend tell "corpus still warming up" apart from "empty
     # session" — before load() finishes, _graph hasn't been read from disk yet.
-    with _graph_lock:
+    st = get_session()
+    with st.lock:
         return {"ready": is_ready(),
-                "nodes": list(_graph["nodes"].values()),
-                "links": list(_graph["links"]),
-                "groups": dict(_groups)}
+                "nodes": list(st.graph["nodes"].values()),
+                "links": list(st.graph["links"]),
+                "groups": dict(st.groups)}
 
 
 def clear_graph() -> None:
     """Wipe the session map (nodes, links, groups). The embed cache is kept, so
-    re-importing previously embedded songs stays instant."""
-    with _graph_lock:
-        _graph["nodes"].clear()
-        _graph["links"].clear()
-        _link_keys.clear()
-        _query_vecs.clear()
-        _groups.clear()
-        _save_graph()
+    re-importing previously embedded songs stays instant.
+
+    Also forgets all background playlist/album/demo embed jobs: without this,
+    a job still marked "running" for a given gid (e.g. the demo's fixed
+    "demo_top20_2025" pid) makes the next re-add's ``playlist_jobs.start()``
+    return that stale job_id instead of queuing the new pending tracks —
+    they're silently dropped rather than placed, so each clear+reload cycle
+    comes back with fewer tracks than the last.
+    """
+    st = get_session()
+    with st.lock:
+        st.graph["nodes"].clear()
+        st.graph["links"].clear()
+        st.link_keys.clear()
+        st.query_vecs.clear()
+        st.groups.clear()
+        _save_graph(st)
+    import playlist_jobs
+    playlist_jobs.forget_all()
 
 
 def remove_node(node_id: str) -> dict | None:
@@ -1328,42 +1486,42 @@ def remove_node(node_id: str) -> dict | None:
     corpus-context neighbors that end up with no remaining links. Returns
     {"removed": [ids...], "node": <the popped node>} (node first in the list),
     or None if the id isn't on the graph."""
-    with _graph_lock:
-        node = _graph["nodes"].pop(node_id, None)
+    st = get_session()
+    with st.lock:
+        node = st.graph["nodes"].pop(node_id, None)
         if node is None:
             return None
-        _query_vecs.pop(node_id, None)
+        st.query_vecs.pop(node_id, None)
 
         kept = []
-        for l in _graph["links"]:
+        for l in st.graph["links"]:
             if l["source"] == node_id or l["target"] == node_id:
-                _link_keys.discard((l["source"], l["target"]))
+                st.link_keys.discard((l["source"], l["target"]))
                 continue
             kept.append(l)
-        _graph["links"][:] = kept
+        st.graph["links"][:] = kept
 
         linked = {l["source"] for l in kept} | {l["target"] for l in kept}
-        orphans = [nid for nid, n in _graph["nodes"].items()
+        orphans = [nid for nid, n in st.graph["nodes"].items()
                    if n.get("kind") == "corpus" and nid not in linked]
         for nid in orphans:
-            del _graph["nodes"][nid]
-        _save_graph()
+            del st.graph["nodes"][nid]
+        _save_graph(st)
     return {"removed": [node_id, *orphans], "node": node}
 
 
-def _save_graph() -> None:
-    SESSION_DIR.mkdir(exist_ok=True)
-    GRAPH_PATH.write_text(json.dumps(
-        {"nodes": list(_graph["nodes"].values()), "links": _graph["links"],
-         "groups": _groups}))
+def _save_graph(st: "_SessionState") -> None:
+    st.dir.mkdir(parents=True, exist_ok=True)
+    st.graph_path.write_text(json.dumps(
+        {"nodes": list(st.graph["nodes"].values()), "links": st.graph["links"],
+         "groups": st.groups}))
 
 
-def _load_graph() -> None:
-    global _graph, _link_keys, _query_vecs, _groups
-    if not GRAPH_PATH.exists():
+def _load_graph(st: "_SessionState") -> None:
+    if not st.graph_path.exists():
         return
     try:
-        data = json.loads(GRAPH_PATH.read_text())
+        data = json.loads(st.graph_path.read_text())
     except (json.JSONDecodeError, OSError):
         return
     # Migration: playlist hub nodes and hub→member spokes are gone (members are
@@ -1373,8 +1531,8 @@ def _load_graph() -> None:
     links = [l for l in data.get("links", [])
              if l.get("kind") != "member"
              and l["source"] in nodes and l["target"] in nodes]
-    _graph = {"nodes": nodes, "links": links}
-    _link_keys = {(l["source"], l["target"]) for l in links}
+    st.graph = {"nodes": nodes, "links": links}
+    st.link_keys = {(l["source"], l["target"]) for l in links}
 
     # Backfill: sessions saved before the "score" field existed only have the
     # raw cosine ("value"). Compute it once here from the already-calibrated
@@ -1386,16 +1544,16 @@ def _load_graph() -> None:
             l["score"] = round(_display_score(l["value"], clip_low=True), 1)
             backfilled = True
     if backfilled:
-        _save_graph()
+        _save_graph(st)
 
     # Groups registry (for the filter UI). Backfill display names for gids
     # recorded before the registry existed: playlist names from the MPD DB;
     # unknowns fall back to showing the raw gid.
-    _groups = dict(data.get("groups") or {})
+    st.groups = dict(data.get("groups") or {})
     seen_gids = {str(n["playlist_pid"]) for n in nodes.values()
                  if n.get("playlist_pid") is not None}
-    unnamed = {gid for gid, g in _groups.items() if g.get("name") in (None, "", gid)}
-    for gid in (seen_gids - set(_groups)) | unnamed:
+    unnamed = {gid for gid, g in st.groups.items() if g.get("name") in (None, "", gid)}
+    for gid in (seen_gids - set(st.groups)) | unnamed:
         if gid.startswith("album:"):
             name = None
             try:
@@ -1405,16 +1563,16 @@ def _load_graph() -> None:
                     name = f"{artist} — {info.get('title', '')}".strip(" —")
             except Exception:  # noqa: BLE001 — offline load must not fail
                 pass
-            _groups[gid] = {"name": name or gid, "kind": "album"}
+            st.groups[gid] = {"name": name or gid, "kind": "album"}
         else:
             name = mpd_sql.playlist_name(MPD_DB, gid) if mpd_ready() else None
-            _groups[gid] = {"name": name or gid, "kind": "playlist"}
+            st.groups[gid] = {"name": name or gid, "kind": "playlist"}
 
     # Best-effort: rebuild query→query similarity vecs so newly placed songs can
     # cross-link against them — from the corpus for corpus-source songs, from the
     # embed cache for external ones. Uncached external nodes (pre-cache-era
     # deezer/upload) keep their saved edges only.
-    _query_vecs = {}
+    st.query_vecs = {}
     for n in nodes.values():
         if n.get("kind") != "query":
             continue
@@ -1425,4 +1583,4 @@ def _load_graph() -> None:
             raw = cached_vec(n["id"])
             if raw is None:
                 continue
-        _query_vecs[n["id"]] = _corpus.index.transform_query(raw)
+        st.query_vecs[n["id"]] = _corpus.index.transform_query(raw)

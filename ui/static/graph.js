@@ -4,6 +4,7 @@
  * in for context); links are cosine-similarity edges. Positions come from the
  * force sim — the exact corpus embedding is intentionally not used.
  */
+const loaderStart = performance.now();
 const AtlasGraph = (() => {
   // Nodes are NOT colored by cluster — the force layout itself shows song
   // relationships; cluster info lives only in the click popover. Fills come
@@ -17,7 +18,7 @@ const AtlasGraph = (() => {
   // Inward-pull strength for the forceX/forceY gravity (see init()). Higher
   // bounds the map tighter (favors zooming in to see local detail); lower
   // lets it spread further before settling. 0.03-0.10 is the useful range.
-  const GRAVITY_STRENGTH = 0.000001;
+  const GRAVITY_STRENGTH = 0.03;
 
   // Each qq-edge's human-readable similarity score (0-100) is computed once on
   // the backend (atlas.py: _display_score, a fixed calibration against the
@@ -58,6 +59,23 @@ const AtlasGraph = (() => {
     if (gNode) gNode.classed('idle-breathing', false);
     idleTimer = setTimeout(() => { if (gNode) gNode.classed('idle-breathing', true); }, IDLE_MS);
   }
+
+  function hideLoader() {
+  const loader = document.getElementById("loader");
+  if (!loader) return;
+
+  const elapsed = performance.now() - loaderStart;
+  const minDuration = 1000; // 1 seconds
+
+  setTimeout(() => {
+    loader.classList.add("hidden");
+
+    loader.addEventListener("transitionend", () => {
+      loader.remove();
+    }, { once: true });
+
+  }, Math.max(0, minDuration - elapsed));
+}
 
   function init(containerSel) {
     svg = d3.select(containerSel);
@@ -125,6 +143,7 @@ const AtlasGraph = (() => {
     linkSel = gLink.selectAll('line');
     nodeSel = gNode.selectAll('g');
     restart();
+    hideLoader();
   }
 
   function ticked() {
@@ -273,8 +292,15 @@ const AtlasGraph = (() => {
       try {
         const data = await fetch('/api/graph').then(r => r.json());
         if (data.ready !== false) {
-          nodes = (data.nodes || []).map(n => ({ ...n }));
-          links = (data.links || []);
+          const W = svg.node().clientWidth;
+          const H = svg.node().clientHeight;
+
+          nodes = (data.nodes || []).map(n => ({
+            ...n,
+            x: W / 2 + (Math.random() - 0.5) * 100,
+            y: H / 2 + (Math.random() - 0.5) * 100
+          }));
+                    links = (data.links || []);
           groups = data.groups || {};
           nodes.forEach(n => byId.set(n.id, n));
           break;
@@ -482,7 +508,11 @@ const AtlasGraph = (() => {
   }
 
   return {
-    async init(sel) { await load(); init(sel); },
+    async init(sel) {
+    init(sel);      // create svg + simulation first
+    await load();   // then fetch graph
+    restart();      // render loaded nodes
+  },
     mergeFragment,
     zoomTo,
     hasNode: id => byId.has(id),

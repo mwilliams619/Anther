@@ -44,7 +44,9 @@ import atlas
 ALLOWED_EXTS  = {'.mp3', '.wav', '.flac', '.m4a'}
 MAX_UPLOAD    = 25 * 1024 * 1024   # 25 MB
 SESSION_DIR   = Path(__file__).parent / 'session'
-UPLOADS_DIR   = SESSION_DIR / 'uploads'
+# Uploads are per-session now (session/<sid>/uploads/) — see _session_uploads_dir.
+# The legacy flat session/uploads/ dir, if present, is migrated into the
+# "default" session by atlas on first access, so we must NOT recreate it here.
 
 # mentor/service.py — a separate warm process (see mentor/README.md on why
 # the model isn't loaded in this process); started independently.
@@ -54,13 +56,52 @@ MENTOR_URL     = f'http://{MENTOR_HOST}:{MENTOR_PORT}'
 MENTOR_TIMEOUT = float(os.environ.get('ANTHER_MENTOR_TIMEOUT', '30'))
 
 SESSION_DIR.mkdir(exist_ok=True)
-UPLOADS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 # Signed session cookie identifies a browser's mentor chat session; a fresh
 # key each restart just means chat history resets, which is fine since the
 # mentor service's own sessions are keyed the same way and get swept by TTL.
 app.secret_key = os.environ.get('ANTHER_UI_SECRET_KEY', secrets.token_hex(32))
+
+
+# ── Per-session isolation (Option 1) ─────────────────────────────────────────
+# Each browser gets its own map (graph + uploads) keyed by a signed-cookie id.
+# The id is bound into atlas's request-scoped ContextVar at the start of every
+# request and released at the end, so all the atlas.* calls in the handlers
+# below operate on that session's state without threading an id through each
+# signature. No login — a cleared cookie starts a fresh, empty map.
+
+def _graph_session_id() -> str:
+    """The browser's graph session id, minted + stored in the signed cookie on
+    first visit. Distinct from mentor_session_id so clearing one doesn't reset
+    the other."""
+    sid = session.get('graph_session_id')
+    if not sid:
+        sid = secrets.token_urlsafe(16)
+        session['graph_session_id'] = sid
+    return sid
+
+
+@app.before_request
+def _bind_graph_session():
+    request._atlas_token = atlas.set_session(_graph_session_id())
+
+
+@app.teardown_request
+def _release_graph_session(exc=None):
+    token = getattr(request, '_atlas_token', None)
+    if token is not None:
+        atlas.reset_session(token)
+
+
+def _session_uploads_dir():
+    """This request's uploads directory (session/<sid>/uploads/), created on
+    demand. Replaces the old global UPLOADS_DIR so one user's uploads aren't
+    served to another."""
+    st = atlas.get_session()
+    st.ensure_dirs()
+    return st.uploads_dir
+
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -205,11 +246,33 @@ def atlas_song(song_id):
 
 @app.route('/api/song/<path:song_id>/preview')
 def atlas_song_preview(song_id):
+    # Uploaded personal songs have their full audio on disk under UPLOADS_DIR.
+    # Serve it directly instead of trying (and failing) to match a personal
+    # track against Deezer by title/artist. The node id is 'upload:<safe>',
+    # which maps straight back to the saved filename.
+    if song_id.startswith('upload:'):
+        safe = secure_filename(song_id.split(':', 1)[1])
+        if safe and (_session_uploads_dir() / safe).is_file():
+            return jsonify({'preview_url': f'/api/upload-audio/{safe}'})
+        # else fall through — file was swept; normal resolution returns None
     try:
         url = atlas.get_preview_url(song_id)
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
     return jsonify({'preview_url': url})
+
+
+@app.route('/api/upload-audio/<path:name>')
+def upload_audio(name):
+    """Serve a previously-uploaded personal song's audio bytes so the detail
+    pane's ▶ button can play the real file (uploads live in session/uploads/).
+    secure_filename + the is_file() guard keep this from serving anything
+    outside UPLOADS_DIR; conditional=True enables Range requests for seeking."""
+    uploads_dir = _session_uploads_dir()
+    safe = secure_filename(name)
+    if not safe or not (uploads_dir / safe).is_file():
+        return jsonify({'error': 'not found'}), 404
+    return send_from_directory(uploads_dir, safe, conditional=True)
 
 
 @app.route('/api/song/<path:song_id>/spotify')
@@ -264,6 +327,19 @@ def mentor_reset():
     return jsonify({'ok': True})
 
 
+@app.route('/api/demo/load', methods=['POST'])
+def demo_load():
+    """Load the 2025 year-end top 20 chart as a demo cluster, resolved live
+    against Deezer (same source/pipeline as album import — instant for
+    cached tracks, background-embedded streaming for the rest)."""
+    try:
+        return jsonify(atlas.place_demo_top20())
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload():
     f = request.files.get('file')
@@ -277,7 +353,7 @@ def upload():
         return jsonify({'error': 'File too large (max 25 MB)'}), 400
 
     safe = secure_filename(f.filename)
-    dest = UPLOADS_DIR / safe
+    dest = _session_uploads_dir() / safe
     dest.write_bytes(data)
 
     # Place the uploaded file onto the frozen-corpus force graph.
