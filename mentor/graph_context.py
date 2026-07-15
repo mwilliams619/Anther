@@ -12,6 +12,11 @@ re-parse it every turn) and reconstructs a query vector per node from the embed
 cache. It gives the tool layer an on-screen-first anchor resolver and an on-screen
 candidate pool, with the frozen corpus kept as an explicit fallback.
 
+``MentorContext`` is the per-session conversational state: the node the user has
+selected in the UI (sent with every /chat request), the last anchor the agent
+resolved, and the last tool observations (for follow-ups like "which ones?").
+The graph UI is the user's memory — every tool receives this context.
+
 Vectors returned here are *raw* 1024-d MERT (same convention as the corpus
 ``raw_embeddings`` and ``atlas.cached_vec``); downstream tools L2-normalize via
 ``index.transform_query`` before scoring.
@@ -21,6 +26,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import deque
+from dataclasses import dataclass, field
 from difflib import get_close_matches
 
 import numpy as np
@@ -30,7 +37,13 @@ UI_DIR = os.path.join(os.path.dirname(HERE), "ui")
 if UI_DIR not in sys.path:
     sys.path.insert(0, UI_DIR)
 
-import atlas  # noqa: E402
+
+def _atlas():
+    """Import ui/atlas lazily — it drags in the full anther_ml stack, which
+    consumers of MentorContext alone (service session bookkeeping, tests)
+    should not have to load."""
+    import atlas
+    return atlas
 
 
 def _norm_text(s):
@@ -41,10 +54,10 @@ class GraphContext:
     """On-screen session graph, read fresh from disk (mtime-cached)."""
 
     def __init__(self, graph_path=None, vec_reader=None):
-        self.graph_path = graph_path or str(atlas.GRAPH_PATH)
+        self.graph_path = graph_path or str(_atlas().GRAPH_PATH)
         # vec_reader(track_id) -> raw np.ndarray | None. Defaults to the embed
         # cache; injectable so tests can stub it.
-        self._vec_reader = vec_reader or atlas.cached_vec
+        self._vec_reader = vec_reader or _atlas().cached_vec
         self._mtime = None
         self._nodes = []            # list of node dicts (as stored in graph.json)
         self._by_id = {}            # id -> node
@@ -227,3 +240,43 @@ class GraphContext:
                 }
 
         return None, {"input": spec, "type": "onscreen", "resolved": False}
+
+
+@dataclass
+class MentorContext:
+    """Per-session conversational state, one instance per browser session.
+
+    ``selected_node_id`` is refreshed on every /chat request from the UI (the
+    node the user has clicked/pinned on the map, or None). The graph itself is
+    NOT stored here — it lives on disk and is read via ``GraphContext``, which
+    the tool layer owns and shares across sessions.
+    """
+    selected_node_id: str | None = None
+    last_anchor: str | None = None
+    last_intent: str | None = None
+    last_observation: dict | None = None
+    history: deque = field(default_factory=lambda: deque(maxlen=8))
+
+    def reset(self):
+        self.selected_node_id = None
+        self.last_anchor = None
+        self.last_intent = None
+        self.last_observation = None
+        self.history.clear()
+
+    def record(self, role, content):
+        if content:
+            self.history.append({"role": role, "content": str(content).strip()})
+
+    def recent_block(self, n=4):
+        turns = list(self.history)[-n:]
+        lines = [f"{t.get('role','user')}: {t.get('content','').strip()}"
+                 for t in turns if t.get("content", "").strip()]
+        if not lines:
+            return ""
+        return "\n\n[Recent conversation context]\n" + "\n".join(lines)
+
+
+# Backward-friendly alias: service.py keyed sessions by ConversationState
+# before the refactor; the concept is the same object.
+ConversationState = MentorContext

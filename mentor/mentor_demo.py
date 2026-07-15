@@ -11,8 +11,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 import numpy as np, torch
 from mentor import MusicMentor
-from mentor_anther import CORPUS_DIR
-from paths import ASSETS
+from paths import ASSETS, CORPUS_DIR
 
 t0 = time.time()
 m = MusicMentor(use_rag=True, use_anther=True)
@@ -44,17 +43,24 @@ for q in ADVICE_Q:
 
 # --- 'what do I sound like' via a stand-in corpus vector -----------------------
 raw_emb = np.load(os.path.join(CORPUS_DIR, "embeddings.npy"), mmap_mode="r")
-meta = m.anther.index.metadata
+meta = m.similarity.index.metadata
 probe_i = 40000  # an electronic track — clear genre signature
 qvec = np.asarray(raw_emb[probe_i], dtype=np.float32)
-snd = m.anther.sounds_like_from_vec(qvec, top_k=8)
-snd_txt = m.anther.format_for_prompt(snd)
+snd = {
+    "neighbors": m.similarity.similar(qvec, top_k=8),
+    "cluster": m.similarity.cluster(qvec),
+    "tags": m.similarity.tags(qvec),
+}
+snd_txt = "\n".join(
+    [f"  - {n['artist']} — {n['name']} (sim {n['score']})" for n in snd["neighbors"][:5]]
+    + [f"Micro-genre tags: {', '.join(t['genre'] for t in snd['tags'][:4])}",
+       f"Territory: {snd['cluster'].get('label','')}"])
 print(f"\n### 'What do I sound like?' (stand-in = corpus #{probe_i}: "
       f"{meta[probe_i].get('artist','')} — {meta[probe_i].get('name','')})")
 print(snd_txt)
 
-# feed the Anther analysis into the mentor for a natural-language readout
-messages_ans = m.sounds_like(anther_result=snd)
+# feed the similarity analysis into the mentor for a natural-language readout
+messages_ans = m.sounds_like(analysis=snd)
 print("\nMentor's take:\n", messages_ans)
 
 transcript.append("## 'What do I sound like?' (Anther tool)\n\n"

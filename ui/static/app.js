@@ -596,7 +596,9 @@ async function sendMentorMessage() {
     const data = await fetch('/api/mentor/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question }),
+      // The pinned node (or null) rides along so the mentor can resolve
+      // "this song" / "what do I sound like" against the user's selection.
+      body: JSON.stringify({ question, selected_node_id: AtlasGraph.getSelectedId() }),
     }).then(r => r.json());
     if (data.error) {
       appendMentorMessage('error', data.error);

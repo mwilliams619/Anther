@@ -294,6 +294,7 @@ def mentor_chat():
     """Forward a chat turn to the warm mentor service (mentor/service.py)."""
     body = request.get_json(force=True) or {}
     question = (body.get('question') or '').strip()
+    selected_node_id = body.get('selected_node_id') or None
     if not question:
         return jsonify({'error': 'question is required'}), 400
     session_id = session.get('mentor_session_id')
@@ -302,7 +303,8 @@ def mentor_chat():
         session['mentor_session_id'] = session_id
     try:
         resp = requests.post(f'{MENTOR_URL}/chat',
-                              json={'session_id': session_id, 'question': question},
+                              json={'session_id': session_id, 'question': question,
+                                    'selected_node_id': selected_node_id},
                               timeout=MENTOR_TIMEOUT)
     except requests.RequestException:
         return jsonify({'error': 'Mentor is currently unavailable.'}), 503

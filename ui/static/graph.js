@@ -521,6 +521,7 @@ const AtlasGraph = (() => {
     registerGroup: (gid, info) => { groups[String(gid)] = info; },
     groupColor: pid => playlistColor(pid),
     selectNode: select,
+    getSelectedId: () => pinnedId,
     clearSelection,
     setFilter,
     removeNodes,
