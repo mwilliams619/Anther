@@ -60,11 +60,25 @@ CLASSIFY_FEWSHOT = [
 ]
 
 NARRATE_SYSTEM = (
-    "You are a music mentor. Rewrite ONLY the provided FACTS into a warm, "
-    "concise answer (2-4 sentences) in your own voice, speaking directly to "
-    "the artist. Do not introduce artists, songs, genres, or territories that "
-    "are not in FACTS. Do not mention tools, similarity scores, or how the "
-    "facts were computed."
+    "You are a music mentor talking to an artist about their sound map. "
+    "Answer using ONLY the FACTS below — every artist, song, and territory you "
+    "name must already appear in FACTS. Never invent lyrics, moods, meanings, "
+    "themes, or genres, and never describe a song you were not given facts "
+    "about. Be brief and direct: 1-3 sentences. When you list what something "
+    "connects to, just name the tracks — do NOT explain the genre or cluster of "
+    "each one unless the artist explicitly asked why. Do not mention tools, "
+    "scores, or how any of this was computed."
+)
+
+# High-precision references to "the node I have selected right now". A question
+# built from these must name the pinned node or honestly say nothing is
+# selected — it must NEVER be answered by the LLM inventing a song.
+SELECTION_PHRASES = (
+    "selected node", "selected song", "selected track", "what is selected",
+    "what's selected", "whats selected", "currently selected", "the selection",
+    "am i selecting", "am i clicking", "i selected", "i clicked", "i've selected",
+    "i've clicked", "node i selected", "node i clicked", "song i selected",
+    "song i clicked", "this selected", "highlighted node",
 )
 
 VALID_INTENTS = set(INTENTS) | {"followup"}
@@ -145,8 +159,38 @@ class MentorAgent:
             lines.append(f"[Previous turn intent: {context.last_intent}]")
         return "\n".join(lines) + "\n" if lines else ""
 
+    @staticmethod
+    def _is_selection_question(question):
+        q = " ".join(str(question or "").lower().split())
+        return any(p in q for p in SELECTION_PHRASES)
+
+    def _answer_selection(self, question, context):
+        """Deterministic, honesty-critical: a question about the current
+        selection names the pinned node or plainly says nothing is selected —
+        the LLM is never given the chance to invent a song here."""
+        node = self.tools._selected_node(context)
+        if node is None:
+            return {
+                "intent": "explain", "observation": None, "status": "no_selection",
+                "answer": ("No node is selected on your map right now. Click a song "
+                           "on the map and ask again, or name the track you mean."),
+            }
+        obs = self.tools.explain_node("me", context=context)
+        self._remember(context, "explain", {"anchor": "me"}, obs)
+        if not obs.get("ok"):
+            return {"intent": "explain", "observation": obs,
+                    "status": obs.get("error", "failed"),
+                    "answer": obs.get("message", "I couldn't read that node.")}
+        return {"intent": "explain", "observation": obs, "status": "ok",
+                "answer": self._compose(question, obs)}
+
     # ---- the pipeline --------------------------------------------------------
     def run(self, question, context=None):
+        # Selection questions are answered deterministically (see above) so they
+        # can't be misrouted to a map census or hallucinated by the model.
+        if self._is_selection_question(question):
+            return self._answer_selection(question, context)
+
         call = self.classify(question, context)
         if call is None:
             return {
@@ -209,7 +253,7 @@ class MentorAgent:
             {"role": "user", "content": f"Question: {question}\n\nFACTS:\n{facts}"},
         ]
         try:
-            voiced = (self.generate_fn(prompt, max_new_tokens=220, temperature=0.4) or "").strip()
+            voiced = (self.generate_fn(prompt, max_new_tokens=160, temperature=0.3) or "").strip()
         except Exception:
             voiced = ""
         if voiced and self._names_ok(voiced, allowed):
@@ -229,20 +273,18 @@ class MentorAgent:
         tool = o.get("tool")
         if tool == "neighbors":
             name(o.get("anchor"))
-            lines.append(f"{o.get('anchor')} — closest neighbors:")
+            # Just the connections — one short shared-trait note inline, no
+            # per-track genre lecture (the mentor explains clusters only on ask).
+            lines.append(f"{o.get('anchor')} is closest to:")
             for n in o.get("neighbors", []):
                 name(n.get("artist"), n.get("song"))
                 label = " - ".join(x for x in (n.get("artist"), n.get("song")) if x)
-                lines.append(f"- {label}")
-                if n.get("relationship"):
-                    lines.append(f"  Reason: {n['relationship']}")
-                    name(*n["relationship"].replace(";", ",").split(","))
-            if o.get("territory"):
-                name(o["territory"])
-                lines.append(f"Territory: {o['territory']}")
-            if o.get("traits"):
-                name(*o["traits"])
-                lines.append("Traits: " + ", ".join(o["traits"]))
+                rel = n.get("relationship")
+                if rel:
+                    name(*rel.replace(";", ",").split(","))
+                    lines.append(f"- {label} ({rel})")
+                else:
+                    lines.append(f"- {label}")
         elif tool == "compare":
             name(o.get("anchor_a"), o.get("anchor_b"))
             lines.append(o.get("similarity_summary", ""))

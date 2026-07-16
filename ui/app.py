@@ -305,6 +305,12 @@ def mentor_chat():
     # atlas session, so we tell it which browser map to read: the same
     # graph_session_id that binds this request's atlas.* calls.
     graph_session_id = _graph_session_id()
+    # Boundary trace: prove what the browser actually sent. If selected_node_id
+    # is None here while a node is pinned, the browser is serving a stale
+    # app.js (hard-refresh). Silence with ANTHER_UI_TRACE=0.
+    if os.environ.get('ANTHER_UI_TRACE', '1') not in ('', '0', 'false'):
+        app.logger.warning('[mentor_chat] graph_session=%s selected_node=%r q=%r',
+                            graph_session_id, selected_node_id, question[:60])
     try:
         resp = requests.post(f'{MENTOR_URL}/chat',
                               json={'session_id': session_id, 'question': question,

@@ -526,15 +526,11 @@ class MentorGraphTools:
     # ---- deterministic relationship phrasing ----------------------------------------
     @staticmethod
     def _relationship(anchor_tags, other_tags, anchor_territory, other_territory, rank):
+        """A SHORT reason a neighbour is close — just the shared traits, if any.
+        We deliberately do NOT tack on the (often long, 3-part) cluster label per
+        connection; the caller mentions territory once at most. Empty string is
+        fine: the connection itself is the answer."""
         shared = [t for t in anchor_tags if t in other_tags]
-        parts = []
         if shared:
-            parts.append(f"shares a {', '.join(shared[:3])} character")
-        if anchor_territory and anchor_territory == other_territory:
-            parts.append(f"same {anchor_territory} territory")
-        elif other_territory:
-            parts.append(f"from the {other_territory} territory")
-        if not parts:
-            parts.append("closest sonic match on the map" if rank == 1
-                         else "sits in the same sonic neighbourhood")
-        return "; ".join(parts)
+            return "shares " + ", ".join(shared[:2])
+        return ""

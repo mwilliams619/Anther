@@ -97,6 +97,48 @@ def test_unknown_artist_gets_honest_unresolved_answer(tools):
     assert "Taylor Swift" in r["answer"]
 
 
+# ---- selection questions are deterministic + honest (never hallucinated) -------------
+def _sel_tools(tmp_path):
+    from tests.mentor_fixtures import make_tools
+    return make_tools(tmp_path)
+
+
+def test_selected_node_question_identifies_node(tmp_path):
+    tools = _sel_tools(tmp_path)
+    # LLM would misclassify to inspect, but the selection guard runs first.
+    llm = ScriptedLLM('{"intent":"inspect","args":{}}')
+    agent = MentorAgent(tools, llm)
+    ctx = make_context(selected_node_id="n2")
+    r = agent.run("what is the selected node?", context=ctx)
+    assert r["intent"] == "explain" and r["status"] == "ok"
+    assert r["observation"]["artist"] == "Burial"
+    assert len(llm.classify_calls) == 0            # LLM never consulted
+
+
+def test_what_song_am_i_selecting_no_selection_is_honest(tmp_path):
+    tools = _sel_tools(tmp_path)
+    # Hostile LLM that would happily hallucinate a song — must not get the chance.
+    llm = ScriptedLLM('{"intent":"neighbors","args":{"anchor":"me"}}',
+                      narration="You're listening to Imagine Dragons - Radioactive!")
+    agent = MentorAgent(tools, llm)
+    r = agent.run("what song am I selecting on the map?", context=make_context())
+    assert r["status"] == "no_selection"
+    assert "Imagine Dragons" not in r["answer"]
+    assert "selected" in r["answer"].lower()
+    assert len(llm.narrate_calls) == 0
+
+
+# ---- terse connections: no per-track genre lecture -----------------------------------
+def test_neighbors_relationship_is_terse(tmp_path):
+    tools = _sel_tools(tmp_path)
+    obs = tools.neighbors("me", context=make_context(selected_node_id="n1"))
+    for n in obs["neighbors"]:
+        rel = n["relationship"]
+        # a short shared-trait note or nothing — never a 3-part cluster path
+        assert "/" not in rel and "territory" not in rel
+        assert len(rel) < 40
+
+
 # ---- UI state ------------------------------------------------------------------------
 def test_why_is_this_node_here_uses_selection(tools):
     llm = ScriptedLLM('{"intent":"explain","args":{"anchor":"me"}}')
