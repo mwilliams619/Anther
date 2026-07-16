@@ -1,31 +1,34 @@
 """Live on-screen session state for the mentor's graph tools.
 
-The mentor service runs in a *separate process* from the UI, so ``atlas._graph``
-(an in-memory global in the UI process) is empty here. The two process-independent
-sources of truth are on disk:
+The UI is multi-session: each browser has its OWN map on disk under
+``ui/session/<graph_session_id>/`` —
 
-  * ``ui/session/graph.json``          — the placed nodes / links / groups
-  * ``ui/session/embed_cache.sqlite``  — raw MERT 1024-d vectors keyed by track id
+  * ``ui/session/<sid>/graph.json``          — the placed nodes / links / groups
+  * ``ui/session/<sid>/embed_cache.sqlite``  — raw MERT 1024-d vectors by track id
 
-``GraphContext`` reads ``graph.json`` fresh (mtime-cached so a chat burst doesn't
-re-parse it every turn) and reconstructs a query vector per node from the embed
-cache. It gives the tool layer an on-screen-first anchor resolver and an on-screen
-candidate pool, with the frozen corpus kept as an explicit fallback.
+The mentor runs in a *separate process* from the UI and cannot see the UI's
+in-memory atlas, nor its request-scoped session ContextVar. So GraphContext is
+told which session to read: the browser's ``graph_session_id`` rides in with
+every /chat request (app.py → service.py → MusicMentor.chat → here). One
+GraphContext instance serves many browsers by ``for_session(sid)`` re-pointing
+between turns. It reads ``graph.json`` fresh (mtime-cached) and pulls each
+node's vector straight from that session's embed cache — NOT via
+``atlas.cached_vec``, which is bound to the wrong session in this process.
 
 ``MentorContext`` is the per-session conversational state: the node the user has
 selected in the UI (sent with every /chat request), the last anchor the agent
 resolved, and the last tool observations (for follow-ups like "which ones?").
 The graph UI is the user's memory — every tool receives this context.
 
-Vectors returned here are *raw* 1024-d MERT (same convention as the corpus
-``raw_embeddings`` and ``atlas.cached_vec``); downstream tools L2-normalize via
+Vectors returned here are *raw* 1024-d MERT; downstream tools L2-normalize via
 ``index.transform_query`` before scoring.
 """
 from __future__ import annotations
 
 import json
 import os
-import sys
+import re
+import sqlite3
 from collections import deque
 from dataclasses import dataclass, field
 from difflib import get_close_matches
@@ -33,37 +36,91 @@ from difflib import get_close_matches
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-UI_DIR = os.path.join(os.path.dirname(HERE), "ui")
-if UI_DIR not in sys.path:
-    sys.path.insert(0, UI_DIR)
-
-
-def _atlas():
-    """Import ui/atlas lazily — it drags in the full anther_ml stack, which
-    consumers of MentorContext alone (service session bookkeeping, tests)
-    should not have to load."""
-    import atlas
-    return atlas
+SESSION_DIR = os.path.join(os.path.dirname(HERE), "ui", "session")
+DEFAULT_SESSION_ID = "default"
 
 
 def _norm_text(s):
     return " ".join(str(s or "").strip().lower().split())
 
 
-class GraphContext:
-    """On-screen session graph, read fresh from disk (mtime-cached)."""
+def _safe_session_id(session_id):
+    """Mirror atlas._safe_session_id: keep only path-safe chars, never allow
+    traversal, fall back to the shared 'default' session for empty/None."""
+    if not session_id:
+        return DEFAULT_SESSION_ID
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(session_id))
+    return safe or DEFAULT_SESSION_ID
 
-    def __init__(self, graph_path=None, vec_reader=None):
-        self.graph_path = graph_path or str(_atlas().GRAPH_PATH)
-        # vec_reader(track_id) -> raw np.ndarray | None. Defaults to the embed
-        # cache; injectable so tests can stub it.
-        self._vec_reader = vec_reader or _atlas().cached_vec
+
+def _session_paths(session_id):
+    sid = _safe_session_id(session_id)
+    base = os.path.join(SESSION_DIR, sid)
+    return sid, os.path.join(base, "graph.json"), os.path.join(base, "embed_cache.sqlite")
+
+
+def _sqlite_vec_reader(cache_path):
+    """Build a vec_reader(track_id) -> raw np.ndarray|None over one session's
+    embed_cache.sqlite. Reads the DB directly so we never depend on atlas's
+    request-scoped session ContextVar (which is 'default' in this process)."""
+    def read(track_id):
+        if not track_id or not os.path.exists(cache_path):
+            return None
+        try:
+            con = sqlite3.connect(cache_path)
+            try:
+                row = con.execute(
+                    "SELECT vec FROM embed_cache WHERE track_id = ?", (track_id,)
+                ).fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return None
+        if row is None:
+            return None
+        return np.frombuffer(row[0], dtype=np.float32).copy()
+    return read
+
+
+class GraphContext:
+    """One browser session's on-screen graph, read fresh from disk.
+
+    Point it at a session with ``session_id=`` (production) or an explicit
+    ``graph_path=`` + ``vec_reader=`` (tests). ``for_session(sid)`` re-points a
+    live instance so the mentor process can serve many browsers.
+    """
+
+    def __init__(self, session_id=None, graph_path=None, vec_reader=None):
+        if graph_path is not None:
+            # explicit path (tests) — vec_reader must be supplied too
+            self.session_id = _safe_session_id(session_id)
+            self.graph_path = graph_path
+            self._vec_reader = vec_reader or (lambda _id: None)
+        else:
+            self.session_id, self.graph_path, cache_path = _session_paths(session_id)
+            self._vec_reader = vec_reader or _sqlite_vec_reader(cache_path)
+        self._reset_indices()
+
+    def for_session(self, session_id):
+        """Re-point this instance at another browser session (in-place). No-op
+        when already on that session. Returns self for chaining."""
+        sid = _safe_session_id(session_id)
+        if sid == self.session_id:
+            return self
+        self.session_id, self.graph_path, cache_path = _session_paths(sid)
+        self._vec_reader = _sqlite_vec_reader(cache_path)
+        self._mtime = None
+        self._reset_indices()
+        return self
+
+    def _reset_indices(self):
         self._mtime = None
         self._nodes = []            # list of node dicts (as stored in graph.json)
         self._by_id = {}            # id -> node
         self._artist_to_ids = {}    # norm(artist) -> [id, ...]
         self._name_to_id = {}       # norm("artist - name") and norm(name) -> id
         self._vec_cache = {}        # id -> raw vec (or None if uncached)
+        self._groups = {}
 
     # ---- freshness ---------------------------------------------------------
     def _reload_if_stale(self):
@@ -150,6 +207,49 @@ class GraphContext:
     def artist_ids(self, artist):
         self._reload_if_stale()
         return list(self._artist_to_ids.get(_norm_text(artist), []))
+
+    def mentions_entity(self, text):
+        """True if the text contains an on-map artist or song name. Used by the
+        router to recognise a bare entity ("what is Big On Big connected to")
+        as a graph question even without map-referential phrasing."""
+        self._reload_if_stale()
+        q = _norm_text(text)
+        if not q:
+            return False
+        for key in self._artist_to_ids:
+            if key and len(key) >= 3 and key in q:
+                return True
+        for key in self._name_to_id:
+            if key and len(key) >= 3 and key in q:
+                return True
+        return False
+
+    def summary(self, max_artists=40):
+        """A compact human-readable census of the map for the router prompt:
+        node count, distinct artists, and territory labels. Empty string when
+        the map is empty."""
+        self._reload_if_stale()
+        if not self._nodes:
+            return ""
+        artists, seen = [], set()
+        territories = {}
+        for n in self._nodes:
+            a = n.get("artist", "")
+            if a and _norm_text(a) not in seen:
+                seen.add(_norm_text(a))
+                artists.append(a)
+            label = n.get("cluster_label") or ""
+            if label:
+                territories[label] = territories.get(label, 0) + 1
+        parts = [f"{len(self._nodes)} songs on the map"]
+        if artists:
+            shown = ", ".join(artists[:max_artists])
+            more = "" if len(artists) <= max_artists else f", +{len(artists)-max_artists} more"
+            parts.append(f"artists: {shown}{more}")
+        if territories:
+            terr = ", ".join(sorted(territories, key=lambda t: -territories[t])[:8])
+            parts.append(f"territories: {terr}")
+        return "; ".join(parts)
 
     def candidate_vectors(self, exclude_ids=None):
         """(ids, matrix, nodes) for every on-screen node with a cached vector."""
@@ -252,6 +352,7 @@ class MentorContext:
     the tool layer owns and shares across sessions.
     """
     selected_node_id: str | None = None
+    graph_session_id: str | None = None
     last_anchor: str | None = None
     last_intent: str | None = None
     last_observation: dict | None = None
@@ -259,6 +360,8 @@ class MentorContext:
 
     def reset(self):
         self.selected_node_id = None
+        # graph_session_id is a property of the browser, not the chat — it is
+        # refreshed each turn and deliberately survives a /reset.
         self.last_anchor = None
         self.last_intent = None
         self.last_observation = None

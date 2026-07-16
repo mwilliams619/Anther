@@ -21,7 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import torch
 from paths import BASE_DIR, LORA_DIR
-from graph_context import MentorContext
+from graph_context import MentorContext, _norm_text as _norm
+
+# Pipeline trace (QUESTION / CLASSIFICATION / TOOL / OBSERVATION / ANSWER) is
+# printed when chat(verbose=True) or ANTHER_MENTOR_TRACE=1 (the service sets it).
+TRACE = os.environ.get("ANTHER_MENTOR_TRACE", "") not in ("", "0", "false")
 
 # re-exported for service.py / tests (the session-state object lives with the
 # other context machinery in graph_context.py)
@@ -141,11 +145,9 @@ class MusicMentor:
             # Live on-screen session (graph.json + embed_cache), read fresh per
             # graph-turn. The mentor runs in a separate process from the UI, so
             # this reads state from disk rather than the UI's in-memory atlas.
-            try:
-                from graph_context import GraphContext
-                self.graph_ctx = GraphContext()
-            except Exception:
-                self.graph_ctx = None
+            # It is re-pointed at the browser's session each turn (see chat()).
+            from graph_context import GraphContext
+            self.graph_ctx = GraphContext()
             self.agent = MentorAgent.build(self.similarity, self._generate,
                                            graph_ctx=self.graph_ctx)
 
@@ -177,14 +179,62 @@ class MusicMentor:
         m = re.search(r"\b(ADVICE|GRAPH|OFFTOPIC)\b", raw.upper())
         return m.group(1) if m else None
 
+    # Unambiguous "this is about the map in front of me" phrases. When any of
+    # these appears the question is a GRAPH question no matter what a 7B router
+    # guesses — this is the gate that stops "what is X connected to on the map"
+    # from being misread as off-topic. It never chooses a tool (the agent's
+    # intent classifier does that); it only guarantees the graph branch runs.
+    _GRAPH_PHRASES = (
+        "on the map", "on my map", "on the graph", "on screen", "on-screen",
+        "on the board", "on the canvas", "in the map", "in my map",
+        "what's here", "whats here", "what is here", "what am i looking at",
+        "looking at right now", "connected to", "linked to", "next to",
+        "closest to", "nearest to", "sit between", "sits between",
+        "sit sonically", "what do i sound like", "what does my", "sound like",
+        "what's on the map", "whats on the map", "what is on the map",
+        "why is this", "why is that", "this node", "this song", "selected node",
+    )
+
+    def _graph_signal(self, question):
+        """High-precision GRAPH detector: an explicit map phrase, or a mention
+        of something actually placed on the map. False is inconclusive (defer
+        to the LLM), never a claim that it ISN'T a graph question."""
+        q = _norm(question)
+        if any(p in q for p in self._GRAPH_PHRASES):
+            return True
+        gc = self.graph_ctx
+        try:
+            if gc is not None and gc.has_nodes() and gc.mentions_entity(question):
+                return True
+        except Exception:
+            pass
+        return False
+
     def classify_intent(self, question, state=None):
-        """LLM three-way routing. The previous turn's route is passed as a hint
-        so short follow-ups ("which ones?") stay on the graph branch. Retries
-        once at temperature 0; if the model still emits nothing usable we
-        default to ADVICE (the RAG scope gate below handles the rest)."""
+        """Three-way routing (ADVICE / GRAPH / OFFTOPIC), graph-aware.
+
+        1. Unambiguous map language or an on-map entity → GRAPH outright.
+        2. Otherwise the LLM decides, but it is TOLD what is on the map so it
+           can recognise a bare artist/song name as a graph entity instead of
+           guessing (the old blind router sent "what is Big On Big connected
+           to" to OFFTOPIC because it read it as geography).
+        The previous turn's route is passed so short follow-ups stay on-branch.
+        """
+        if self._graph_signal(question):
+            return "GRAPH"
+
         hint = ""
         if state is not None and state.last_intent in ("GRAPH", "ADVICE"):
             hint = f"[Previous turn: {state.last_intent}]\n"
+        census = ""
+        try:
+            if self.graph_ctx is not None:
+                census = self.graph_ctx.summary()
+        except Exception:
+            census = ""
+        if census:
+            hint += (f"[On the map right now: {census}]\n"
+                     "[If the question is about any of those, or about the map, it is GRAPH.]\n")
         messages = [{"role": "system", "content": INTENT_SYSTEM}]
         messages += INTENT_FEWSHOT
         messages += [{"role": "user", "content": hint + question}]
@@ -241,9 +291,32 @@ class MusicMentor:
 
     # ---- the agent loop ----------------------------------------------------
     def chat(self, question, audio_path=None, top_k=3, verbose=False,
-             conversation_context=None, selected_node_id=None):
+             conversation_context=None, selected_node_id=None, graph_session_id=None):
         state = conversation_context if conversation_context is not None else self._session_state
         state.selected_node_id = selected_node_id
+        if graph_session_id is not None:
+            state.graph_session_id = graph_session_id
+        # Re-point the shared GraphContext at THIS browser's map for the turn.
+        # The mentor process serves many browsers; each /chat carries its own
+        # graph_session_id, and the graph lives at ui/session/<sid>/graph.json.
+        if self.graph_ctx is not None and state.graph_session_id is not None:
+            try:
+                self.graph_ctx.for_session(state.graph_session_id)
+            except Exception:
+                pass
+        trace = verbose or TRACE
+        if trace:
+            gc = self.graph_ctx
+            census = ""
+            try:
+                census = gc.summary() if gc is not None else ""
+            except Exception:
+                census = "<summary failed>"
+            print(f"\n[TRACE] QUESTION: {question}")
+            print(f"[TRACE] SESSION: graph={state.graph_session_id} "
+                  f"selected={selected_node_id}")
+            print(f"[TRACE] MAP: {census or '<empty>'}")
+
         ql = (question or "").strip().lower()
         if ql in ("/reset", "/clear", "/new"):
             state.reset()
@@ -261,6 +334,8 @@ class MusicMentor:
             return out
 
         intent = self.classify_intent(question, state=state)
+        if trace:
+            print(f"[TRACE] CLASSIFICATION: {intent}")
 
         if intent == "GRAPH":
             if self.agent is None:
@@ -272,8 +347,12 @@ class MusicMentor:
                 state.record("assistant", out)
                 return out
             result = self.agent.run(question, context=state)
-            if verbose:
-                print(f"graph intent={result.get('intent')} status={result.get('status')}")
+            if trace:
+                obs = result.get("observation")
+                print(f"[TRACE] TOOL CALL: {result.get('intent')}")
+                print(f"[TRACE] OBSERVATION: ok={None if obs is None else obs.get('ok')} "
+                      f"status={result.get('status')}")
+                print(f"[TRACE] FINAL ANSWER: {result.get('answer','')[:200]}")
             out = result.get("answer", "Tell me an anchor artist or upload audio, and I'll map your sound.")
             state.record("user", question)
             state.record("assistant", out)

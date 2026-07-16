@@ -91,13 +91,32 @@ python -m mentor.service   # port 5100, separate process — start alongside ui/
 
 `ui/app.py` never loads the model itself; it forwards `/api/mentor/chat` and
 `/api/mentor/reset` to the service over localhost, using a signed session
-cookie (`ANTHER_UI_SECRET_KEY`) to key each browser's `ConversationState`
+cookie (`ANTHER_UI_SECRET_KEY`) to key each browser's `MentorContext`
 inside the service. If the service isn't running, both routes return `503`
 and the chat panel shows an inline "unavailable" state — the rest of the
 atlas UI keeps working normally.
 
-The web ReAct tool surface is intentionally trimmed to read-only graph
-lookups (`resolve, sounds_like, compare, bridge, crossover, artist_tracks,
-tagmates` — see `mentor/mentor_react.py`'s `REACT_SYSTEM`/`_execute()`).
-Chat cannot place, remove, or otherwise mutate the map; use the atlas UI
-controls for that.
+**The mentor reads the caller's live map.** The service runs in a separate
+process and cannot see the UI's request-scoped atlas session, so `ui/app.py`
+sends two extra fields on every `/api/mentor/chat` turn:
+
+- `graph_session_id` — the browser's `graph_session_id` cookie, i.e. which
+  `ui/session/<sid>/graph.json` map this chat is about. The mentor's
+  `GraphContext` re-points at that session per turn and reads the graph +
+  `embed_cache.sqlite` straight off disk (see `mentor/graph_context.py`).
+- `selected_node_id` — the node pinned in the force graph (`AtlasGraph.getSelectedId()`),
+  so "this song" / "why is this here" / "what do I sound like" resolve to it.
+
+Without `graph_session_id` the mentor would read the shared `default` session
+(or nothing) and answer as if the map were empty. The full chat body is
+`{question, selected_node_id, graph_session_id}` → `{answer}`.
+
+The chat pipeline (`mentor/agent.py`) is: **LLM classifies intent → deterministic
+graph tool → LLM narrates the observation**, with a graph-aware stage-1 router
+(`mentor/mentor.py`) that recognises map language and on-map entities so map
+questions never leak to the generic advice/off-topic branches. The seven
+read-only tools (`inspect, resolve, neighbors, compare, bridge, explore,
+explain` — see `mentor/graph_tools.py`) cannot place, remove, or mutate the
+map; use the atlas UI controls for that. Set `ANTHER_MENTOR_TRACE=1` on the
+service to log the full QUESTION → CLASSIFICATION → TOOL → OBSERVATION →
+ANSWER trace per turn.

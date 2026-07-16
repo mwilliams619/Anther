@@ -74,12 +74,16 @@ def chat():
     # The node the user has selected on the map (or None) — the frontend sends
     # it with every turn so "this song" / "what do I sound like" resolve to it.
     selected_node_id = data.get("selected_node_id") or None
+    # The browser's graph session id — which map (ui/session/<sid>/graph.json)
+    # this chat is about. Distinct from session_id (the chat history key).
+    graph_session_id = data.get("graph_session_id") or None
     if not session_id or not question:
         return jsonify({"error": "session_id and question are required"}), 400
     state = _get_state(session_id)
     try:
         answer = _mentor.chat(question, conversation_context=state,
-                              selected_node_id=selected_node_id)
+                              selected_node_id=selected_node_id,
+                              graph_session_id=graph_session_id)
     except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the service
         return jsonify({"error": f"mentor chat failed: {exc}"}), 500
     return jsonify({"answer": answer})

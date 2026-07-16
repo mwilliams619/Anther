@@ -301,10 +301,15 @@ def mentor_chat():
     if not session_id:
         session_id = secrets.token_urlsafe(16)
         session['mentor_session_id'] = session_id
+    # The mentor runs in a separate process and can't see our request-scoped
+    # atlas session, so we tell it which browser map to read: the same
+    # graph_session_id that binds this request's atlas.* calls.
+    graph_session_id = _graph_session_id()
     try:
         resp = requests.post(f'{MENTOR_URL}/chat',
                               json={'session_id': session_id, 'question': question,
-                                    'selected_node_id': selected_node_id},
+                                    'selected_node_id': selected_node_id,
+                                    'graph_session_id': graph_session_id},
                               timeout=MENTOR_TIMEOUT)
     except requests.RequestException:
         return jsonify({'error': 'Mentor is currently unavailable.'}), 503

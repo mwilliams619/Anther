@@ -154,6 +154,37 @@ def place_graph(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
     return GraphContext(graph_path=str(graph_path), vec_reader=vecs.get)
 
 
+def write_session_on_disk(session_root, session_id, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
+    """Place a map the way the UI does: ui/session/<sid>/graph.json plus an
+    embed_cache.sqlite carrying each node's vector. This exercises the REAL
+    production path (session_id -> disk -> GraphContext), not an injected path.
+    Returns the session directory.
+    """
+    import sqlite3
+
+    sdir = session_root / session_id
+    sdir.mkdir(parents=True, exist_ok=True)
+    stored = [{k: v for k, v in n.items() if k != "vec"} for n in nodes]
+    (sdir / "graph.json").write_text(
+        json.dumps({"nodes": stored, "links": [], "groups": groups}))
+
+    con = sqlite3.connect(str(sdir / "embed_cache.sqlite"))
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS embed_cache ("
+            "track_id TEXT PRIMARY KEY, vec BLOB NOT NULL, dim INTEGER NOT NULL, "
+            "name TEXT, artist TEXT, created REAL)")
+        for n in nodes:
+            v = np.asarray(n["vec"], dtype=np.float32)
+            con.execute("INSERT OR REPLACE INTO embed_cache VALUES (?,?,?,?,?,?)",
+                        (n["id"], v.tobytes(), int(v.size),
+                         n.get("name", ""), n.get("artist", ""), 0.0))
+        con.commit()
+    finally:
+        con.close()
+    return sdir
+
+
 def make_tools(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
     gc = place_graph(tmp_path, nodes=nodes, groups=groups)
     return MentorGraphTools(FakeSimilarity(), graph_ctx=gc)
