@@ -48,7 +48,7 @@ html, body {
   display: grid;
   grid-template-columns: 320px 1fr;
   grid-template-rows: 100vh;
-  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   transition: grid-template-columns var(--transition);
 }
@@ -62,17 +62,33 @@ html, body {
   .app {
     grid-template-columns: 1fr;
   }
+
+  .map-list{
+    max-height:40dvh;
+}
   
-  .app.mentor-open {
-    grid-template-columns: 1fr 320px;
-  }
+  .panel-right{
+    position:fixed;
+    top:0;
+    right:0;
+    width:320px;
+    max-width:90vw;
+    height:100dvh;
+    transform:translateX(100%);
+    transition:transform .2s;
+    z-index:100;
+}
+
+.app.mentor-open .panel-right{
+    transform:translateX(0);
+}
   
   .panel-left {
     position: fixed;
     left: 0;
     top: 0;
     width: 320px;
-    height: 100vh;
+    height: 100dvh;
     z-index: 100;
     transform: translateX(-100%);
     transition: transform var(--transition);
@@ -133,7 +149,11 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: calc(var(--spacing) * 2);
+  padding:
+        max(16px, env(safe-area-inset-top))
+        16px
+        max(16px, env(safe-area-inset-bottom))
+        16px;
   gap: calc(var(--spacing) * 3);
 }
 
@@ -196,6 +216,7 @@ section { display: flex; flex-direction: column; }
 /* ── Search ───────────────────────────────────────────────────────────────── */
 .search-mode { 
   display: flex; 
+  flex-wrap:wrap;
   gap: var(--spacing); 
   margin-bottom: var(--spacing); 
 }
@@ -226,6 +247,10 @@ section { display: flex; flex-direction: column; }
 .search-bar {
   display: flex;
   gap: var(--spacing);
+}
+
+.search-bar input{
+    min-width:0;
 }
 
 input[type="text"] {
@@ -259,7 +284,7 @@ input[type="text"]::placeholder {
 
 .track-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--spacing);
   padding: var(--spacing) calc(var(--spacing) * 1.5);
   border-radius: var(--radius);
@@ -500,7 +525,7 @@ input[type="text"]::placeholder {
 
 #graph { 
   width: 100%; 
-  height: 100vh; 
+  height: 100dvh; 
   display: block; 
   cursor: grab; 
 }
@@ -515,7 +540,9 @@ input[type="text"]::placeholder {
   font-size: 11px;
   color: var(--text-muted);
   pointer-events: none;
-  white-space: nowrap;
+  white-space:normal;
+  width:90%;
+  text-align:center;
 }
 
 /* corpus warm-up overlay (shown while /api/graph reports ready:false) */
@@ -844,7 +871,7 @@ circle.corpus-node {
 /* ── Detail panel (click a node) ──────────────────────────────────────────── */
 #detail-panel {
   position: absolute;
-  top: calc(var(--spacing) * 2); 
+  top: calc(var(--spacing) * 2);
   right: calc(var(--spacing) * 2);
   max-height: calc(100% - var(--spacing) * 4);
   width: 320px;
@@ -855,6 +882,29 @@ circle.corpus-node {
   padding: calc(var(--spacing) * 2);
   z-index: 50;
   box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+}
+
+@media (max-width:768px) {
+
+  #detail-panel {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-width: none;
+    max-height: 60dvh;
+  }
+  .sidebar-toggle {
+        top: 12px;
+        left: 12px;
+        width: 40px;
+        height: 40px;
+        z-index: 1001;
+    }
+
+    .panel-left {
+        padding-top: 60px; /* leave room for the toggle */
+    }
+
 }
 
 #detail-panel[hidden] { display: none; }
@@ -999,6 +1049,11 @@ circle.corpus-node {
 }
 
 .similar-row {
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.similar-row-main {
   display: flex; 
   align-items: center; 
   gap: var(--spacing);
@@ -1006,10 +1061,17 @@ circle.corpus-node {
   border-radius: var(--radius);
 }
 
-.similar-row.on-graph { cursor: pointer; }
+.similar-row.on-graph .similar-row-main { cursor: pointer; }
 
-.similar-row.on-graph:hover { 
+.similar-row.on-graph:hover .similar-row-main { 
   background: var(--surface-hi); 
+}
+
+.similar-score-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .similar-score { 
@@ -1018,6 +1080,79 @@ circle.corpus-node {
   color: var(--text-muted); 
   flex-shrink: 0; 
   white-space: nowrap;
+}
+
+/* Expand toggle for the melody/rhythm/timbre breakdown — a plain caret next
+   to the aggregate score; rotates when the panel below is open. Only
+   rendered when the row actually carries a `breakdown` (MERIT-aggregate
+   corpora), so plain-score rows never show a dead affordance. */
+.btn-expand {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius);
+  transition: transform var(--transition), color var(--transition), background var(--transition);
+}
+
+.btn-expand:hover {
+  color: var(--text);
+  background: var(--surface-hi);
+}
+
+.btn-expand.open {
+  transform: rotate(180deg);
+  color: var(--primary-hi);
+}
+
+.breakdown-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px var(--spacing) var(--spacing);
+  margin: 0 var(--spacing) var(--spacing);
+}
+
+.breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.breakdown-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 46px;
+  flex-shrink: 0;
+}
+
+.breakdown-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-hi);
+  overflow: hidden;
+}
+
+.breakdown-fill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.breakdown-fill.breakdown-melody { background: var(--primary); }
+.breakdown-fill.breakdown-rhythm { background: var(--warning); }
+.breakdown-fill.breakdown-timbre { background: var(--success); }
+
+.breakdown-val {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 22px;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .empty-hint {

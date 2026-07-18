@@ -27,6 +27,7 @@ waveform_to_tempfile() as the bridge (see bottom of file).
 """
 
 import io
+import re
 import time
 import tempfile
 import unicodedata
@@ -85,6 +86,23 @@ def _ratio(a, b):
     return SequenceMatcher(None, _norm(a), _norm(b)).ratio()
 
 
+def _primary_artist(artist):
+    """First credited artist off a multi-artist string ('A, B & C', 'A Featuring B',
+    'A ft. B') -- Deezer's `artist` field on a track is the primary credit only, so
+    scoring the full multi-artist string against it under-scores real matches."""
+    if not artist:
+        return artist
+    return re.split(r"\s*(?:&|,|[Ff]eaturing|[Ff]eat\.?|[Ff]t\.?)\s+", artist)[0].strip()
+
+
+def _artist_ratio(query_artist, candidate_artist):
+    """Max of full-string ratio and primary-artist-only ratio -- covers both
+    single-artist tracks and multi-artist ('Featuring'/'&') credits."""
+    full = _ratio(query_artist, candidate_artist)
+    primary = _ratio(_primary_artist(query_artist), candidate_artist)
+    return max(full, primary)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Deezer side: HTTP with light throttling + retry, ISRC-first matching
 # ──────────────────────────────────────────────────────────────────────────
@@ -134,16 +152,29 @@ def match_deezer_track(query, min_ratio=0.82, throttle=0.05):
     if not (title and artist):
         return {"error": "no_isrc_match_and_insufficient_text"}
 
-    q = f'artist:"{artist}" track:"{title}"'
-    res = _deezer_get("search/track", params={"q": q, "limit": 5}, throttle=throttle)
-    hits = res.get("data") or []
+    # Field-qualified query first (precise when it works), but Deezer's
+    # search/track endpoint returns zero hits for a non-trivial slice of
+    # artists/titles under `artist:"..." track:"..."` syntax even though
+    # the track is in the catalog (observed on multi-artist/"Featuring"
+    # credits and some single-artist titles alike) -- so always also try
+    # a plain-text query and pool candidates from both before scoring.
+    hits = []
+    q_qualified = f'artist:"{artist}" track:"{title}"'
+    res = _deezer_get("search/track", params={"q": q_qualified, "limit": 5}, throttle=throttle)
+    hits += res.get("data") or []
+
+    if not hits:
+        q_plain = f"{artist} {title}"
+        res2 = _deezer_get("search/track", params={"q": q_plain, "limit": 5}, throttle=throttle)
+        hits += res2.get("data") or []
+
     if not hits:
         return {"error": "no_fuzzy_hits"}
 
     best, best_score = None, 0.0
     for h in hits:
         score = 0.5 * _ratio(title, h.get("title", "")) + \
-                0.5 * _ratio(artist, (h.get("artist") or {}).get("name", ""))
+                0.5 * _artist_ratio(artist, (h.get("artist") or {}).get("name", ""))
         if score > best_score:
             best, best_score = h, score
 

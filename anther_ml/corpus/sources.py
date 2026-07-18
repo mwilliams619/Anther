@@ -314,3 +314,135 @@ def sql_source(
             "sql_source: %d/%d tracks had no usable preview (skipped)",
             n_missed, len(rows),
         )
+
+
+def sql_source_oversampled(
+    db_path: str | Path | None = None,
+    sql_dump: str | Path | None = None,
+    target_n: int = 8000,
+    oversample_ratio: float = 1.15,
+    tracks_per_artist_cap: int | None = 5,
+    seed: int = 42,
+    min_popularity: float | None = None,
+    with_membership: bool = True,
+    prefer_spotify_preview: bool = True,
+    deezer_fallback: bool = True,
+    clip_seconds: float | None = 30.0,
+    min_ratio: float = 0.82,
+    n_workers: int = 12,
+):
+    """
+    Like :func:`sql_source`, but guarantees ``target_n`` *successfully fetched*
+    tracks instead of yielding whatever a fixed sample happens to resolve.
+
+    Dead/expired preview URLs (and Deezer-fallback misses) are the one source
+    of yield loss in the SQL path. Rather than accept a shrunken corpus or add
+    gap-handling downstream, this draws a larger deterministic candidate pool
+    up front (``target_n * oversample_ratio``, same seed → same prefix as a
+    plain ``sql_source`` call) and substitutes the next unused candidate,
+    in sampled order, whenever a fetch fails — so the *set* of tracks shifts
+    slightly at the margin but the *count* is exact and no per-track fallback
+    logic is needed by callers. Raises if the oversampled pool itself runs out
+    before reaching ``target_n`` (i.e. the dead-URL rate exceeds the buffer).
+
+    Fetches run with the same bounded ``n_workers``-thread pool as
+    ``sql_source``, processed in deterministic sample order so a resumed
+    build stays stable (the checkpoint's ``done_ids()`` just skips whatever
+    already landed).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ..embedding import SR
+    from ..mpd_sql import ensure_db, sample_tracks
+    from ..spotify_deezer import fetch_preview_waveform, match_deezer_track
+
+    db_path = ensure_db(
+        db_path=db_path, sql_dump=sql_dump, with_membership=with_membership
+    )
+    pool_n = int(target_n * oversample_ratio)
+    rows, membership = sample_tracks(
+        db_path,
+        sample_n=pool_n,
+        artist_cap=tracks_per_artist_cap,
+        seed=seed,
+        min_popularity=min_popularity,
+    )
+    log.info(
+        "sql_source_oversampled: target=%d, pool=%d candidates (%d workers)…",
+        target_n, len(rows), n_workers,
+    )
+
+    def fetch_one(row: dict) -> dict | None:
+        track_id, name = row["track_id"], row["name"] or ""
+        artist_name, preview_url = row["artist_name"], row["preview_url"]
+
+        wav = None
+        if prefer_spotify_preview and preview_url:
+            try:
+                wav, _ = fetch_preview_waveform(
+                    preview_url, target_sr=SR, clip_seconds=clip_seconds
+                )
+            except Exception as e:  # noqa: BLE001 — dead/expired URL → try fallback
+                log.debug("spotify preview failed for %s: %s", track_id, e)
+                wav = None
+
+        if wav is None and deezer_fallback:
+            match = match_deezer_track(
+                {"sp_id": track_id, "isrc": None, "title": name,
+                 "artist": artist_name or "", "duration_ms": None},
+                min_ratio=min_ratio,
+            )
+            if "error" not in match:
+                try:
+                    wav, _ = fetch_preview_waveform(
+                        match["preview"], target_sr=SR, clip_seconds=clip_seconds
+                    )
+                except Exception:  # noqa: BLE001 — network flake on one preview
+                    wav = None
+
+        if wav is None:
+            return None
+        return {
+            "id": f"spotify:{track_id}",
+            "name": name,
+            "artist": artist_name or None,
+            "source": "mpd_sql",
+            "genre": None,
+            "playlists": membership.get(track_id, []),
+            "audio": wav,
+            "sr": SR,
+        }
+
+    # Ordered, bounded parallelism over the *whole* oversampled pool, but we
+    # stop pulling from the pool as soon as target_n successes have yielded —
+    # later candidates in a partially-consumed window are simply never
+    # submitted, so no wasted fetches beyond the window in flight.
+    n_yielded = 0
+    n_missed = 0
+    window = max(n_workers * 4, 1)
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for start in range(0, len(rows), window):
+            if n_yielded >= target_n:
+                break
+            chunk = rows[start : start + window]
+            for item in pool.map(fetch_one, chunk):
+                if n_yielded >= target_n:
+                    break
+                if item is None:
+                    n_missed += 1
+                    continue
+                n_yielded += 1
+                yield item
+
+    if n_yielded < target_n:
+        raise RuntimeError(
+            f"sql_source_oversampled: only {n_yielded}/{target_n} tracks "
+            f"fetched from a pool of {len(rows)} candidates ({n_missed} "
+            f"failed). Raise oversample_ratio (currently {oversample_ratio}) "
+            f"and retry."
+        )
+    log.info(
+        "sql_source_oversampled: reached target_n=%d (%d candidates skipped/failed, "
+        "%d unused pool remainder)",
+        target_n, n_missed, len(rows) - n_yielded - n_missed,
+    )

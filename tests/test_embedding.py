@@ -136,6 +136,68 @@ def test_embed_tracks_batched_matches_per_track():
     np.testing.assert_allclose(got, reference, rtol=1e-6, atol=1e-6)
 
 
+class _FakeModelDeep:
+    """Same contract as _FakeModel but with 25 hidden states (like real MERT),
+    so merit_concat's layer requirement (up to layer 23) is satisfiable."""
+    H = 4
+    N_LAYERS = 25
+
+    def __call__(self, input_values, output_hidden_states):
+        b, t = input_values.shape
+        wmean = input_values.mean(dim=1, keepdim=True)
+        hidden = []
+        for layer in range(self.N_LAYERS):
+            base = (wmean + layer).unsqueeze(1)
+            hidden.append(base.expand(b, 3, self.H).clone())
+
+        class _Out:
+            hidden_states = tuple(hidden)
+        return _Out()
+
+
+def test_embed_tracks_batched_dual_matches_single_mode_paths():
+    """The dual (mert+merit) path must reproduce each single-mode path exactly
+    — it's a same-forward-pass optimization, not a different computation."""
+    from anther_ml.embedding import embed_tracks_batched, embed_tracks_batched_dual
+
+    model, processor = _FakeModelDeep(), _FakeProcessor()
+    rng = np.random.default_rng(2)
+    waveforms = [
+        rng.standard_normal(int(45 * SR)).astype(np.float32),
+        rng.standard_normal(int(60 * SR)).astype(np.float32),
+        rng.standard_normal(int(4 * SR)).astype(np.float32),
+    ]
+
+    ref_mean = embed_tracks_batched(
+        model, processor, waveforms, device="cpu",
+        layer_aggregation="mean", batch_windows=4, use_fp16=False,
+    )
+    ref_merit = embed_tracks_batched(
+        model, processor, waveforms, device="cpu",
+        layer_aggregation="merit_concat", batch_windows=4, use_fp16=False,
+    )
+
+    got_mean, got_merit = embed_tracks_batched_dual(
+        model, processor, waveforms, device="cpu",
+        batch_windows=4, use_fp16=False,
+    )
+
+    assert got_mean.shape == ref_mean.shape == (3, 4)
+    assert got_merit.shape == ref_merit.shape == (3, 4 * 5)  # H * len(MERIT_LAYERS)
+    np.testing.assert_allclose(got_mean, ref_mean, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(got_merit, ref_merit, rtol=1e-6, atol=1e-6)
+
+
+def test_embed_tracks_batched_dual_empty_input():
+    from anther_ml.embedding import embed_tracks_batched_dual
+
+    mean_out, merit_out = embed_tracks_batched_dual(
+        _FakeModelDeep(), _FakeProcessor(), [], device="cpu", use_fp16=False,
+    )
+    assert mean_out.shape == (0, 0)
+    assert merit_out.shape == (0, 0)
+
+
 def test_get_embedding_end_to_end_mocked(monkeypatch, tmp_path):
     import soundfile as sf
     import anther_ml.embedding as emb_mod

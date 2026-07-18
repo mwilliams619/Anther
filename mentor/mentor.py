@@ -105,6 +105,8 @@ INTENT_FEWSHOT = [
     {"role": "assistant", "content": "GRAPH"},
     {"role": "user", "content": "[Previous turn: GRAPH]\nwhich ones?"},
     {"role": "assistant", "content": "GRAPH"},
+    {"role": "user", "content": "[Previous turn: GRAPH]\nwhat are the scores?"},
+    {"role": "assistant", "content": "GRAPH"},
     {"role": "user", "content": "Write me a python function to sort a list."},
     {"role": "assistant", "content": "OFFTOPIC"},
     {"role": "user", "content": "Are you an AI?"},
@@ -112,6 +114,127 @@ INTENT_FEWSHOT = [
 ]
 
 VALID_INTENTS = ("ADVICE", "GRAPH", "OFFTOPIC")
+
+# ---- retrieval-mode router (replaces the old binary SCOPE_THRESHOLD gate) --
+#
+# The old gate: `in_scope = (intent == "ADVICE") and (max_score >= SCOPE_THRESHOLD)`.
+# If in_scope and hits: quote-and-defer. Otherwise: fall through to the SAME
+# UNGROUNDED/redirect branch used for genuinely off-topic questions -- even
+# though `intent` was already ADVICE. That is the whack-a-mole bug: a
+# brainstorm/plan-drafting question ("help me plan my release rollout") is
+# on-topic but rarely has one passage that matches it well, so it either got
+# a verbatim tip quoted at it (if some passage scored just high enough) or
+# got told "that's not my lane" (if nothing scored high enough) -- there was
+# no answer shape for "synthesize something new for me from what you know."
+#
+# This router gives ADVICE questions three destinations instead of one
+# pass/fail check, following the adaptive-retrieval literature:
+#   - Self-RAG (Asai et al. 2023, arXiv:2310.11511) retrieves on demand
+#     rather than every turn -- the model decides whether retrieval helps.
+#   - Adaptive-RAG (Jeong et al. 2024, arXiv:2403.14403) routes queries by
+#     complexity to no-retrieval / single-step / multi-step strategies
+#     using a lightweight trained classifier, instead of one fixed policy
+#     for every query.
+#   - CRAG (Yan et al. 2024, arXiv:2401.15884) treats retrieval quality as
+#     a graded signal (correct / incorrect / ambiguous) with a distinct
+#     corrective action per grade, rather than a single relevant/irrelevant
+#     cutoff.
+#
+# GROUNDED     -- a direct, settleable question with a strong passage match:
+#                 quote-and-defer (the original, still-correct behavior).
+# SYNTHESIS    -- brainstorming, drafting, planning: retrieve passages as
+#                 optional supporting texture, but the model reasons beyond
+#                 them and produces an original answer for this artist.
+# NO_RETRIEVAL -- on-topic, but no passage is a good enough match to be worth
+#                 quoting (Self-RAG's "retrieval would not help" case): answer
+#                 from the mentor persona directly. Never a redirect -- the
+#                 question was already classified ADVICE, so "not my lane" is
+#                 wrong here by construction.
+VALID_RETRIEVAL_MODES = ("GROUNDED", "SYNTHESIS", "NO_RETRIEVAL")
+
+# Deterministic pre-filter for the clearest SYNTHESIS case (mirrors the
+# _GRAPH_PHRASES / _short_graph_followup pattern above): if the question
+# explicitly asks to brainstorm/draft/plan/outline, don't even ask the LLM.
+# Two layers: (1) fixed phrases for common exact wording, (2) a verb+noun
+# combination check so wording variants ("draft a 4-week plan for my EP",
+# "sketch out some options for the rollout") still hit the deterministic
+# path instead of falling through to the LLM every time.
+_SYNTHESIS_SIGNAL_PHRASES = (
+    "brainstorm", "help me plan", "plan out", "plan for my",
+    "come up with ideas", "come up with some ideas", "give me ideas",
+    "ideas for my", "roadmap for", "map out",
+    "strategy for my", "help me think through", "think through",
+    "workshop this", "generate ideas", "brainstorm ideas",
+    "what are some ideas", "give me options", "walk me through planning",
+    "help me draft",
+)
+_SYNTHESIS_VERBS = ("draft", "outline", "sketch", "workshop", "brainstorm", "map out")
+_SYNTHESIS_NOUNS = ("plan", "ideas", "idea", "options", "strategy", "roadmap")
+
+# Used for SYNTHESIS: passages (if any) are texture, not a script to recite.
+SYNTHESIS_SYSTEM = (
+    "You are a seasoned music mentor for aspiring artists. The user wants "
+    "help brainstorming, drafting, or planning something for their own "
+    "situation -- not a quoted tip. If source passages are provided below, "
+    "use them as inspiration and texture, but do not recite them verbatim "
+    "and do not just pick one and defer to it. Reason beyond the passages: "
+    "synthesize an original, concrete plan or set of ideas shaped to what "
+    "the artist described. Be direct and specific -- concrete next steps, "
+    "not platitudes. Speak to the artist in the second person. Never "
+    "describe yourself, your background, or your credentials."
+)
+
+# Used for NO_RETRIEVAL: on-topic, but nothing in the corpus is worth
+# quoting. This is NOT the off-topic redirect -- it answers the question.
+REFORMAT_SYSTEM = (
+    "You are a music mentor restyling your own previous answer at the "
+    "artist's request. Keep every fact, artist, song, and piece of advice "
+    "already in the previous answer -- do not invent anything new and do "
+    "not drop the substance. Only change presentation: structure (e.g. "
+    "bullet points), length, or tone, exactly as asked. If asked to "
+    "shorten or condense, actually make it shorter -- never just repeat "
+    "the previous answer back unchanged."
+)
+
+NO_RETRIEVAL_SYSTEM = (
+    "You are a seasoned music mentor for aspiring artists. Answer the "
+    "user's music question directly from your own judgment and experience "
+    "-- no source material is being provided because nothing in the corpus "
+    "is a close enough match to be worth quoting. Do not say you lack "
+    "information or apologize for it; just give direct, concrete, honest "
+    "advice. Speak to the artist in the second person. Never describe "
+    "yourself, your background, or your credentials."
+)
+
+RETRIEVAL_MODE_SYSTEM = (
+    "The user's question has already been classified as music ADVICE for a "
+    "music mentor assistant. Decide how it should be answered. Return "
+    "exactly one token from this set: GROUNDED, SYNTHESIS, NO_RETRIEVAL.\n"
+    "GROUNDED: a direct, answerable question where one specific piece of "
+    "advice would settle it (how do I fix X, what's the right way to Y, is "
+    "Z a good idea, should I do A or B).\n"
+    "SYNTHESIS: asks to brainstorm, draft, plan, outline, or generate "
+    "original ideas or options for their specific situation -- they want "
+    "something built for them, not a quoted tip.\n"
+    "NO_RETRIEVAL: general encouragement, opinion, or a personal/subjective "
+    "question with no single settled answer, where quoting outside advice "
+    "would not add anything -- answer from your own judgment as a mentor."
+)
+
+RETRIEVAL_MODE_FEWSHOT = [
+    {"role": "user", "content": "How do I stop clipping when I master my tracks?"},
+    {"role": "assistant", "content": "GROUNDED"},
+    {"role": "user", "content": "Help me brainstorm ideas for my album rollout."},
+    {"role": "assistant", "content": "SYNTHESIS"},
+    {"role": "user", "content": "Draft a 4-week release plan for my next single."},
+    {"role": "assistant", "content": "SYNTHESIS"},
+    {"role": "user", "content": "Do you think I should keep making music even though I'm not blowing up yet?"},
+    {"role": "assistant", "content": "NO_RETRIEVAL"},
+    {"role": "user", "content": "What's the best way to pitch my song to playlist curators?"},
+    {"role": "assistant", "content": "GROUNDED"},
+    {"role": "user", "content": "Can you help me plan out my next few months as an artist?"},
+    {"role": "assistant", "content": "SYNTHESIS"},
+]
 
 
 class MusicMentor:
@@ -210,17 +333,97 @@ class MusicMentor:
             pass
         return False
 
+    # A short reply right after a GRAPH turn ("what are the scores?", "which
+    # ones?", "and the second one?") is almost never a topic change — it is
+    # someone drilling into the answer they were just given. The bug this
+    # guards against: "what are the scores?" contains no _GRAPH_PHRASES
+    # entry and no on-map entity name, so it fell through to the 4-token LLM
+    # classifier, which read the bare word "scores" as sports trivia and
+    # misrouted it OFFTOPIC — losing the conversation thread entirely. The
+    # old "[Previous turn: GRAPH]" hint was only ever advisory text inside
+    # that same LLM call; it did not stop the misread. This gate is a hard
+    # rule the LLM never gets a vote on, but it only fires for genuinely
+    # short questions, and backs off the moment the question clearly asks
+    # for something else (a new advice topic, or an unrelated OFFTOPIC ask)
+    # so a real subject change right after a map answer isn't swallowed.
+    SHORT_FOLLOWUP_MAX_WORDS = 6
+
+    _ADVICE_SIGNAL_WORDS = (
+        "release", "promot", "market", "mixing", "mastering", "royalt",
+        "distribut", "audience", "gig", "label deal", "playlist pitch",
+        "press kit", "album rollout", "merch", "tour",
+    )
+    _OFFTOPIC_SIGNAL_WORDS = (
+        "weather", "recipe", "cook", "python", "sort a list", "function",
+        "shopping", "best deal", "flight", "restaurant", "football",
+        "basketball", "who won", "game score", "election", "stock price",
+    )
+
+    def _short_graph_followup(self, question, state):
+        """True if this looks like a short drill-in on the previous GRAPH
+        answer rather than a new topic. See SHORT_FOLLOWUP_MAX_WORDS above."""
+        if state is None or state.last_intent != "GRAPH":
+            return False
+        q = _norm(question)
+        if not q:
+            return False
+        if len(q.split()) > self.SHORT_FOLLOWUP_MAX_WORDS:
+            return False
+        if any(w in q for w in self._ADVICE_SIGNAL_WORDS):
+            return False
+        if any(w in q for w in self._OFFTOPIC_SIGNAL_WORDS):
+            return False
+        return True
+
+    # A reformat/continuation request right after an ADVICE turn ("can you
+    # put that in bullet points?", "shorten that", "tl;dr") is the same
+    # class of bug as _short_graph_followup but in the other direction: the
+    # shipped failure (live session, 2026-07-16) was "help me plan my
+    # release" (correctly ADVICE) followed by "can you pu tthst in bullet
+    # points for me?/" -- 9 words, no _GRAPH_PHRASES match, no on-map
+    # entity -- which the 4-token LLM classifier misread as GRAPH, and the
+    # graph agent then failed anchor resolution ("Nothing is selected on
+    # your map..."), losing the advice thread entirely.
+    #
+    # Deliberately NOT a bare word-count rule like _short_graph_followup:
+    # an ambiguous short question after ADVICE (e.g. "what are the
+    # scores?") should still legitimately defer to the LLM, since it could
+    # be a genuine pivot to the map.
+    #
+    # NOTE: reformat/continuation requests ("put that in bullet points",
+    # "reformat your answer please") are intercepted in chat() BEFORE
+    # classify_intent ever runs -- see _is_reformat_request / REFORMAT_SYSTEM
+    # below. A fixed phrase list used to live here and force ADVICE
+    # continuity, but that is exactly the whack-a-mole pattern this whole
+    # fix is meant to replace: "reformat your answer please" wasn't
+    # literally on the list, fell through to the LLM classifier, and got
+    # misread as a GRAPH question. The replacement detector is
+    # combinatorial (style-verb + reference-token) instead of enumerated,
+    # and it owns rewriting the previous answer directly rather than
+    # re-deriving fresh content through ADVICE/RAG.
+
     def classify_intent(self, question, state=None):
         """Three-way routing (ADVICE / GRAPH / OFFTOPIC), graph-aware.
 
         1. Unambiguous map language or an on-map entity → GRAPH outright.
-        2. Otherwise the LLM decides, but it is TOLD what is on the map so it
+        2. A short follow-up right after a GRAPH turn, with no clear sign of
+           a topic change → GRAPH outright (see _short_graph_followup).
+        3. Otherwise the LLM decides, but it is TOLD what is on the map so it
            can recognise a bare artist/song name as a graph entity instead of
            guessing (the old blind router sent "what is Big On Big connected
            to" to OFFTOPIC because it read it as geography).
-        The previous turn's route is passed so short follow-ups stay on-branch.
+        The previous turn's route is also passed to the LLM as a soft hint so
+        longer follow-ups still lean the right way even when no hard rule
+        above fires.
+
+        Reformat/continuation requests on the previous ADVICE answer never
+        reach this classifier -- chat() intercepts them first (see
+        _is_reformat_request).
         """
         if self._graph_signal(question):
+            return "GRAPH"
+
+        if self._short_graph_followup(question, state):
             return "GRAPH"
 
         hint = ""
@@ -244,6 +447,127 @@ class MusicMentor:
             if label in VALID_INTENTS:
                 return label
         return "ADVICE"
+
+    # Reformat/continuation detector: combinatorial (style-verb x
+    # reference-token), not an enumerated phrase list -- the same pattern
+    # already used successfully by _synthesis_signal. A phrase list missed
+    # "reformat your answer please" because that exact wording wasn't in
+    # it; requiring a verb from one small set AND a reference to "that
+    # answer" from another generalizes to wording neither list anticipated
+    # (see tests/test_reformat_request.py for the literal repro cases).
+    _REFORMAT_VERBS = (
+        "reformat", "format", "rephrase", "reword", "restate", "shorten",
+        "condense", "simplify", "summarize", "summarise", "bullet",
+        "bulletize", "list out", "clean up", "polish", "tighten", "redo",
+        "make",  # only counts combined with a _REFORMAT_STYLE_WORD below
+    )
+    # Style adjectives/adverbs that pair with a bare "make" ("make your
+    # response clearer", "make that shorter") -- checked independently of
+    # word order so "make X clearer/shorter" matches regardless of what
+    # sits between "make" and the adjective.
+    _REFORMAT_STYLE_WORDS = (
+        "shorter", "longer", "punchier", "clearer", "simpler", "cleaner",
+        "tighter", "snappier",
+    )
+    _REFORMAT_REFERENTS = (
+        "that", "this", "it", "your answer", "your response", "the answer",
+        "the response", "that answer", "that response", "previous answer",
+        "last answer", "what you said", "what you just said",
+    )
+    # Strong standalone phrases: sufficient on their own, no referent needed.
+    _REFORMAT_STRONG_PHRASES = (
+        "bullet points", "bullet point", "in bullets", "as a list",
+        "in a list", "tl;dr", "tldr", "in plain english", "in fewer words",
+    )
+
+    def _is_reformat_request(self, question, state):
+        """True if this looks like a request to restyle the PREVIOUS ADVICE
+        answer (bullet points, shorter, reworded, ...), as opposed to a new
+        question. Requires state.last_intent == "ADVICE" and a stored prior
+        answer to restyle; backs off if the question actually names the map
+        or an on-map entity, or reads as clearly off-topic, so a genuine
+        pivot still wins.
+        """
+        if state is None or state.last_intent != "ADVICE":
+            return False
+        if not state.history:
+            return False
+        q = _norm(question)
+        if not q:
+            return False
+        if not any(h.get("role") == "assistant" for h in state.history):
+            return False
+        has_referent = any(r in q for r in self._REFORMAT_REFERENTS)
+        verb_signal = (
+            any(v in q for v in self._REFORMAT_VERBS if v != "make")
+            or ("make" in q.split() and any(s in q for s in self._REFORMAT_STYLE_WORDS))
+        )
+        signal = any(p in q for p in self._REFORMAT_STRONG_PHRASES) or (
+            verb_signal and has_referent
+        )
+        if not signal:
+            return False
+        # Back off if the question actually names the map or an on-map
+        # entity -- a real pivot to GRAPH must still win.
+        if self._graph_signal(question):
+            return False
+        if any(w in q for w in self._OFFTOPIC_SIGNAL_WORDS):
+            return False
+        return True
+
+    def _last_assistant_answer(self, state):
+        for turn in reversed(state.history):
+            if turn.get("role") == "assistant" and turn.get("content", "").strip():
+                return turn["content"].strip()
+        return None
+
+    def _synthesis_signal(self, question):
+        """Deterministic pre-filter: explicit brainstorm/draft/plan language
+        is SYNTHESIS regardless of retrieval score. See _SYNTHESIS_SIGNAL_PHRASES
+        / _SYNTHESIS_VERBS / _SYNTHESIS_NOUNS -- a fixed-phrase match OR a
+        verb+noun combination (so "draft a 4-week plan for my EP" hits this
+        without needing every exact wording enumerated)."""
+        q = _norm(question)
+        if any(p in q for p in _SYNTHESIS_SIGNAL_PHRASES):
+            return True
+        has_verb = any(v in q for v in _SYNTHESIS_VERBS)
+        has_noun = any(n in q for n in _SYNTHESIS_NOUNS)
+        return has_verb and has_noun
+
+    def _normalize_mode(self, raw):
+        if not raw:
+            return None
+        m = re.search(r"\b(GROUNDED|SYNTHESIS|NO_RETRIEVAL)\b", raw.upper())
+        return m.group(1) if m else None
+
+    def classify_retrieval_mode(self, question, max_score, hits):
+        """Route an ADVICE question to GROUNDED / SYNTHESIS / NO_RETRIEVAL.
+
+        Replaces the old binary `in_scope = intent=="ADVICE" and max_score
+        >= SCOPE_THRESHOLD` gate, whose failure branch was the SAME
+        off-topic redirect used for genuinely off-topic questions -- so a
+        brainstorm/plan request that didn't happen to match one passage
+        well got told "that's not my lane" instead of getting help. See the
+        VALID_RETRIEVAL_MODES comment block above for the literature this
+        mirrors (Self-RAG / Adaptive-RAG / CRAG).
+
+        The explicit brainstorm/plan/draft phrasing is caught deterministically
+        (mirrors _graph_signal / _short_graph_followup above); everything else
+        goes to the same lightweight LLM classifier pattern classify_intent
+        uses, with a safety-net fallback if the LLM misfires: quote a strong
+        match if one exists, otherwise answer without one -- never redirect.
+        """
+        if self._synthesis_signal(question):
+            return "SYNTHESIS"
+        messages = [{"role": "system", "content": RETRIEVAL_MODE_SYSTEM}]
+        messages += RETRIEVAL_MODE_FEWSHOT
+        messages += [{"role": "user", "content": question}]
+        for _ in range(2):
+            raw = self._generate(messages, max_new_tokens=4, temperature=0.0)
+            label = self._normalize_mode(raw)
+            if label in VALID_RETRIEVAL_MODES:
+                return label
+        return "GROUNDED" if (hits and max_score >= SCOPE_THRESHOLD) else "NO_RETRIEVAL"
 
     # ---- dedicated 'sounds like' readout -----------------------------------
     def sounds_like(self, audio_path=None, analysis=None, top_k=8):
@@ -333,6 +657,30 @@ class MusicMentor:
             state.record("assistant", out)
             return out
 
+        # Reformat/continuation request on the previous ADVICE answer
+        # ("put that in bullet points", "reformat your answer please"):
+        # intercepted BEFORE classify_intent so it can never be misrouted
+        # to GRAPH/OFFTOPIC, and answered by restyling the actual stored
+        # previous answer -- never by re-deriving fresh content through
+        # RAG or the graph agent (which was the second failure mode this
+        # guards against: a verbatim repeat of the same passage).
+        if self._is_reformat_request(question, state):
+            prev = self._last_assistant_answer(state)
+            if prev is not None:
+                messages = [
+                    {"role": "system", "content": REFORMAT_SYSTEM},
+                    {"role": "user", "content": (
+                        f"[Your previous answer]\n{prev}\n\n"
+                        f"[Restyling request]\n{question}")},
+                ]
+                out = self._generate(messages, max_new_tokens=420)
+                state.last_intent = "ADVICE"
+                state.record("user", question)
+                state.record("assistant", out)
+                if trace:
+                    print(f"[TRACE] CLASSIFICATION: ADVICE (reformat intercept)")
+                return out
+
         intent = self.classify_intent(question, state=state)
         if trace:
             print(f"[TRACE] CLASSIFICATION: {intent}")
@@ -358,35 +706,73 @@ class MusicMentor:
             state.record("assistant", out)
             return out
 
-        # Retrieve, and get the top cosine over the whole index to decide scope.
-        max_score = 0.0
-        hits = []
-        if self.rag is not None:
-            hits, max_score = self.rag.retrieve(question, top_k=top_k)
+        if intent == "ADVICE":
+            # Retrieve once; the retrieval-MODE decision (not a single
+            # pass/fail score) decides what happens with the hits. See the
+            # VALID_RETRIEVAL_MODES comment block for why this replaced the
+            # old binary SCOPE_THRESHOLD gate.
+            max_score = 0.0
+            hits = []
+            if self.rag is not None:
+                hits, max_score = self.rag.retrieve(question, top_k=top_k)
 
-        in_scope = (intent == "ADVICE") and (max_score >= SCOPE_THRESHOLD)
-        if verbose:
-            print(f"intent={intent}  max_score={max_score:.3f}  in_scope={in_scope}  "
-                  f"hits={[round(h['score'], 2) for h in hits]}")
+            mode = self.classify_retrieval_mode(question, max_score, hits)
+            strong_hits = [h for h in hits if h["score"] >= SCOPE_THRESHOLD]
+            if verbose:
+                print(f"intent=ADVICE  mode={mode}  max_score={max_score:.3f}  "
+                      f"hits={[round(h['score'], 2) for h in hits]}")
 
-        if in_scope and hits:
-            # GROUNDED branch: inject the source advice, defer to it.
-            block = "\n\n".join(f"- {h['advice']}" for h in hits)
+            if mode == "GROUNDED" and strong_hits:
+                # Direct, settleable question, strong passage match: inject
+                # the source advice, defer to it (original behavior).
+                block = "\n\n".join(f"- {h['advice']}" for h in strong_hits)
+                ctx_block = state.recent_block()
+                user_content = (
+                    question +
+                    ctx_block +
+                    "\n\n[Source advice from experienced musicians — defer to this, "
+                    "rephrase in your own voice]\n" + block)
+                messages = [{"role": "system", "content": GROUNDED_SYSTEM},
+                            {"role": "user", "content": user_content}]
+                out = self._generate(messages)
+                state.last_intent = "ADVICE"
+                state.record("user", question)
+                state.record("assistant", out)
+                return out
+
+            if mode == "SYNTHESIS":
+                # Brainstorm/plan/draft: passages (if any) are optional
+                # texture, not a script. Never quote-and-defer, never redirect.
+                ctx_block = state.recent_block()
+                user_content = question + ctx_block
+                if hits:
+                    block = "\n\n".join(f"- {h['advice']}" for h in hits[:top_k])
+                    user_content += (
+                        "\n\n[Related passages — inspiration only, do not quote "
+                        "verbatim or just pick one]\n" + block)
+                messages = [{"role": "system", "content": SYNTHESIS_SYSTEM},
+                            {"role": "user", "content": user_content}]
+                out = self._generate(messages, max_new_tokens=420)
+                state.last_intent = "ADVICE"
+                state.record("user", question)
+                state.record("assistant", out)
+                return out
+
+            # mode == "NO_RETRIEVAL" (or GROUNDED with no strong hits after
+            # all): on-topic ADVICE, but nothing in the corpus is worth
+            # quoting. Answer from the mentor persona directly -- this is
+            # NOT the off-topic redirect below; the question was already
+            # classified ADVICE, so "not my lane" would be wrong here.
             ctx_block = state.recent_block()
-            user_content = (
-                question +
-                ctx_block +
-                "\n\n[Source advice from experienced musicians — defer to this, "
-                "rephrase in your own voice]\n" + block)
-            messages = [{"role": "system", "content": GROUNDED_SYSTEM},
-                        {"role": "user", "content": user_content}]
+            messages = [{"role": "system", "content": NO_RETRIEVAL_SYSTEM},
+                        {"role": "user", "content": question + ctx_block}]
             out = self._generate(messages)
             state.last_intent = "ADVICE"
             state.record("user", question)
             state.record("assistant", out)
             return out
 
-        # UNGROUNDED branch: out of scope. In-persona redirect, no RAG context.
+        # OFFTOPIC: genuinely out of scope. In-persona redirect, no RAG context.
         # Few-shot exemplars pin the behavior — a bare instruction is not
         # reliably followed at this size, but 2-3 examples make it stick.
         if any(t in ql for t in ["are you an ai", "ai assistant", "who made you", "who created you"]):

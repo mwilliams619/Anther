@@ -10,6 +10,7 @@ import json
 
 import numpy as np
 
+from anther_ml import calibration as link_calibration
 from mentor.graph_context import GraphContext, MentorContext
 from mentor.graph_tools import MentorGraphTools
 
@@ -83,6 +84,24 @@ class FakeSimilarity:
         self.index = FakeIndex([r["vec"] for r in corpus],
                                [{"artist": r["artist"], "name": r["name"]} for r in corpus])
         self.labels = np.array([r["cluster"] for r in corpus])
+        # A fixed, hand-picked LinkThresholds rather than a real draw: this
+        # corpus has only 5 tracks (10 unordered pairs), far too few for
+        # calibrate_link_thresholds' percentile draw to separate bands
+        # meaningfully — the 95th/99th/99.9th percentiles of 1000 draws over
+        # 10 possible values all collapse onto the single highest pair. The
+        # calibration MATH is exercised directly in test_calibration.py
+        # against a realistically-sized synthetic corpus; this fixture's job
+        # is just to give the tool layer's band_for_cosine/display_score
+        # call sites something with clean separation to assert against.
+        self.link_thresholds = link_calibration.LinkThresholds(
+            qq_threshold=0.90, score_ceiling_raw=1.0,
+            close_cutoff=0.95, near_identical_cutoff=0.99)
+
+    def band_for_cosine(self, raw_cos):
+        return link_calibration.band_for_cosine(raw_cos, self.link_thresholds)
+
+    def display_score(self, raw_cos, clip_low=False):
+        return link_calibration.display_score(raw_cos, self.link_thresholds, clip_low=clip_low)
 
     def resolve(self, spec, graph_ctx=None):
         if graph_ctx is not None and graph_ctx.has_nodes():
@@ -144,17 +163,26 @@ class FakeSimilarity:
         return np.asarray(self.index.embeddings[int(idx)], dtype=np.float32)
 
 
-def place_graph(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
+def place_graph(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS, links=None):
     """Write a synthetic on-screen session graph and return a GraphContext
-    over it — the test-side equivalent of placing songs in the UI."""
+    over it — the test-side equivalent of placing songs in the UI.
+
+    ``links`` (optional) mirrors ui/atlas.py's persisted qq-edge shape:
+    ``[{"source": id, "target": id, "score": 0-100, "value": raw_cosine,
+    "kind": "qq"}, ...]``. Left unset, the graph carries zero persisted
+    edges — exactly the "collapsed" shape that made connections/neighbors
+    indistinguishable before GraphContext learned to read links at all.
+    """
     vecs = {n["id"]: np.asarray(n["vec"], dtype=np.float32) for n in nodes}
     stored = [{k: v for k, v in n.items() if k != "vec"} for n in nodes]
     graph_path = tmp_path / "graph.json"
-    graph_path.write_text(json.dumps({"nodes": stored, "links": [], "groups": groups}))
+    graph_path.write_text(json.dumps(
+        {"nodes": stored, "links": links or [], "groups": groups}))
     return GraphContext(graph_path=str(graph_path), vec_reader=vecs.get)
 
 
-def write_session_on_disk(session_root, session_id, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
+def write_session_on_disk(session_root, session_id, nodes=GRAPH_NODES, groups=GRAPH_GROUPS,
+                          links=None):
     """Place a map the way the UI does: ui/session/<sid>/graph.json plus an
     embed_cache.sqlite carrying each node's vector. This exercises the REAL
     production path (session_id -> disk -> GraphContext), not an injected path.
@@ -166,7 +194,7 @@ def write_session_on_disk(session_root, session_id, nodes=GRAPH_NODES, groups=GR
     sdir.mkdir(parents=True, exist_ok=True)
     stored = [{k: v for k, v in n.items() if k != "vec"} for n in nodes]
     (sdir / "graph.json").write_text(
-        json.dumps({"nodes": stored, "links": [], "groups": groups}))
+        json.dumps({"nodes": stored, "links": links or [], "groups": groups}))
 
     con = sqlite3.connect(str(sdir / "embed_cache.sqlite"))
     try:
@@ -185,8 +213,8 @@ def write_session_on_disk(session_root, session_id, nodes=GRAPH_NODES, groups=GR
     return sdir
 
 
-def make_tools(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS):
-    gc = place_graph(tmp_path, nodes=nodes, groups=groups)
+def make_tools(tmp_path, nodes=GRAPH_NODES, groups=GRAPH_GROUPS, links=None):
+    gc = place_graph(tmp_path, nodes=nodes, groups=groups, links=links)
     return MentorGraphTools(FakeSimilarity(), graph_ctx=gc)
 
 

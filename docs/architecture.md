@@ -59,14 +59,17 @@ CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
 |---|---|
 | `sources.py` | Track sources under one item contract (`fma_source`, `local_source`, `mpd_source`) |
 | `build.py` | `build_corpus` — embed (checkpointed/resumable) → dedupe → fit `SongIndex` + Leiden → per-cluster profiles → freeze bundle |
-| `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp) |
-| `place.py` | Placement regime — `place`, `embed_query`, playlist-fit / `rank_playlists`; returns `tags` from the tag probe when present |
+| `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp); lazily loads the MERIT-aggregate sidecar via `.merit_index`/`.merit_factors`/`.merit_calibration` when present |
+| `place.py` | Placement regime — `place`, `embed_query`/`embed_query_dual`, playlist-fit / `rank_playlists`; `place()` routes to the MERIT-aggregate index when `merit_vec=` is given and the bundle has one, else falls back to the legacy MERT index |
+| `merit_index.py` | Builds the MERIT-aggregate `SongIndex` sidecar (`index_merit_agg.npy/.json`) + per-factor cosine sidecars (`factor_mel/rhy/tim.npy`) + its own calibration (`link_calibration_merit.json`) from a bundle's `merit_backbone.npy` — additive, never touches the MERT index. See [similarity.md](similarity.md)'s "MERIT-aggregate index" section |
 | `labels.py` | Playlist-name cluster labels — post-processing over a built bundle ([projects/PLAYLIST_LABELS_BUILD_PLAN.md](projects/PLAYLIST_LABELS_BUILD_PLAN.md)) |
 | `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; see [tagging.md](tagging.md)) |
 | `__main__.py` | `build` / `place` / `label` CLI |
 
 Bundles are written to `models/corpus_<name>/` (primary:
-`corpus_corpus_mpd_100k`). Tests: `tests/test_corpus_{build,bundle,place,labels,tagging}.py`.
+`corpus_mpd_100k_merit`, the first bundle built with
+`--capture-merit-backbone` and a MERIT-aggregate sidecar). Tests:
+`tests/test_corpus_{build,bundle,place,labels,tagging,merit_index}.py`.
 
 ## Top-level scripts & `ui/`
 

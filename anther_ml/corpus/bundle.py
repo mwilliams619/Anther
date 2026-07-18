@@ -62,6 +62,9 @@ class ReferenceCorpus:
         self.dir: Path | None = None  # set by load(); tag artifacts live there
         self._tag_probe = _UNSET
         self._track_tags = _UNSET
+        self._merit_index = _UNSET
+        self._merit_factors = _UNSET
+        self._merit_calibration = _UNSET
 
     # -- convenience views (single source of truth stays in the parts) --------
 
@@ -165,6 +168,48 @@ class ReferenceCorpus:
                 with open(self.dir / "track_tags.json") as f:
                     self._track_tags = json.load(f)
         return self._track_tags
+
+    # -- optional MERIT-aggregate sidecar (additive; see merit_index.py) ------
+
+    @property
+    def merit_index(self):
+        """The bundle's 384-d MERIT-aggregate ``SongIndex`` (mel+rhy+tim
+        concat), or ``None`` if this bundle hasn't been run through
+        ``anther_ml.corpus.merit_index.build_merit_aggregate_index`` yet."""
+        if self._merit_index is _UNSET:
+            self._merit_index = None
+            if self.dir is not None:
+                from .merit_index import load_merit_aggregate_index
+
+                self._merit_index = load_merit_aggregate_index(self.dir)
+        return self._merit_index
+
+    @property
+    def merit_factors(self) -> dict | None:
+        """``{"mel": (N,128), "rhy": (N,128), "tim": (N,128)}`` unit vectors,
+        metadata-row-aligned, or ``None`` if not built yet."""
+        if self._merit_factors is _UNSET:
+            self._merit_factors = None
+            if self.dir is not None:
+                from .merit_index import load_factor_vectors
+
+                self._merit_factors = load_factor_vectors(self.dir)
+        return self._merit_factors
+
+    @property
+    def merit_calibration(self):
+        """MERIT-aggregate ``LinkThresholds`` sidecar (link_calibration_merit.json),
+        or ``None`` if not calibrated yet — caller falls back to calibrating
+        in-process off ``merit_index``."""
+        if self._merit_calibration is _UNSET:
+            self._merit_calibration = None
+            if self.dir is not None:
+                from ..calibration import CALIBRATION_FILENAME_MERIT, load_calibration
+
+                self._merit_calibration = load_calibration(
+                    self.dir, filename=CALIBRATION_FILENAME_MERIT
+                )
+        return self._merit_calibration
 
     # -- lookups ---------------------------------------------------------------
 

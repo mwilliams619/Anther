@@ -38,7 +38,7 @@ python ui/app.py   # port 5000
 | `GET /api/graph` | Current session graph (nodes/links/groups); `ready: false` during warm-up |
 | `POST /api/graph/clear` | Wipe the map — nodes, links, groups (embed cache kept) |
 | `DELETE /api/node/<id>` | Remove one placed song + its now-orphaned corpus neighbors |
-| `GET /api/song/<id>` | Song detail (cluster, tags, similar songs) |
+| `GET /api/song/<id>` | Song detail (cluster, tags, similar songs — see "Similarity scoring" below for the aggregate/breakdown split) |
 | `POST /api/upload` | Upload a personal track for placement |
 
 ## Runtime facts worth knowing
@@ -77,6 +77,35 @@ python ui/app.py   # port 5000
   server-side (`atlas.recommend`'s `splice=True` default); the frontend just
   mirrors that into the local d3 model as `kind: 'corpus'` nodes and lists
   them for click-to-zoom.
+
+## Similarity scoring — aggregate score + expandable breakdown
+
+Map edges, corpus-wide search, and `/api/song/<id>`'s ranking are all driven by
+the MERIT-aggregate `SongIndex` (see [docs/similarity.md](similarity.md)),
+not the plain MERT-1024 index — a link on the map means "high melody+rhythm+
+timbre agreement," not just "nearby in one opaque embedding."
+
+- **Connection rows default to one number.** Every similar-song row in the
+  detail panel (`similarRowHtml` in `app.js`) shows a single 0–100 aggregate
+  similarity score, calibrated per-corpus via `link_calibration_merit.json`
+  (see `_display_score` in `atlas.py`). This is deliberate: most of the time
+  a user just wants to know "how similar," not "similar along which axis."
+- **Expand for the "why."** When the corpus carries a MERIT-aggregate index,
+  `song_detail()` also returns a `breakdown: {melody, rhythm, timbre,
+  aggregate}` dict per row (`_breakdown_scores`/`_merit_breakdown` in
+  `atlas.py` — each factor is its own 128-d cosine, mapped through the same
+  calibrated display scale but *without* the map's score floor, so a low
+  factor score still reads honestly). The row renders a caret button
+  (`.btn-expand`) that toggles a hidden `.breakdown-panel` showing three
+  labeled bars — melody, rhythm, timbre — so a user can see *why* two songs
+  matched (e.g. "same rhythm, different timbre") instead of just a number.
+  Rows without breakdown data (older MERT-only bundles) render the plain
+  score with no expand affordance — the UI degrades gracefully rather than
+  showing a dead button.
+- **Corpora built before this integration** (no `index_merit_agg.npy`) fall
+  back to the legacy MERT-1024 scoring path automatically — `atlas.py` checks
+  `corpus.merit_index is not None` before routing to MERIT space, so nothing
+  breaks on an old bundle; it just won't have per-factor breakdowns.
 
 ## Mentor chat
 

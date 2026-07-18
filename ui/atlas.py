@@ -27,16 +27,26 @@ import numpy as np
 import requests
 
 from anther_ml import mpd_sql
+from anther_ml import merit as merit_mod
+from anther_ml import calibration as link_calibration
 from anther_ml.corpus.bundle import ReferenceCorpus
-from anther_ml.corpus.place import embed_query, place, recommend_from_seeds
+from anther_ml.corpus.place import embed_query, embed_query_dual, place, recommend_from_seeds
+from anther_ml.corpus.popularity import load_popularity_by_track_id, popularity_percentiles
 from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ratio
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-CORPUS_DIR      = os.environ.get("ANTHER_CORPUS", "models/corpus_corpus_mpd_100k")
+CORPUS_DIR      = os.environ.get("ANTHER_CORPUS", "models/corpus_mpd_100k_merit_ext_billboard")
 MPD_DB          = os.environ.get(
     "ANTHER_MPD_DB",
     str(Path(__file__).parent.parent / "data" / "mpd_dump" / "spotifydbdumpshare.sqlite"),
+)
+POPULARITY_PATH = os.environ.get(
+    "ANTHER_POPULARITY", "data/billboard/popularity_by_track_id.json"
+)
+POPULARITY_BETA = float(os.environ.get("ANTHER_POPULARITY_BETA", "0.15"))
+ARTIST_CLUSTERING_DIR = os.environ.get(
+    "ANTHER_ARTIST_CLUSTERING", "data/artist_clustering"
 )
 MPD_PREP_HINT   = ("full-MPD playlist data unavailable — run: "
                    "python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui")
@@ -52,8 +62,22 @@ STRONG_SCORE    = 0.6     # _ratio threshold for a "strong" corpus match
 # than QUERY_LINK_PCTL % of random corpus pairs — the same null-distribution
 # framing the corpus placement uses. The concrete cosine cutoff is calibrated
 # from the corpus once at load (see _calibrate_qq_threshold).
-QUERY_LINK_PCTL = float(os.environ.get("ANTHER_QQ_PCTL", "95"))
-_qq_threshold   = 0.981   # replaced at load() with the corpus-calibrated value
+QUERY_LINK_PCTL = link_calibration.QUERY_LINK_PCTL
+_qq_threshold   = link_calibration.DEFAULT_QQ_THRESHOLD  # replaced at load()
+# Full calibrated LinkThresholds (qq/close/near-identical cutoffs + ceiling) —
+# the single source of truth; _qq_threshold/_score_ceiling_raw below are kept
+# as separate globals only because ~10 call sites already reference them by
+# name. Also handed to mentor/anther_service.py via the link_calibration.json
+# sidecar (see _calibrate_qq_threshold) so both processes band cosines the
+# same way.
+_link_thresholds = link_calibration.LinkThresholds.defaults()
+# MERIT-aggregate counterpart of _link_thresholds above — calibrated from the
+# bundle's link_calibration_merit.json sidecar (see merit_index.py) when the
+# corpus carries a MERIT-aggregate index, else left None. None is the signal
+# every MERIT-space call site falls back to the MERT-space path (see
+# _display_score/_merge_fragment) — this is how a bundle built without
+# --capture-merit-backbone keeps working unmodified.
+_merit_link_thresholds: link_calibration.LinkThresholds | None = None
 
 # ── human-readable similarity score ─────────────────────────────────────────
 # Raw cosine is meaningless to a non-technical user (everything sits at 0.96-
@@ -74,8 +98,8 @@ _qq_threshold   = 0.981   # replaced at load() with the corpus-calibrated value
 #     the bottom.
 # Both anchors are set once in _calibrate_qq_threshold(); _display_score() below
 # does the linear map.
-SCORE_FLOOR_DISPLAY = 55.0
-_score_ceiling_raw   = 0.994   # replaced at load() with the corpus-calibrated value
+SCORE_FLOOR_DISPLAY = link_calibration.SCORE_FLOOR_DISPLAY
+_score_ceiling_raw   = link_calibration.DEFAULT_SCORE_CEILING_RAW  # replaced at load()
 
 SESSION_DIR          = Path(__file__).parent / "session"
 DEFAULT_SESSION_ID   = "default"   # single-user / no-cookie fallback
@@ -90,6 +114,16 @@ _profile_by_cluster: dict = {}   # cluster_id → profile dict
 _playlist_index: dict = {}   # pid -> {"pid","name","name_norm","n_tracks","indices":[int]}
 _playlist_rows: list = []    # _playlist_index values sorted by -n_tracks (search scans)
 _custom_playlist_index: dict = {}  # pid -> {pid, name, name_norm, description, tracks, n_tracks}
+_popularity_pct: dict = {}  # track_id -> popularity percentile in [0, 1], empty if sidecar missing
+
+# Artist clustering mode (Phase 2) — None until load() is called
+_artist_meta: list = []           # list of {artist, n_tracks, sources, sample_track}
+_artist_embeddings: np.ndarray = None  # shape (n_artists, 1024)
+_artist_labels: np.ndarray = None     # shape (n_artists,) — Leiden cluster IDs
+_artist_embedding_2d: np.ndarray = None  # shape (n_artists, 2) — UMAP projection
+_artist_id_map: dict = {}         # artist name -> index in _artist_meta (for search)
+_artist_leiden: dict = None       # loaded Leiden pickle: {labels, scaler, pca, ...}
+
 _corpus_lock = threading.Lock()
 
 _model = _processor = _device = None
@@ -127,7 +161,8 @@ class _SessionState:
         self.uploads_dir = self.dir / "uploads"
         self.graph = {"nodes": {}, "links": []}   # nodes keyed by id; links is a list
         self.link_keys: set = set()                # (source, target) dedupe
-        self.query_vecs: dict = {}                 # placed-song id → index-space unit vec
+        self.query_vecs: dict = {}                 # placed-song id → MERT index-space unit vec
+        self.merit_vecs: dict = {}                 # placed-song id → MERIT-aggregate index-space unit vec
         self.groups: dict = {}                     # gid → {"name", "kind"}
         self.lock = threading.Lock()
         self._loaded = False
@@ -221,7 +256,7 @@ def get_session() -> _SessionState:
 def load() -> ReferenceCorpus:
     """Load the frozen corpus once (idempotent, thread-safe)."""
     global _corpus, _id_to_idx, _id_to_cluster, _playlist_index, _playlist_rows, _profile_by_cluster
-    global _custom_playlist_index
+    global _custom_playlist_index, _popularity_pct
     with _corpus_lock:
         if _corpus is not None:
             return _corpus
@@ -239,6 +274,16 @@ def load() -> ReferenceCorpus:
         _playlist_index, _playlist_rows = _build_playlist_index(corpus)
         _custom_playlist_index = _load_custom_playlists()
         _calibrate_qq_threshold(corpus)
+        pop_path = Path(POPULARITY_PATH)
+        if pop_path.exists():
+            by_id = load_popularity_by_track_id(pop_path)
+            _popularity_pct = popularity_percentiles(by_id)
+            print(f"[atlas] loaded popularity sidecar: {len(_popularity_pct)} tracks -> percentiles")
+        else:
+            _popularity_pct = {}
+            print(f"[atlas] no popularity sidecar at {pop_path} — reranking disabled")
+        # Load artist clustering data (Phase 2) if available
+        _load_artist_clustering()
         # Per-session graphs are loaded lazily on first access (see
         # _SessionState.ensure_loaded); nothing to load here.
         return _corpus
@@ -294,28 +339,145 @@ def _load_custom_playlists() -> dict:
     return index
 
 
+def persist_new_artist(artist_name: str) -> int:
+    """Persist a new user-created artist to disk.
+    
+    Appends to artist_meta.json with default metadata (1 track, user_upload source).
+    Returns the new artist_id.
+    
+    Called when a user uploads a track and assigns it to a new artist.
+    """
+    global _artist_meta, _artist_id_map, _artist_embeddings, _artist_labels
+    
+    if not _artist_meta:
+        return None
+    
+    # Check if already exists (fuzzy match)
+    name_norm = _norm(artist_name)
+    if name_norm in _artist_id_map:
+        return _artist_id_map[name_norm]
+    
+    # Create new artist entry
+    new_id = len(_artist_meta)
+    new_artist = {
+        'artist': artist_name,
+        'n_tracks': 1,
+        'sources': ['user_upload'],
+        'sample_track': '',
+    }
+    
+    # Append to metadata list
+    _artist_meta.append(new_artist)
+    _artist_id_map[name_norm] = new_id
+    
+    # Save to disk
+    meta_path = Path(ARTIST_CLUSTERING_DIR) / 'artist_meta.json'
+    try:
+        with open(meta_path, 'w') as f:
+            json.dump(_artist_meta, f, indent=2)
+        print(f'[atlas] persisted new artist {new_id}: {artist_name}')
+    except Exception as e:
+        print(f'[atlas] WARNING: failed to persist artist {artist_name}: {e}')
+    
+    # Extend embedding arrays (with placeholder zero vectors for now)
+    if _artist_embeddings is not None:
+        new_emb = np.zeros((1, _artist_embeddings.shape[1]), dtype=np.float32)
+        _artist_embeddings = np.vstack([_artist_embeddings, new_emb])
+    
+    if _artist_labels is not None:
+        _artist_labels = np.append(_artist_labels, 0)  # assign to cluster 0 by default
+    
+    return new_id
+
+
+def _load_artist_clustering() -> None:
+    """Load artist clustering data (embeddings, labels, 2D coords) from disk.
+    Populates module-level _artist_* globals. Called once at corpus load time."""
+    global _artist_meta, _artist_embeddings, _artist_labels, _artist_embedding_2d
+    global _artist_id_map, _artist_leiden
+    
+    art_dir = Path(ARTIST_CLUSTERING_DIR)
+    if not art_dir.exists():
+        print(f"[atlas] no artist clustering dir at {art_dir} — artist mode disabled")
+        return
+    
+    try:
+        # Load metadata (list of {artist, n_tracks, sources, sample_track})
+        meta_path = art_dir / "artist_meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                _artist_meta = json.load(f)
+            # Build artist name → index map for fast search
+            for i, entry in enumerate(_artist_meta):
+                _artist_id_map[_norm(entry.get("artist", ""))] = i
+        
+        # Load embeddings (shape n_artists × 1024)
+        emb_path = art_dir / "artist_embeddings.npy"
+        if emb_path.exists():
+            _artist_embeddings = np.load(emb_path, allow_pickle=False)
+        
+        # Load Leiden cluster labels (shape n_artists,)
+        labels_path = art_dir / "artist_labels.npy"
+        if labels_path.exists():
+            _artist_labels = np.load(labels_path, allow_pickle=False)
+        
+        # Load 2D projection for visualization (shape n_artists × 2)
+        coord_2d_path = art_dir / "artist_embedding_2d.npy"
+        if coord_2d_path.exists():
+            _artist_embedding_2d = np.load(coord_2d_path, allow_pickle=False)
+        
+        # Load Leiden clustering object (for potential future use)
+        leiden_path = art_dir / "artist_leiden.pkl"
+        if leiden_path.exists():
+            import pickle
+            with open(leiden_path, "rb") as f:
+                _artist_leiden = pickle.load(f)
+        
+        if _artist_meta and _artist_embeddings is not None:
+            print(f"[atlas] loaded artist clustering: {len(_artist_meta)} artists, "
+                  f"embeddings shape {_artist_embeddings.shape}, "
+                  f"clusters {len(np.unique(_artist_labels)) if _artist_labels is not None else 0}")
+        else:
+            print(f"[atlas] artist clustering data incomplete (meta: {len(_artist_meta)}, "
+                  f"embeddings: {_artist_embeddings is not None})")
+    except Exception as e:
+        print(f"[atlas] error loading artist clustering: {e}")
+
+
 def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
     """Set the query↔query cosine cutoff to the QUERY_LINK_PCTL percentile of
     random corpus-pair cosines (index space) — so an edge means "more similar
     than that fraction of released music," not an arbitrary absolute cosine.
 
-    Reuses the same random-pair sample to also set _score_ceiling_raw (see
-    _display_score) — one 200k-pair draw, two calibrated constants."""
-    global _qq_threshold, _score_ceiling_raw
+    Delegates the actual draw to anther_ml.calibration (shared with the
+    mentor process — see docs/mentor-graph-aware.md) and reuses the same
+    200k-pair sample for _score_ceiling_raw (see _display_score) plus the
+    close/near-identical band cutoffs. Also persists the result as a sidecar
+    JSON next to the corpus bundle so the mentor process doesn't have to
+    redo this 200k-pair draw itself."""
+    global _qq_threshold, _score_ceiling_raw, _link_thresholds, _merit_link_thresholds
     E = corpus.index.embeddings                       # standardized + L2-normalized
-    n = E.shape[0]
-    if n < 2:
+    if E.shape[0] < 2:
         return
-    rng = np.random.default_rng(0)
-    a = rng.integers(0, n, n_pairs)
-    b = rng.integers(0, n, n_pairs)
-    mask = a != b
-    cos = np.einsum("ij,ij->i", E[a[mask]], E[b[mask]])
-    _qq_threshold = float(np.percentile(cos, QUERY_LINK_PCTL))
-    _score_ceiling_raw = float(cos.max())
+    _link_thresholds = link_calibration.calibrate_link_thresholds(
+        corpus.index, n_pairs=n_pairs, pctl=QUERY_LINK_PCTL)
+    _qq_threshold = _link_thresholds.qq_threshold
+    _score_ceiling_raw = _link_thresholds.score_ceiling_raw
+    try:
+        link_calibration.save_calibration(CORPUS_DIR, _link_thresholds)
+    except OSError:
+        pass  # sidecar is a nice-to-have; mentor falls back to its own draw
+
+    # MERIT-aggregate thresholds are computed once at build time (see
+    # merit_index.build_merit_aggregate_index) and persisted alongside the
+    # bundle — reload them here rather than recalibrating, so app startup
+    # doesn't pay another 200k-pair draw. None (no MERIT index on this
+    # bundle) leaves every MERIT call site to fall back to MERT.
+    _merit_link_thresholds = corpus.merit_calibration
 
 
-def _display_score(raw_cos: float, clip_low: bool = True) -> float:
+def _display_score(raw_cos: float, clip_low: bool = True,
+                    thresholds=None) -> float:
     """Map a raw cosine to the 0-100 human-readable similarity score.
 
     _qq_threshold -> SCORE_FLOOR_DISPLAY, _score_ceiling_raw -> 100, linear
@@ -323,12 +485,13 @@ def _display_score(raw_cos: float, clip_low: bool = True) -> float:
     _qq_threshold) floors the result at SCORE_FLOOR_DISPLAY; `clip_low=False`
     (the corpus-wide "show more" search, which can surface pairs that don't
     clear the link threshold) lets the score read honestly below the floor,
-    only clipping at 0. Both cases clip at 100 on top."""
-    span = _score_ceiling_raw - _qq_threshold
-    frac = (raw_cos - _qq_threshold) / span if span > 0 else 1.0
-    score = SCORE_FLOOR_DISPLAY + (100.0 - SCORE_FLOOR_DISPLAY) * frac
-    lo = SCORE_FLOOR_DISPLAY if clip_low else 0.0
-    return float(np.clip(score, lo, 100.0))
+    only clipping at 0. Both cases clip at 100 on top.
+
+    `thresholds` overrides the MERT-space `_link_thresholds` global — pass
+    `_merit_link_thresholds` for MERIT-aggregate-space scores."""
+    return link_calibration.display_score(
+        raw_cos, thresholds if thresholds is not None else _link_thresholds,
+        clip_low=clip_low)
 
 
 def warm() -> None:
@@ -348,6 +511,84 @@ def _mert():
             from anther_ml.embedding import load_mert
             _model, _processor, _device = load_mert()
     return _model, _processor, _device
+
+
+_merit_heads = None
+_merit_heads_lock = threading.Lock()
+
+
+def _heads():
+    """Lazily load the 3 MERIT projection heads once. Raises FileNotFoundError
+    (propagated to callers, who treat it the same as "no MERIT support on this
+    machine" — see _merit_query_vec) if models/merit_heads isn't populated."""
+    global _merit_heads
+    with _merit_heads_lock:
+        if _merit_heads is None:
+            _merit_heads = merit_mod.load_heads(merit_mod.DEFAULT_HEADS_DIR)
+    return _merit_heads
+
+
+def _merit_query_vec(backbone) -> np.ndarray | None:
+    """Raw 5120-d MERIT backbone -> 384-d concatenated-factor query vector,
+    or None if there's no backbone (track cached before MERIT support) or the
+    projection heads aren't available locally."""
+    if backbone is None:
+        return None
+    try:
+        heads = _heads()
+    except FileNotFoundError:
+        return None
+    return merit_mod.merit_query_vector(backbone, heads)
+
+
+def _merit_breakdown(agg_a, agg_b) -> dict | None:
+    """Per-factor melody/rhythm/timbre cosines from two 384-d MERIT-aggregate
+    vectors (each a concat of 3 *unit* factor sub-vectors, in
+    ``merit_mod.FACTORS`` order, then globally L2-renormalized by
+    ``SongIndex``/``transform_query`` — a uniform 1/sqrt(3) rescale that
+    cancels out of a cosine between two same-form vectors). Splitting the
+    concat back into its 3 equal segments and taking each segment's own
+    cosine recovers the exact same per-factor similarity used at build time,
+    independent of that global rescale. Returns None if either vector is
+    missing or the corpus doesn't carry a MERIT index (dim can't be split).
+
+    Also returns ``aggregate`` = mean of the 3 factor cosines, which is
+    mathematically identical to the whole-vector cosine of ``agg_a``/``agg_b``
+    (equal-weight concat of unit vectors) — recomputed here explicitly so the
+    breakdown is internally consistent even if a caller passes vectors that
+    aren't already unit-norm.
+    """
+    if agg_a is None or agg_b is None:
+        return None
+    a = np.asarray(agg_a, dtype=np.float32)
+    b = np.asarray(agg_b, dtype=np.float32)
+    n = len(merit_mod.FACTORS)
+    if a.shape[0] % n != 0 or a.shape != b.shape:
+        return None
+    d = a.shape[0] // n
+    out = {}
+    cosines = []
+    for i, f in enumerate(merit_mod.FACTORS):
+        sa, sb = a[i * d:(i + 1) * d], b[i * d:(i + 1) * d]
+        na, nb = np.linalg.norm(sa), np.linalg.norm(sb)
+        c = float(np.dot(sa, sb) / (na * nb)) if na > 0 and nb > 0 else 0.0
+        out[merit_mod.FACTOR_NAMES[f]] = c
+        cosines.append(c)
+    out["aggregate"] = sum(cosines) / len(cosines)
+    return out
+
+
+def _breakdown_scores(agg_a, agg_b) -> dict | None:
+    """``_merit_breakdown`` mapped through ``_display_score`` (MERIT
+    calibration, clip_low=False so a factor score reads honestly even when
+    the aggregate is below the map's link threshold) -> 0-100 ints for the
+    UI's expandable per-factor rows, or None if unavailable."""
+    raw = _merit_breakdown(agg_a, agg_b)
+    if raw is None:
+        return None
+    return {k: round(_display_score(v, clip_low=False,
+                                     thresholds=_merit_link_thresholds), 1)
+            for k, v in raw.items()}
 
 
 # ── Full-MPD playlist DB ─────────────────────────────────────────────────────
@@ -372,6 +613,22 @@ def mpd_ready() -> bool:
 _cache_lock = threading.Lock()
 
 
+def _ensure_cache_columns(con: sqlite3.Connection) -> None:
+    """Migrate an older embed_cache (MERT-only) to also carry the raw MERIT
+    backbone, so a track cached before the MERIT integration can still be
+    upgraded to a merit_vec on next placement without re-downloading audio."""
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS embed_cache ("
+        "track_id TEXT PRIMARY KEY, vec BLOB NOT NULL, dim INTEGER NOT NULL, "
+        "name TEXT, artist TEXT, created REAL)"
+    )
+    cols = {row[1] for row in con.execute("PRAGMA table_info(embed_cache)")}
+    if "backbone" not in cols:
+        con.execute("ALTER TABLE embed_cache ADD COLUMN backbone BLOB")
+    if "backbone_dim" not in cols:
+        con.execute("ALTER TABLE embed_cache ADD COLUMN backbone_dim INTEGER")
+
+
 def cached_vec(track_id: str) -> np.ndarray | None:
     cache_path = get_session().embed_cache_path
     if not track_id or not cache_path.exists():
@@ -391,23 +648,47 @@ def cached_vec(track_id: str) -> np.ndarray | None:
     return np.frombuffer(row[0], dtype=np.float32).copy()
 
 
-def cache_vec(track_id: str, vec, name: str = "", artist: str = "") -> None:
+def cached_backbone(track_id: str) -> np.ndarray | None:
+    """Raw 5120-d MERIT backbone for a previously-cached track, or None if
+    the track isn't cached or was cached before MERIT support (no backbone
+    column populated)."""
+    cache_path = get_session().embed_cache_path
+    if not track_id or not cache_path.exists():
+        return None
+    try:
+        con = sqlite3.connect(str(cache_path))
+        try:
+            row = con.execute(
+                "SELECT backbone FROM embed_cache WHERE track_id = ?", (track_id,)
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    if row is None or row[0] is None:
+        return None
+    return np.frombuffer(row[0], dtype=np.float32).copy()
+
+
+def cache_vec(track_id: str, vec, name: str = "", artist: str = "",
+              backbone=None) -> None:
     if not track_id:
         return
     v = np.asarray(vec, dtype=np.float32)
+    b = None if backbone is None else np.asarray(backbone, dtype=np.float32)
     st = get_session()
     with _cache_lock:
         st.ensure_dirs()
         con = sqlite3.connect(str(st.embed_cache_path))
         try:
+            _ensure_cache_columns(con)
             con.execute(
-                "CREATE TABLE IF NOT EXISTS embed_cache ("
-                "track_id TEXT PRIMARY KEY, vec BLOB NOT NULL, dim INTEGER NOT NULL, "
-                "name TEXT, artist TEXT, created REAL)"
-            )
-            con.execute(
-                "INSERT OR REPLACE INTO embed_cache VALUES (?, ?, ?, ?, ?, ?)",
-                (track_id, v.tobytes(), int(v.size), name, artist, time.time()),
+                "INSERT OR REPLACE INTO embed_cache "
+                "(track_id, vec, dim, name, artist, created, backbone, backbone_dim) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (track_id, v.tobytes(), int(v.size), name, artist, time.time(),
+                 None if b is None else b.tobytes(),
+                 None if b is None else int(b.size)),
             )
             con.commit()
         finally:
@@ -625,14 +906,27 @@ def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
         "source":     "corpus",
         **(extra or {}),
     }
-    return _merge_fragment(node, corpus.index.transform_query(raw_vec))
+    # merit_index.embeddings is row-aligned to corpus.metadata (both derive
+    # from the same index.json), so idx indexes it directly — no
+    # transform_query() needed, unlike the raw-MERT-vec case below.
+    merit_qvec = (corpus.merit_index.embeddings[idx]
+                  if corpus.merit_index is not None else None)
+    return _merge_fragment(node, corpus.index.transform_query(raw_vec), merit_qvec)
 
 
 def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
-                     source: str, extra: dict | None = None) -> dict:
-    """Place an out-of-corpus track from an already-computed raw MERT vector."""
+                     source: str, extra: dict | None = None, merit_vec=None) -> dict:
+    """Place an out-of-corpus track from an already-computed raw MERT vector.
+
+    ``merit_vec`` is the raw 384-d MERIT-aggregate query vector (concatenated
+    factor projections, from ``_merit_query_vec``) if available — passed
+    through to ``place()`` so ranking/cluster-neighbor selection uses MERIT
+    space when the corpus supports it, and to ``_merge_fragment`` for edge
+    scoring.
+    """
     corpus = load()
-    res = place(corpus, raw_vec, top_k=TOP_K)
+    res = place(corpus, raw_vec, top_k=TOP_K, merit_vec=merit_vec,
+                popularity_pct=_popularity_pct or None, popularity_beta=POPULARITY_BETA)
     node = {
         "id":         track_id,
         "name":       name,
@@ -647,7 +941,9 @@ def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
         "cluster_label": res["cluster"].get("label", ""),
         **(extra or {}),
     }
-    return _merge_fragment(node, corpus.index.transform_query(raw_vec))
+    merit_qvec = (corpus.merit_index.transform_query(merit_vec)
+                  if merit_vec is not None and corpus.merit_index is not None else None)
+    return _merge_fragment(node, corpus.index.transform_query(raw_vec), merit_qvec)
 
 
 def place_song(result: dict) -> dict:
@@ -674,15 +970,21 @@ def place_song(result: dict) -> dict:
     # skips the download + MERT pass entirely.
     raw = cached_vec(result.get("id"))
     if raw is not None:
+        merit_vec = _merit_query_vec(cached_backbone(result.get("id")))
         return _place_query_vec(result.get("id"), result.get("title", ""),
-                                result.get("artist", ""), raw, source, extra=extra)
+                                result.get("artist", ""), raw, source, extra=extra,
+                                merit_vec=merit_vec)
 
+    backbone = None
     if source == "upload":
         path, cleanup = Path(result["path"]), None
         try:
             with _embed_lock:
                 model, processor, device = _mert()
-                vec = embed_query(path, corpus, model, processor, device)
+                if corpus.merit_index is not None:
+                    vec, backbone = embed_query_dual(path, corpus, model, processor, device)
+                else:
+                    vec = embed_query(path, corpus, model, processor, device)
         finally:
             if cleanup:
                 cleanup()
@@ -691,7 +993,7 @@ def place_song(result: dict) -> dict:
         # Try the provided preview_url, fall back to Deezer name/artist match
         # if the URL is dead. Same logic as playlist_jobs.py worker.
         try:
-            vec, _method = resolve_and_embed({
+            vec, backbone, _method = resolve_and_embed({
                 "id": result.get("id"),
                 "name": result.get("title", ""),
                 "artist": result.get("artist", ""),
@@ -700,19 +1002,24 @@ def place_song(result: dict) -> dict:
         except PlacementSkip as e:
             raise ValueError(f"Could not place song: {e.reason}") from e
 
-    cache_vec(result.get("id"), vec, result.get("title", ""), result.get("artist", ""))
+    cache_vec(result.get("id"), vec, result.get("title", ""), result.get("artist", ""),
+              backbone=backbone)
+    merit_vec = _merit_query_vec(backbone)
     return _place_query_vec(result.get("id"), result.get("title", ""),
-                            result.get("artist", ""), vec, source, extra=extra)
+                            result.get("artist", ""), vec, source, extra=extra,
+                            merit_vec=merit_vec)
 
 
-def resolve_and_embed(track: dict) -> tuple[np.ndarray, str]:
+def resolve_and_embed(track: dict) -> tuple[np.ndarray, np.ndarray | None, str]:
     """
-    Audio for one out-of-corpus track → raw MERT vector.
+    Audio for one out-of-corpus track → raw MERT vector (+ raw MERIT backbone
+    when the corpus supports it).
 
     ``track`` is {"id", "name", "artist", "preview_url"}. Tries the stored
     Spotify preview URL first (many p.scdn.co links are dead — Spotify
     deprecated previews in late 2024), then a Deezer name/artist match.
-    Returns (raw_vec, method); raises PlacementSkip when no audio resolves.
+    Returns (raw_vec, backbone_or_None, method); raises PlacementSkip when no
+    audio resolves.
     """
     corpus = load()
     path = cleanup = None
@@ -738,25 +1045,32 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, str]:
         except Exception as e:
             raise PlacementSkip(f"download_failed:{e}")
 
+    backbone = None
     try:
         with _embed_lock:
             model, processor, device = _mert()
-            vec = embed_query(path, corpus, model, processor, device)
+            if corpus.merit_index is not None:
+                vec, backbone = embed_query_dual(path, corpus, model, processor, device)
+            else:
+                vec = embed_query(path, corpus, model, processor, device)
     except Exception as e:
         raise PlacementSkip(f"embed_failed:{e}")
     finally:
         if cleanup:
             cleanup()
-    cache_vec(track["id"], vec, track.get("name", ""), track.get("artist", ""))
-    return vec, method
+    cache_vec(track["id"], vec, track.get("name", ""), track.get("artist", ""),
+              backbone=backbone)
+    return vec, backbone, method
 
 
-def place_external_track(track: dict, raw_vec, playlist_pid=None) -> dict:
+def place_external_track(track: dict, raw_vec, playlist_pid=None, backbone=None) -> dict:
     """Merge one embedded out-of-corpus track into the graph (worker entry)."""
     extra = {"playlist_pid": playlist_pid} if playlist_pid is not None else None
     source = "deezer" if str(track["id"]).startswith("deezer:") else "mpd"
+    merit_vec = _merit_query_vec(backbone)
     return _place_query_vec(track["id"], track.get("name", ""),
-                            track.get("artist", ""), raw_vec, source, extra=extra)
+                            track.get("artist", ""), raw_vec, source, extra=extra,
+                            merit_vec=merit_vec)
 
 
 def _seed_vec(seed_id: str) -> np.ndarray | None:
@@ -803,7 +1117,8 @@ def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
         raise ValueError("no seed ids resolved to a vector (none cached yet)")
 
     results = recommend_from_seeds(
-        load(), vecs, top_k=top_k, exclude_ids=set(used), method=method
+        load(), vecs, top_k=top_k, exclude_ids=set(used), method=method,
+        popularity_pct=_popularity_pct or None, popularity_beta=POPULARITY_BETA,
     )
     # Recommendations aren't guaranteed map edges (seeds' centroid/topk score is
     # a different quantity than a pairwise qq cosine) so use the same open
@@ -848,18 +1163,27 @@ def _download_preview(result: dict):
     return _download_url(url)
 
 
-def _merge_fragment(node: dict, qvec=None) -> dict:
+def _merge_fragment(node: dict, qvec=None, merit_qvec=None) -> dict:
     """Upsert the query node into the graph.
 
     Placed songs are *not* fanned out to their nearest corpus neighbors
     (that flooded the map with grey context nodes and made it too dense to
     read). Instead this wires the placed song directly to every *other*
-    placed song whose index-space cosine clears the corpus-calibrated
-    ``_qq_threshold`` — so similar songs you add pull together in the force
-    sim regardless of which Leiden cluster each landed in.
+    placed song whose cosine clears the corpus-calibrated query-link
+    threshold — so similar songs you add pull together in the force sim
+    regardless of which Leiden cluster each landed in.
+
+    When ``merit_qvec`` is given and the corpus carries a MERIT-aggregate
+    index (``_merit_link_thresholds is not None``), edges are scored in
+    MERIT-aggregate space instead of MERT space — this is the "aggregate
+    replaces MERT for edges + ranking" path. ``qvec`` (MERT space) is still
+    stored on the session so MERT-only consumers (``_positioning``,
+    ``_inherit_tags``, ``recommend``) keep working unmodified, but it no
+    longer drives which edges get drawn once MERIT is available.
     """
     st = get_session()
     added_nodes, added_links = [], []
+    use_merit = merit_qvec is not None and _merit_link_thresholds is not None
     with st.lock:
         existing = st.graph["nodes"].get(node["id"])
         if existing is None:
@@ -876,13 +1200,24 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
 
         # ── query↔query similarity edges (top-QQ_MAX_PER_NODE by score, so a
         # coherent playlist batch can't flood O(m²) links) ──
-        if qvec is not None:
+        if use_merit:
+            threshold = _merit_link_thresholds.qq_threshold
+            space_vecs = st.merit_vecs
+            this_vec = merit_qvec
+            thresholds_for_display = _merit_link_thresholds
+        else:
+            threshold = _qq_threshold
+            space_vecs = st.query_vecs
+            this_vec = qvec
+            thresholds_for_display = None  # → _display_score's MERT default
+
+        if this_vec is not None:
             cands = []
-            for other_id, ovec in st.query_vecs.items():
+            for other_id, ovec in space_vecs.items():
                 if other_id == node["id"]:
                     continue
-                score = float(np.dot(qvec, ovec))
-                if score < _qq_threshold:
+                score = float(np.dot(this_vec, ovec))
+                if score < threshold:
                     continue
                 key = (node["id"], other_id)
                 rkey = (other_id, node["id"])
@@ -897,12 +1232,17 @@ def _merge_fragment(node: dict, qvec=None) -> dict:
                 # it never needs recomputing per-request or per-render.
                 link = {"source": node["id"], "target": other_id,
                         "value": round(score, 3),
-                        "score": round(_display_score(score, clip_low=True), 1),
+                        "score": round(_display_score(
+                            score, clip_low=True, thresholds=thresholds_for_display), 1),
                         "kind": "qq"}
                 st.graph["links"].append(link)
                 st.link_keys.add((node["id"], other_id))
                 added_links.append(link)
+
+        if qvec is not None:
             st.query_vecs[node["id"]] = qvec
+        if merit_qvec is not None:
+            st.merit_vecs[node["id"]] = merit_qvec
 
         _save_graph(st)
     return {"nodes": added_nodes, "links": added_links}
@@ -1303,12 +1643,39 @@ def get_spotify_track_id(song_id: str) -> str | None:
     return tid
 
 
-def _map_neighbors(song_id: str) -> list:
+def _merit_vec_for(song_id: str, corpus=None) -> np.ndarray | None:
+    """The 384-d MERIT-aggregate index-space vector for a placed song — a
+    corpus track's own row (``corpus.merit_index.embeddings[idx]``) or a
+    query node's cached session vector (``st.merit_vecs``), whichever
+    applies. None if the corpus carries no MERIT index, or the vector was
+    never computed for this node (cached before MERIT support, or the
+    projection heads weren't available locally when it was placed)."""
+    corpus = corpus if corpus is not None else load()
+    if corpus.merit_index is None:
+        return None
+    idx = _id_to_idx.get(song_id)
+    if idx is not None:
+        return corpus.merit_index.embeddings[idx]
+    return get_session().merit_vecs.get(song_id)
+
+
+def _map_neighbors(song_id: str, corpus=None) -> list:
     """Songs actually connected to ``song_id`` by a drawn map edge (qq-link),
     using each edge's persisted display score. This is what the click panel
     shows by default — cheap (no corpus search, just an in-memory link scan)
     and guaranteed to match the lines drawn on screen, unlike a fresh
-    nearest-neighbor search which can rank differently than what's linked."""
+    nearest-neighbor search which can rank differently than what's linked.
+
+    Each row also carries ``breakdown`` — the melody/rhythm/timbre/aggregate
+    MERIT scores between ``song_id`` and that neighbor (see
+    ``_breakdown_scores``), or None if MERIT vectors aren't available for
+    this pair (older bundle, or one side was cached pre-MERIT). The link's
+    own ``score`` is the aggregate the edge was actually drawn/ranked on
+    (MERIT-space once ``_merit_link_thresholds`` is set — see
+    ``_merge_fragment``); ``breakdown.aggregate`` is recomputed independently
+    and will usually match it closely but isn't guaranteed byte-identical
+    (the edge score may be inherited from a pre-migration MERT-space link)."""
+    self_merit_vec = _merit_vec_for(song_id, corpus)
     st = get_session()
     with st.lock:
         rows = []
@@ -1326,6 +1693,8 @@ def _map_neighbors(song_id: str) -> list:
                 "name":     on.get("name", ""),
                 "artist":   on.get("artist", ""),
                 "score":    score,
+                "breakdown": _breakdown_scores(
+                    self_merit_vec, _merit_vec_for(other, corpus)),
                 "on_graph": True,
             })
     rows.sort(key=lambda r: -(r["score"] or 0.0))
@@ -1342,9 +1711,17 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
     ``expand=True``, returned separately as ``similar`` with map_neighbors'
     ids excluded (the "show more like this" list). Returns None for unknown
     ids.
+
+    Both ``map_neighbors`` and (when the corpus carries a MERIT-aggregate
+    index) ``similar`` rank/score in MERIT-aggregate space — the same signal
+    driving the map's edges (see ``_merge_fragment``) — and each row carries
+    a ``breakdown`` (melody/rhythm/timbre/aggregate, see ``_breakdown_scores``)
+    for the panel's expandable per-factor view. Falls back to MERT-space
+    ranking with no breakdown on bundles without a MERIT index.
     """
     corpus = load()
     idx = _id_to_idx.get(song_id)
+    has_merit = corpus.merit_index is not None
 
     st = get_session()
     with st.lock:
@@ -1356,7 +1733,8 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
     if idx is None and gnode is None:
         return None
 
-    map_neighbors = _map_neighbors(song_id)
+    self_merit_vec = _merit_vec_for(song_id, corpus)
+    map_neighbors = _map_neighbors(song_id, corpus)
     seen_ids = {song_id} | {r["id"] for r in map_neighbors}
 
     if idx is not None:                                 # corpus track
@@ -1365,13 +1743,19 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
         tags = track_tags[idx].get("tags", []) if track_tags is not None else []
         similar = []
         if expand:
-            rows = corpus.index.query(corpus.embeddings[idx], top_k=top_n + 1 + len(seen_ids))
+            if has_merit and self_merit_vec is not None:
+                rows = corpus.merit_index.query(self_merit_vec, top_k=top_n + 1 + len(seen_ids))
+            else:
+                rows = corpus.index.query(corpus.embeddings[idx], top_k=top_n + 1 + len(seen_ids))
             rows = [r for r in rows if r.get("id") not in seen_ids][:top_n]
             similar = [{
                 "id":       r.get("id"),
                 "name":     r.get("name", ""),
                 "artist":   r.get("artist", ""),
-                "score":    round(_display_score(float(r.get("score", 0.0)), clip_low=False), 1),
+                "score":    round(_display_score(float(r.get("score", 0.0)), clip_low=False,
+                                                  thresholds=_merit_link_thresholds if has_merit else None), 1),
+                "breakdown": _breakdown_scores(
+                    self_merit_vec, _merit_vec_for(r.get("id"), corpus)) if has_merit else None,
                 "on_graph": r.get("id") in node_ids,
             } for r in rows]
         return {
@@ -1395,7 +1779,26 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
     # non-corpus query node (deezer / spotify / upload / mpd)
     similar = []
     if expand:
-        if qvec is not None:
+        if has_merit and self_merit_vec is not None:
+            sims = corpus.merit_index.embeddings @ self_merit_vec
+            order = np.argsort(sims)[::-1]
+            for i in order:
+                i = int(i)
+                nid = corpus.metadata[i].get("id")
+                if nid in seen_ids:
+                    continue
+                similar.append({
+                    "id":       nid,
+                    "name":     corpus.metadata[i].get("name", ""),
+                    "artist":   corpus.metadata[i].get("artist", ""),
+                    "score":    round(_display_score(float(sims[i]), clip_low=False,
+                                                      thresholds=_merit_link_thresholds), 1),
+                    "breakdown": _breakdown_scores(self_merit_vec, corpus.merit_index.embeddings[i]),
+                    "on_graph": nid in node_ids,
+                })
+                if len(similar) >= top_n:
+                    break
+        elif qvec is not None:
             sims = corpus.index.embeddings @ qvec
             order = np.argsort(sims)[::-1]
             for i in order:
@@ -1408,12 +1811,14 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
                     "name":     corpus.metadata[i].get("name", ""),
                     "artist":   corpus.metadata[i].get("artist", ""),
                     "score":    round(_display_score(float(sims[i]), clip_low=False), 1),
+                    "breakdown": None,
                     "on_graph": nid in node_ids,
                 })
                 if len(similar) >= top_n:
                     break
-        # pre-session node with no cached vector: no corpus-wide search
-        # possible — map_neighbors (already computed above) is all we have.
+        # pre-session node with no cached vector in either space: no
+        # corpus-wide search possible — map_neighbors (already computed
+        # above) is all we have.
 
     tags = gnode.get("tags") or []
     if not tags:                                        # placed before tags were persisted
@@ -1571,16 +1976,29 @@ def _load_graph(st: "_SessionState") -> None:
     # Best-effort: rebuild query→query similarity vecs so newly placed songs can
     # cross-link against them — from the corpus for corpus-source songs, from the
     # embed cache for external ones. Uncached external nodes (pre-cache-era
-    # deezer/upload) keep their saved edges only.
+    # deezer/upload) keep their saved edges only. Also rebuild the MERIT-space
+    # vecs (st.merit_vecs) in parallel when the corpus carries a MERIT index —
+    # corpus rows use the row-aligned merit_index.embeddings directly; cached
+    # external tracks need their raw backbone re-projected through the heads.
     st.query_vecs = {}
+    st.merit_vecs = {}
+    has_merit = _corpus.merit_index is not None
     for n in nodes.values():
         if n.get("kind") != "query":
             continue
         idx = _id_to_idx.get(n["id"])
         if idx is not None:
             raw = _corpus.embeddings[idx]
+            merit_qvec = _corpus.merit_index.embeddings[idx] if has_merit else None
         else:
             raw = cached_vec(n["id"])
             if raw is None:
                 continue
+            merit_qvec = None
+            if has_merit:
+                merit_vec = _merit_query_vec(cached_backbone(n["id"]))
+                if merit_vec is not None:
+                    merit_qvec = _corpus.merit_index.transform_query(merit_vec)
         st.query_vecs[n["id"]] = _corpus.index.transform_query(raw)
+        if merit_qvec is not None:
+            st.merit_vecs[n["id"]] = merit_qvec

@@ -1,6 +1,6 @@
 """The mentor's LLM-facing graph tools — music concepts only.
 
-Seven read-only tools over the user's on-screen map (first) and the frozen
+Eight read-only tools over the user's on-screen map (first) and the frozen
 Anther corpus (fallback). Each tool retrieves facts deterministically and
 phrases *why* two things are related from evidence it can prove: shared
 micro-genre tags, cluster (territory) labels, and lean/balance scores.
@@ -9,11 +9,19 @@ the LLM behind it only ever see artists, songs, territories, and traits.
 
     inspect_graph(context)                what is on the map right now
     resolve_anchor(anchor, context)       who/what does a reference mean
-    neighbors(anchor, k, context)         what does this sound like
+    connections(anchor, k, context)       what is this ALREADY drawn to on the map
+    neighbors(anchor, k, context)         what does this sound like (live kNN)
     compare(anchor_a, anchor_b, context)  how do these two relate
     bridge(anchor_a, anchor_b, k, ...)    what sits between these sounds
     explore_cluster(anchor, context)      where to explore next
     explain_node(anchor, context)         why is this node here
+
+``connections`` and ``neighbors`` answer different questions and can
+legitimately disagree: ``connections`` reads the edges the UI already drew
+and persisted at placement time (frozen, ranked by the atlas's own
+calibrated score); ``neighbors`` computes a fresh embedding kNN against
+whatever is on-screen right now. A song's placed connections are not always
+its current nearest neighbours — that's a real fact about the map, not a bug.
 
 Anchor resolution order (the graph UI is the user's memory):
     1. the selected graph node ("me", "this song", or no anchor at all)
@@ -41,12 +49,23 @@ SELF_REFS = {
 INTENTS = {
     "inspect": ("inspect_graph", ()),
     "resolve": ("resolve_anchor", ("anchor",)),
+    "connections": ("connections", ("anchor", "k")),
     "neighbors": ("neighbors", ("anchor", "k")),
     "compare": ("compare", ("anchor_a", "anchor_b")),
     "bridge": ("bridge", ("anchor_a", "anchor_b", "k")),
     "explore": ("explore_cluster", ("anchor",)),
     "explain": ("explain_node", ("anchor",)),
 }
+
+
+# 4-tier similarity bands, applied consistently wherever a tool cites a
+# concrete similarity relationship (connections, neighbors, compare, bridge,
+# explain_node — NOT inspect/resolve/explore, which don't score a pair).
+# The bands themselves are calibrated centrally in anther_ml.calibration and
+# shared with ui/atlas.py's persisted map edges (see mentor-graph-aware.md);
+# this tuple is just the fallback ordering if a similarity backend doesn't
+# expose calibration.
+SIMILARITY_BANDS = ("near-identical", "close", "related", "distant")
 
 
 class MentorGraphTools:
@@ -84,10 +103,12 @@ class MentorGraphTools:
         """What the user's map looks like right now."""
         gc = self.graph_ctx
         if gc is None or not gc.has_nodes():
-            return {"tool": "inspect_graph", "ok": True, "visible_nodes": 0,
+            base = {"tool": "inspect_graph", "ok": True, "visible_nodes": 0,
                     "selected_node": None, "territories": [], "artists": [],
                     "groups": [], "recent_additions": [],
                     "message": "The map is empty — nothing has been placed yet."}
+            return self._envelope(base, intent="inspect", subject=None, scope=None,
+                                   provenance={"source": "graph_session"})
         nodes = gc.nodes
         territories, artists = {}, []
         seen_artists = set()
@@ -102,18 +123,28 @@ class MentorGraphTools:
         groups = [g.get("name", gid) for gid, g in (gc.groups or {}).items()]
         recent = [f"{n.get('artist','')} - {n.get('name','')}".strip(" -")
                   for n in nodes[-5:]]
-        return {
+        territory_rows = sorted(
+            ({"territory": t, "songs": c} for t, c in territories.items()),
+            key=lambda d: -d["songs"])
+        selected = self._selected_summary(context)
+        base = {
             "tool": "inspect_graph",
             "ok": True,
-            "selected_node": self._selected_summary(context),
+            "selected_node": selected,
             "visible_nodes": len(nodes),
-            "territories": sorted(
-                ({"territory": t, "songs": c} for t, c in territories.items()),
-                key=lambda d: -d["songs"]),
+            "territories": territory_rows,
             "artists": artists[:25],
             "groups": groups,
             "recent_additions": recent,
         }
+        subject = None
+        if selected:
+            subject = {"label": f"{selected['artist']} - {selected['name']}".strip(" -"),
+                       "kind": "graph_node", "id": getattr(context, "selected_node_id", None),
+                       "on_map": True}
+        return self._envelope(base, intent="inspect", subject=subject, scope="map",
+                              findings=territory_rows,
+                              provenance={"source": "graph_session"})
 
     def _selected_summary(self, context):
         node = self._selected_node(context)
@@ -131,10 +162,12 @@ class MentorGraphTools:
         """Resolve a user reference ("me", "this song", "Halo", "Burial")."""
         vec, info = self._resolve(anchor, context)
         if vec is None:
-            return {"tool": "resolve_anchor", "ok": False,
+            base = {"tool": "resolve_anchor", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": anchor, "message": self._miss_message(anchor, info)}
-        return {
+            return self._envelope(base, intent="resolve", subject=None,
+                                  provenance={"source": "anchor_resolution"})
+        base = {
             "tool": "resolve_anchor",
             "ok": True,
             "resolved": True,
@@ -143,26 +176,106 @@ class MentorGraphTools:
             "artist": info.get("artist", ""),
             "id": info.get("id"),
         }
+        return self._envelope(base, intent="resolve", subject=self._subject(info),
+                              provenance={"source": "anchor_resolution"})
 
-    # ---- 3. neighbors ---------------------------------------------------------
-    def neighbors(self, anchor="", k=6, context=None):
-        """"What does this sound like?" — closest songs, with reasons."""
+    # ---- 3. connections ---------------------------------------------------------
+    def connections(self, anchor="", k=6, context=None):
+        """"What is this connected to?" — persisted map edges ONLY.
+
+        Strict and persisted-only by design: this reads exactly the qq edges
+        ``ui/atlas.py`` already drew and stored in the session's graph.json
+        at placement time (via GraphContext.links_for_id) — it never falls
+        back to a live kNN search or the corpus. If the anchor isn't a node
+        placed on the current map, or a placed node simply has no drawn
+        edges, that is the honest answer: "not on the map" / "no connections
+        yet", never a silently-substituted live-similarity guess. That
+        substitution is exactly the bug this tool exists to prevent — see
+        ``neighbors`` for the live-kNN equivalent, which is a DIFFERENT
+        question and can legitimately return a different answer.
+        """
         vec, info = self._resolve(anchor, context)
         if vec is None:
-            return {"tool": "neighbors", "ok": False,
+            base = {"tool": "connections", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": anchor, "message": self._miss_message(anchor, info)}
+            return self._envelope(base, intent="connections", subject=None,
+                                  scope="persisted",
+                                  provenance={"source": "persisted_links"})
+        if self._public_type(info) != "graph_node" or not info.get("id") or self.graph_ctx is None:
+            name = self._display_name(info)
+            base = {"tool": "connections", "ok": False, "error": "not_on_map",
+                    "anchor": anchor, "name": name,
+                    "message": (f"“{name}” isn't placed on your map, so it has no drawn "
+                                "connections to read. Place it on the map, or ask what it "
+                                "sounds like instead (that's a live comparison, not a map edge).")}
+            return self._envelope(base, intent="connections", subject=self._subject(info),
+                                  scope="persisted",
+                                  provenance={"source": "persisted_links"})
+        name = self._display_name(info)
+        anchor_tags, anchor_territory = self._traits(vec, info)
+        edges = self.graph_ctx.links_for_id(info["id"])
+        edges = sorted(edges, key=lambda e: -(e.get("value") if e.get("value") is not None else -1))
+        edges = edges[: max(k, 1)]
+        findings = []
+        for rank, e in enumerate(edges, start=1):
+            other_node = self.graph_ctx.node(e["id"])
+            other_tags = self._node_tag_names(other_node) if other_node is not None else []
+            band, score = self._band_score(e.get("value"))
+            findings.append({
+                "artist": e.get("artist", ""),
+                "song": e.get("name", ""),
+                "territory": e.get("cluster_label", ""),
+                "relationship": self._relationship(
+                    anchor_tags, other_tags, anchor_territory, e.get("cluster_label", ""), rank),
+                "band": band,
+                "score": score,
+                "rank": rank,
+            })
+        base = {
+            "tool": "connections",
+            "ok": True,
+            "anchor": name,
+            "territory": anchor_territory,
+            "traits": anchor_tags,
+            "connections": findings,
+            "message": (f"{name} has no drawn connections on the map yet."
+                        if not findings else None),
+        }
+        return self._envelope(base, intent="connections", subject=self._subject(info),
+                              scope="persisted", findings=findings,
+                              provenance={"source": "persisted_links"})
+
+    # ---- 4. neighbors ---------------------------------------------------------
+    def neighbors(self, anchor="", k=6, context=None):
+        """"What does this sound like?" — closest songs, with reasons.
+
+        This is LIVE embedding kNN — computed fresh against whatever is
+        on-screen (or the corpus fallback) right now. Distinct from
+        ``connections``, which reads edges the UI already drew and persisted
+        at placement time; the two can diverge (a song's live nearest
+        neighbours aren't necessarily the ones it has a drawn map edge to)."""
+        vec, info = self._resolve(anchor, context)
+        if vec is None:
+            base = {"tool": "neighbors", "ok": False,
+                    "error": info.get("error", "anchor_not_resolved"),
+                    "anchor": anchor, "message": self._miss_message(anchor, info)}
+            return self._envelope(base, intent="neighbors", subject=None,
+                                  provenance={"source": "live_knn"})
         anchor_tags, anchor_territory = self._traits(vec, info)
         rows, scope = self._nearest(vec, k, exclude=self._own_ids(info))
         out = []
         for r in rows:
+            band, score = self._band_score(r.get("cosine"))
             out.append({
                 "artist": r["artist"],
                 "song": r["song"],
                 "relationship": self._relationship(
                     anchor_tags, r["tags"], anchor_territory, r["territory"], r["rank"]),
+                "band": band,
+                "score": score,
             })
-        return {
+        base = {
             "tool": "neighbors",
             "ok": True,
             "anchor": self._display_name(info),
@@ -171,8 +284,11 @@ class MentorGraphTools:
             "traits": anchor_tags,
             "neighbors": out,
         }
+        return self._envelope(base, intent="neighbors", subject=self._subject(info),
+                              scope=scope, findings=out,
+                              provenance={"source": "live_knn"})
 
-    # ---- 4. compare -------------------------------------------------------------
+    # ---- 5. compare -------------------------------------------------------------
     def compare(self, anchor_a="", anchor_b="", context=None):
         """How two sounds relate: shared traits, differences, what links them."""
         vec_a, info_a = self._resolve(anchor_a, context)
@@ -180,9 +296,11 @@ class MentorGraphTools:
         if vec_a is None or vec_b is None:
             miss = anchor_a if vec_a is None else anchor_b
             info = info_a if vec_a is None else info_b
-            return {"tool": "compare", "ok": False,
+            base = {"tool": "compare", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": miss, "message": self._miss_message(miss, info)}
+            return self._envelope(base, intent="compare", subject=None,
+                                  provenance={"source": "pairwise_cosine"})
         tags_a, terr_a = self._traits(vec_a, info_a)
         tags_b, terr_b = self._traits(vec_b, info_b)
         name_a, name_b = self._display_name(info_a), self._display_name(info_b)
@@ -207,7 +325,8 @@ class MentorGraphTools:
         mid = (qa + qb) / 2.0
         mid = mid / max(1e-8, np.linalg.norm(mid))
         bridge_rows, _ = self._nearest(mid, 3, exclude=self._own_ids(info_a) | self._own_ids(info_b))
-        return {
+        band, score = self._band_score(cosine)
+        base = {
             "tool": "compare",
             "ok": True,
             "anchor_a": name_a,
@@ -217,10 +336,25 @@ class MentorGraphTools:
             "differences": {"only_" + name_a: only_a, "only_" + name_b: only_b},
             "bridge_candidates": [f"{r['artist']} - {r['song']}".strip(" -")
                                   for r in bridge_rows],
+            "band": band,
+            "score": score,
             "_similarity": round(cosine, 4),  # internal; not narrated
         }
+        contrasts = ([f"only {name_a}: {', '.join(only_a[:3])}"] if only_a else []) + \
+                    ([f"only {name_b}: {', '.join(only_b[:3])}"] if only_b else [])
+        # One finding: the A<->B relationship itself (not two separate rows —
+        # there is exactly one pairwise similarity here, unlike
+        # neighbors/connections which rank several candidates against one anchor).
+        finding = {"pair": [name_a, name_b], "shared_traits": shared,
+                  "band": band, "score": score}
+        return self._envelope(
+            base, intent="compare",
+            subject=[self._subject(info_a), self._subject(info_b)],
+            findings=[finding],
+            contrasts=contrasts,
+            provenance={"source": "pairwise_cosine"})
 
-    # ---- 5. bridge ---------------------------------------------------------------
+    # ---- 6. bridge ---------------------------------------------------------------
     def bridge(self, anchor_a="", anchor_b="", k=5, context=None):
         """"What sits between these sounds?" — midpoint tracks with a why."""
         vec_a, info_a = self._resolve(anchor_a, context)
@@ -228,9 +362,11 @@ class MentorGraphTools:
         if vec_a is None or vec_b is None:
             miss = anchor_a if vec_a is None else anchor_b
             info = info_a if vec_a is None else info_b
-            return {"tool": "bridge", "ok": False,
+            base = {"tool": "bridge", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": miss, "message": self._miss_message(miss, info)}
+            return self._envelope(base, intent="bridge", subject=None,
+                                  provenance={"source": "midpoint_knn"})
         name_a, name_b = self._display_name(info_a), self._display_name(info_b)
         tags_a, _ = self._traits(vec_a, info_a)
         tags_b, _ = self._traits(vec_b, info_b)
@@ -266,12 +402,15 @@ class MentorGraphTools:
                 why.append(f"shares {', '.join(with_b[:2])} with {name_b}")
             if r["territory"]:
                 why.append(f"from the {r['territory']} territory")
+            band, score = self._band_score(r.get("cosine"))
             tracks.append({
                 "artist": r["artist"],
                 "song": r["song"],
                 "why": "; ".join(why) if why else "sits at the midpoint of the two sounds",
+                "band": band,
+                "score": score,
             })
-        return {
+        base = {
             "tool": "bridge",
             "ok": True,
             "anchor_a": name_a,
@@ -279,19 +418,26 @@ class MentorGraphTools:
             "scope": scope,
             "bridge_tracks": tracks,
         }
+        return self._envelope(
+            base, intent="bridge",
+            subject=[self._subject(info_a), self._subject(info_b)],
+            scope=scope, findings=tracks,
+            provenance={"source": "midpoint_knn"})
 
-    # ---- 6. explore_cluster --------------------------------------------------------
+    # ---- 7. explore_cluster --------------------------------------------------------
     def explore_cluster(self, anchor="", context=None):
         """"What area should I explore next?" — the nearest adjacent territory."""
         vec, info = self._resolve(anchor, context)
         if vec is None:
-            return {"tool": "explore_cluster", "ok": False,
+            base = {"tool": "explore_cluster", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": anchor, "message": self._miss_message(anchor, info)}
+            return self._envelope(base, intent="explore", subject=None,
+                                  provenance={"source": "cluster_scan"})
         name = self._display_name(info)
-        base = self.similarity.cluster(vec)
-        base_id = base.get("cluster_id")
-        base_label = base.get("label", "")
+        cl = self.similarity.cluster(vec)
+        base_id = cl.get("cluster_id")
+        base_label = cl.get("label", "")
 
         # Scan outward through corpus neighbours for the first different territory.
         rows = self.similarity.similar(vec, top_k=250)
@@ -313,10 +459,13 @@ class MentorGraphTools:
             if len(nearby) >= 6:
                 break
         if not adj_label:
-            return {"tool": "explore_cluster", "ok": True, "cluster": base_label,
+            base = {"tool": "explore_cluster", "ok": True, "cluster": base_label,
                     "nearby_artists": [], "recommended_direction":
                     f"{name} sits deep inside the {base_label} territory — "
                     "no neighbouring territory is close enough to point at yet."}
+            return self._envelope(base, intent="explore", subject=self._subject(info),
+                                  scope="corpus",
+                                  provenance={"source": "cluster_scan"})
         direction = (f"{name} sits in the {base_label} territory. The closest "
                      f"neighbouring territory is {adj_label}")
         if nearby:
@@ -324,7 +473,7 @@ class MentorGraphTools:
         if adj_tags:
             direction += f". Expect a {', '.join(adj_tags[:3])} character"
         direction += ". That's the natural next area to explore."
-        return {
+        base = {
             "tool": "explore_cluster",
             "ok": True,
             "anchor": name,
@@ -333,15 +482,21 @@ class MentorGraphTools:
             "nearby_artists": nearby,
             "recommended_direction": direction,
         }
+        finding = {"adjacent_territory": adj_label, "nearby_artists": nearby}
+        return self._envelope(base, intent="explore", subject=self._subject(info),
+                              scope="corpus", findings=[finding],
+                              provenance={"source": "cluster_scan"})
 
-    # ---- 7. explain_node -------------------------------------------------------------
+    # ---- 8. explain_node -------------------------------------------------------------
     def explain_node(self, anchor="", context=None):
         """"Why is this here?" — a node's neighbours, territory, and traits."""
         vec, info = self._resolve(anchor, context)
         if vec is None:
-            return {"tool": "explain_node", "ok": False,
+            base = {"tool": "explain_node", "ok": False,
                     "error": info.get("error", "anchor_not_resolved"),
                     "anchor": anchor, "message": self._miss_message(anchor, info)}
+            return self._envelope(base, intent="explain", subject=None,
+                                  provenance={"source": "live_knn"})
         tags, territory = self._traits(vec, info)
         rows, scope = self._nearest(vec, 5, exclude=self._own_ids(info))
         neighbor_names = [f"{r['artist']} - {r['song']}".strip(" -") for r in rows]
@@ -356,7 +511,12 @@ class MentorGraphTools:
             if territory:
                 position += f" — inside the {territory} territory"
             position += "."
-        return {
+        findings = []
+        for r in rows:
+            band, score = self._band_score(r.get("cosine"))
+            findings.append({"artist": r["artist"], "song": r["song"],
+                             "band": band, "score": score})
+        base = {
             "tool": "explain_node",
             "ok": True,
             "song": info.get("song", self._display_name(info)),
@@ -366,6 +526,69 @@ class MentorGraphTools:
             "neighbors": neighbor_names,
             "position_summary": position,
         }
+        return self._envelope(base, intent="explain", subject=self._subject(info),
+                              scope=scope, findings=findings,
+                              provenance={"source": "live_knn"})
+
+    # ---- the Evidence envelope --------------------------------------------------
+    # Every intent (7 existing + connections) returns the same outer shape on
+    # top of its own established fields, so the narrator/agent layer can
+    # handle any tool result generically:
+    #   intent      short INTENTS key ("neighbors", "connections", ...)
+    #   subject     {label, kind, id, on_map} for a one-anchor tool, or
+    #               [subject_a, subject_b] for a two-anchor tool (compare/bridge);
+    #               None when the anchor didn't resolve.
+    #   scope       "map" | "library" | "persisted" | "corpus" | None
+    #   findings    normalized list of what was found; similarity-scored
+    #               entries (connections/neighbors/compare/bridge/explain_node)
+    #               each carry "band" (one of SIMILARITY_BANDS) + "score" (0-100)
+    #   contrasts   list of distinguishing facts, [] when none apply
+    #   provenance  {"source": ...} — e.g. persisted_links vs live_knn vs corpus
+    # All of a method's own existing keys (ok, message, error, neighbors, ...)
+    # are preserved untouched — this is purely additive.
+    def _subject(self, info):
+        if not info or info.get("resolved") is False:
+            return None
+        return {
+            "label": self._display_name(info),
+            "kind": self._public_type(info),
+            "id": info.get("id"),
+            "on_map": self._public_type(info) == "graph_node",
+        }
+
+    def _band_score(self, cosine):
+        """(band, score) for a raw cosine, via whatever calibration the
+        similarity service loaded (mirrors persisted map-edge scoring — see
+        anther_ml.calibration / ui/atlas.py). (None, None) if the backend
+        doesn't expose calibration or cosine is None — callers must accept
+        that rather than assume it's always populated."""
+        if cosine is None:
+            return None, None
+        band_fn = getattr(self.similarity, "band_for_cosine", None)
+        score_fn = getattr(self.similarity, "display_score", None)
+        if band_fn is None or score_fn is None:
+            return None, None
+        try:
+            return band_fn(cosine), round(float(score_fn(cosine)), 1)
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _envelope(result, *, intent, subject=None, scope=None, findings=None,
+                  contrasts=None, provenance=None):
+        """Layer the shared Evidence envelope on top of a tool's own result
+        dict (additive — every existing key the method already set is kept
+        untouched). ``scope`` defaults to whatever the method already put in
+        result["scope"] (neighbors/bridge already carry one); pass it
+        explicitly for tools that don't set that key themselves."""
+        result = dict(result)
+        result["intent"] = intent
+        result["subject"] = subject
+        result["scope"] = scope if scope is not None else result.get("scope")
+        result["findings"] = findings if findings is not None else []
+        result["contrasts"] = contrasts if contrasts is not None else []
+        result["provenance"] = provenance or {}
+        return result
 
     # ---- anchor resolution (selected -> visible -> corpus) -----------------------
     def _selected_node(self, context):
@@ -506,6 +729,7 @@ class MentorGraphTools:
                         "tags": self._node_tag_names(node),
                         "territory": node.get("cluster_label", ""),
                         "rank": rank,
+                        "cosine": float(sims[int(i)]),
                         "_vec": mat[int(i)],
                     })
                 if rows:
@@ -519,6 +743,7 @@ class MentorGraphTools:
                 "tags": self.similarity.tags_for_index(r["index"]),
                 "territory": self.similarity.cluster_label(cid),
                 "rank": rank,
+                "cosine": r.get("score"),
                 "_vec": self.similarity.vector_for_index(r["index"]),
             })
         return rows, "library"

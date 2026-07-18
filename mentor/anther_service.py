@@ -51,10 +51,24 @@ class AntherSimilarityService:
     def __init__(self, corpus_dir=CORPUS_DIR):
         import json
         from anther_ml.similarity import SongIndex
+        from anther_ml import calibration as link_calibration
         self.corpus_dir = corpus_dir
         self.index = SongIndex.load(os.path.join(corpus_dir, "index"))
         with open(os.path.join(corpus_dir, "track_tags.json")) as f:
             self.track_tags = json.load(f)
+
+        # ── link-similarity calibration (shared with ui/atlas.py) ──────────
+        # ui/atlas.py runs in a separate process (docs/mentor-graph-aware.md)
+        # and stamps a link_calibration.json sidecar into corpus_dir every
+        # time it calibrates. Read it if present; otherwise reproduce the
+        # exact same deterministic 200k-pair draw here (seed=0 — see
+        # anther_ml.calibration) so this process's bands agree with atlas's
+        # even on a fresh checkout that hasn't run the UI yet.
+        self._link_calibration = link_calibration
+        thresholds = link_calibration.load_calibration(corpus_dir)
+        if thresholds is None:
+            thresholds = link_calibration.calibrate_link_thresholds(self.index)
+        self.link_thresholds = thresholds
         # optional cluster labels for readout (profiles JSON is plain, no pickle)
         try:
             with open(os.path.join(corpus_dir, "cluster_profiles.json")) as f:
@@ -170,6 +184,20 @@ class AntherSimilarityService:
                 score[t["genre"]] = score.get(t["genre"], 0.0) + t["score"] / knn
         top = sorted(score.items(), key=lambda kv: -kv[1])[:top_k]
         return [{"genre": g, "score": round(s, 4)} for g, s in top]
+
+    # ---- shared similarity banding ------------------------------------------
+    def band_for_cosine(self, raw_cos):
+        """One of 'near-identical' / 'close' / 'related' / 'distant', using
+        the same calibrated cutoffs ui/atlas.py stamps on persisted map
+        edges (see self.link_thresholds / anther_ml.calibration)."""
+        return self._link_calibration.band_for_cosine(raw_cos, self.link_thresholds)
+
+    def display_score(self, raw_cos, clip_low=False):
+        """The 0-100 human-readable score for a raw cosine, calibrated the
+        same way as a persisted map edge's ``score`` field. ``clip_low=False``
+        by default here (fresh mentor-side cosines, unlike drawn map edges,
+        are not structurally bounded below the qq_threshold)."""
+        return self._link_calibration.display_score(raw_cos, self.link_thresholds, clip_low=clip_low)
 
     # ---- convenience reads the tool layer uses ------------------------------
     def tags_for_index(self, idx, top_k=4):

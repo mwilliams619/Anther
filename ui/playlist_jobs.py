@@ -157,8 +157,9 @@ def _worker_loop() -> None:
             # default. resolve_and_embed → cached_vec/cache_vec and
             # place_external_track → _merge_fragment all read the contextvar.
             with atlas.use_session(job["session_id"]):
-                vec, _method = atlas.resolve_and_embed(track)
-                fragment = atlas.place_external_track(track, vec, playlist_pid=job["pid"])
+                vec, backbone, _method = atlas.resolve_and_embed(track)
+                fragment = atlas.place_external_track(
+                    track, vec, playlist_pid=job["pid"], backbone=backbone)
         except atlas.PlacementSkip as e:
             skip = e.reason
         except Exception as e:  # noqa: BLE001 — one bad track never kills the job

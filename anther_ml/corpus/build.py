@@ -388,6 +388,7 @@ def build_corpus(
     model=None,
     processor=None,
     device=None,
+    capture_merit_backbone: bool = False,
 ) -> ReferenceCorpus:
     """
     Build and freeze a reference corpus from a source iterable (see
@@ -400,18 +401,41 @@ def build_corpus(
     shared fp16 forward passes (Tier 1A; ``batch_windows`` caps windows per pass,
     ``use_fp16=None`` → fp16 on CUDA). ``limit`` counts source items (including
     already-checkpointed ones), so a resumed limited build sees the same tracks.
+
+    ``capture_merit_backbone=True`` additionally extracts the 5120-d MERIT
+    backbone (layers 3,4,5,6,23 concatenated) from the *same* forward pass as
+    the standard 1024-d MERT vector (see ``embed_tracks_batched_dual``) and
+    saves it as ``merit_backbone.npy`` in the bundle directory, row-aligned to
+    the final (post-dedupe) ``metadata``/``embeddings.npy`` order. The 1024-d
+    path — index, clustering, everything else — is unaffected; this is a pure
+    additive sidecar for building a MERIT-factor index downstream. Requires
+    the real MERT path (``embed_fn=None``) and its own resumable checkpoint
+    at ``checkpoint_merit/``.
     """
     from ..embedding import embedding_config
+
+    if capture_merit_backbone and embed_fn is not None:
+        raise ValueError("capture_merit_backbone requires the real MERT path (embed_fn=None)")
 
     bundle_dir = Path(out_dir) / f"corpus_{name}"
     checkpoint = BuildCheckpoint(
         bundle_dir / "checkpoint", flush_every=checkpoint_flush_every
     )
+    merit_checkpoint = None
+    if capture_merit_backbone:
+        merit_checkpoint = BuildCheckpoint(
+            bundle_dir / "checkpoint_merit", flush_every=checkpoint_flush_every
+        )
     if not resume:
         checkpoint.clear()
         checkpoint = BuildCheckpoint(
             bundle_dir / "checkpoint", flush_every=checkpoint_flush_every
         )
+        if merit_checkpoint is not None:
+            merit_checkpoint.clear()
+            merit_checkpoint = BuildCheckpoint(
+                bundle_dir / "checkpoint_merit", flush_every=checkpoint_flush_every
+            )
     done = checkpoint.done_ids()
     if done:
         print(f"resuming: {len(done)} tracks already embedded")
@@ -436,12 +460,18 @@ def build_corpus(
     else:
         # Real MERT path: prefetch producers feed the GPU (Tier 1B); tracks are
         # embedded in shared fp16 batches (Tier 1A).
-        from ..embedding import embed_tracks_batched, load_mert, prepare_waveform
+        from ..embedding import (
+            embed_tracks_batched,
+            embed_tracks_batched_dual,
+            load_mert,
+            prepare_waveform,
+        )
 
         if model is None:
             model, processor, device = load_mert(device)
 
         batch: list[dict] = []
+        merit_done = merit_checkpoint.done_ids() if merit_checkpoint else set()
 
         def embed_current_batch() -> None:
             nonlocal n_failed
@@ -458,13 +488,23 @@ def build_corpus(
             batch.clear()
             if not good:
                 return
-            vecs = embed_tracks_batched(
-                model, processor, waveforms, device,
-                layer_aggregation=layer_aggregation,
-                batch_windows=batch_windows, use_fp16=use_fp16,
-            )
-            for it, vec in zip(good, vecs):
-                checkpoint.add(it["id"], vec, _meta_row(it))
+            if merit_checkpoint is not None:
+                vecs, backbones = embed_tracks_batched_dual(
+                    model, processor, waveforms, device,
+                    batch_windows=batch_windows, use_fp16=use_fp16,
+                )
+                for it, vec, bb in zip(good, vecs, backbones):
+                    checkpoint.add(it["id"], vec, _meta_row(it))
+                    if it["id"] not in merit_done:
+                        merit_checkpoint.add(it["id"], bb, {"id": it["id"]})
+            else:
+                vecs = embed_tracks_batched(
+                    model, processor, waveforms, device,
+                    layer_aggregation=layer_aggregation,
+                    batch_windows=batch_windows, use_fp16=use_fp16,
+                )
+                for it, vec in zip(good, vecs):
+                    checkpoint.add(it["id"], vec, _meta_row(it))
 
         for item in _prefetch(source, prefetch_size):
             if limit is not None and n_seen >= limit:
@@ -478,6 +518,8 @@ def build_corpus(
         embed_current_batch()
 
     checkpoint.flush()
+    if merit_checkpoint is not None:
+        merit_checkpoint.flush()
 
     raw_embeddings, metadata = checkpoint.load()
     if len(raw_embeddings) < MIN_TRACKS:
@@ -486,6 +528,21 @@ def build_corpus(
             f"{len(raw_embeddings)} (embedded {n_seen - n_failed - len(done)} new, "
             f"{n_failed} failed)"
         )
+
+    merit_backbone = None
+    if merit_checkpoint is not None:
+        merit_raw, merit_meta = merit_checkpoint.load()
+        merit_by_id = {r["id"]: v for r, v in zip(merit_meta, merit_raw)}
+        missing = [m["id"] for m in metadata if m["id"] not in merit_by_id]
+        if missing:
+            raise ValueError(
+                f"merit backbone missing for {len(missing)} tracks that have a "
+                f"1024-d embedding (e.g. {missing[:5]}) — checkpoint_merit is "
+                "out of sync with checkpoint"
+            )
+        merit_backbone = np.vstack(
+            [merit_by_id[m["id"]] for m in metadata]
+        ).astype(np.float32)
 
     n_deduped = 0
     if dedupe_threshold is not None:
@@ -498,6 +555,8 @@ def build_corpus(
             print(f"dedupe: dropped {n_deduped} near-identical tracks: {dropped[:10]}")
             raw_embeddings = raw_embeddings[keep]
             metadata = [m for m, k in zip(metadata, keep) if k]
+            if merit_backbone is not None:
+                merit_backbone = merit_backbone[keep]
 
     config = embedding_config(
         layer_aggregation=layer_aggregation, normalize=loudness_normalize
@@ -551,6 +610,10 @@ def build_corpus(
     )
     corpus.save(bundle_dir)
     checkpoint.clear()
+    if merit_backbone is not None:
+        np.save(bundle_dir / "merit_backbone.npy", merit_backbone)
+        merit_checkpoint.clear()
+        print(f"merit_backbone.npy: {merit_backbone.shape} → {bundle_dir}")
     print(
         f"corpus_{name}: {len(metadata)} tracks, "
         f"{leiden['diagnostics']['n_clusters']} clusters → {bundle_dir}"

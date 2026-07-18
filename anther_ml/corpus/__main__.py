@@ -16,7 +16,8 @@ from .bundle import ReferenceCorpus
 
 def _add_build_parser(sub):
     p = sub.add_parser("build", help="embed a source and freeze a corpus bundle")
-    p.add_argument("--source", choices=("fma", "local", "mpd", "sql"), default="fma")
+    p.add_argument("--source", choices=("fma", "local", "mpd", "sql", "sql_oversampled"),
+                   default="fma")
     p.add_argument("--name", required=True, help="bundle name → models/corpus_<name>/")
     p.add_argument("--out", default="models", help="output parent directory")
     p.add_argument("--audio-dir", default=None,
@@ -36,6 +37,10 @@ def _add_build_parser(sub):
                    help="skip playlist membership when building the SQLite DB "
                         "(--source sql; much faster, disables playlist-fit)")
     p.add_argument("--sample-n", type=int, default=8000, help="MPD/SQL sample size")
+    p.add_argument("--oversample-ratio", type=float, default=1.15,
+                   help="--source sql_oversampled: candidate pool size as a "
+                        "multiple of --sample-n, to absorb dead preview URLs "
+                        "while still landing exactly --sample-n tracks")
     p.add_argument("--max-slices", type=int, default=None)
     p.add_argument("--limit", type=int, default=None,
                    help=f"embed only the first N source tracks (smoke test; "
@@ -67,6 +72,10 @@ def _add_build_parser(sub):
                    help="parallel preview-fetch workers (--source sql/mpd)")
     p.add_argument("--prefetch", type=int, default=64, dest="prefetch_size",
                    help="items buffered ahead of the GPU by the fetch producers")
+    p.add_argument("--capture-merit-backbone", action="store_true",
+                   help="additionally save merit_backbone.npy (5120-d, layers "
+                        "3/4/5/6/23) from the same forward pass as the MERT-1024 "
+                        "embedding, for downstream MERIT factor-head projection")
 
 
 def _add_place_parser(sub):
@@ -129,6 +138,20 @@ def _make_source(args):
             with_membership=not args.no_membership,
             n_workers=args.n_workers,
         )
+    if args.source == "sql_oversampled":
+        if not (args.sql_db or args.sql_dump):
+            sys.exit("--source sql_oversampled requires --sql-dump (or a prebuilt --sql-db)")
+        return sources.sql_source_oversampled(
+            db_path=args.sql_db,
+            sql_dump=args.sql_dump,
+            target_n=args.sample_n,
+            oversample_ratio=args.oversample_ratio,
+            tracks_per_artist_cap=args.artist_cap or 5,
+            seed=args.seed,
+            min_popularity=args.min_popularity,
+            with_membership=not args.no_membership,
+            n_workers=args.n_workers,
+        )
     if not args.mpd_dir:
         sys.exit("--source mpd requires --mpd-dir")
     return sources.mpd_source(
@@ -161,6 +184,7 @@ def _cmd_build(args) -> None:
         batch_windows=args.batch_windows,
         use_fp16=False if args.no_fp16 else None,
         prefetch_size=args.prefetch_size,
+        capture_merit_backbone=args.capture_merit_backbone,
     )
 
 

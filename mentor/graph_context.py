@@ -121,6 +121,8 @@ class GraphContext:
         self._name_to_id = {}       # norm("artist - name") and norm(name) -> id
         self._vec_cache = {}        # id -> raw vec (or None if uncached)
         self._groups = {}
+        self._links = []            # raw link dicts, as stored in graph.json
+        self._links_by_node = {}    # node id -> [{other_id, score, value, kind}, ...]
 
     # ---- freshness ---------------------------------------------------------
     def _reload_if_stale(self):
@@ -139,6 +141,8 @@ class GraphContext:
         self._artist_to_ids = {}
         self._name_to_id = {}
         self._vec_cache = {}
+        self._links = []
+        self._links_by_node = {}
         data = None
         try:
             with open(self.graph_path) as f:
@@ -165,6 +169,33 @@ class GraphContext:
             if nm:
                 self._name_to_id.setdefault(nm, nid)
         self._groups = data.get("groups", {}) or {}
+
+        # ── persisted map edges (query<->query similarity links drawn by
+        # ui/atlas.py at placement time) — distinct from a fresh kNN search;
+        # see MentorGraphTools.connections vs .neighbors. Indexed both
+        # directions so links_for_id(nid) works regardless of which side of
+        # the edge nid landed on when the UI wrote it. ──
+        links = data.get("links", [])
+        if isinstance(links, dict):                # tolerate id-keyed dict
+            links = list(links.values())
+        for l in links:
+            # "member" is a legacy hub->spoke kind from before playlist hub
+            # nodes were removed (see ui/atlas.py._load_graph's migration) —
+            # not a similarity edge. GraphContext reads graph.json directly
+            # and never passes through atlas's in-memory migration, so filter
+            # it defensively here too.
+            if l.get("kind") == "member":
+                continue
+            src, tgt = l.get("source"), l.get("target")
+            if not src or not tgt or src not in self._by_id or tgt not in self._by_id:
+                continue
+            self._links.append(l)
+            self._links_by_node.setdefault(src, []).append(
+                {"other_id": tgt, "score": l.get("score"), "value": l.get("value"),
+                 "kind": l.get("kind")})
+            self._links_by_node.setdefault(tgt, []).append(
+                {"other_id": src, "score": l.get("score"), "value": l.get("value"),
+                 "kind": l.get("kind")})
 
     # ---- vectors -----------------------------------------------------------
     def vec_for_id(self, nid):
@@ -250,6 +281,29 @@ class GraphContext:
             terr = ", ".join(sorted(territories, key=lambda t: -territories[t])[:8])
             parts.append(f"territories: {terr}")
         return "; ".join(parts)
+
+    def links_for_id(self, nid):
+        """Persisted map edges touching node ``nid``, resolved to the other
+        node's identity — the thing ``MentorGraphTools.connections`` reads,
+        as opposed to ``neighbors``' fresh embedding kNN. Each entry:
+        ``{id, artist, name, cluster_label, score, value, kind}``. Empty list
+        for an unknown id or a node with no drawn edges (never raises)."""
+        self._reload_if_stale()
+        out = []
+        for edge in self._links_by_node.get(nid, []):
+            other = self._by_id.get(edge["other_id"])
+            if other is None:
+                continue
+            out.append({
+                "id": edge["other_id"],
+                "artist": other.get("artist", ""),
+                "name": other.get("name", ""),
+                "cluster_label": other.get("cluster_label", ""),
+                "score": edge.get("score"),
+                "value": edge.get("value"),
+                "kind": edge.get("kind"),
+            })
+        return out
 
     def candidate_vectors(self, exclude_ids=None):
         """(ids, matrix, nodes) for every on-screen node with a cached vector."""
