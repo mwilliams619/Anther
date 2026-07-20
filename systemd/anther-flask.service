@@ -1,0 +1,31 @@
+# Anther Flask UI — STABLE / production.
+#
+# This is the existing anther-flask.service, updated for the CI/CD worktree
+# layout: WorkingDirectory now points at the dedicated ~/Dev/Anther-stable
+# worktree instead of the interactive ~/Dev/Anther checkout, so an
+# auto-deploy triggered by a push to ml-dev can never collide with — or
+# hard-reset away — whatever you're working on in your main checkout.
+#
+# One-time install (see CI_CD_SETUP.md for the full sequence):
+#   sudo cp systemd/anther-flask.service /etc/systemd/system/anther-flask.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now anther-flask
+#
+# deploy_stable.sh only ever runs `systemctl restart anther-flask` against
+# whatever unit is installed under this name — it never edits or reinstalls
+# the unit file itself.
+[Unit]
+Description=Anther Flask UI (stable)
+After=network.target
+
+[Service]
+Type=simple
+User=matt
+WorkingDirectory=/home/matt/Dev/Anther-stable
+ExecStart=/home/matt/Dev/Anther-stable/.venv/bin/python /home/matt/Dev/Anther-stable/ui/app.py
+Environment=ANTHER_UI_PORT=5000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

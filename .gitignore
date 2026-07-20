@@ -42,3 +42,4 @@ ui/session/*
 vendor/
 *.dmg
 docs/*.pdf
+scripts/deploy/dryrun_tmp/

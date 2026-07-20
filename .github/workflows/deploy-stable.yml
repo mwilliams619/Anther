@@ -1,0 +1,29 @@
+name: Deploy stable (ml-dev)
+
+# Runs on the self-hosted runner registered on the same box that serves
+# production, since GitHub-hosted runners can't reach it (it's only exposed
+# via a Cloudflare Tunnel, no public inbound port). See CI_CD_SETUP.md for
+# runner registration and the sudoers scoping this depends on.
+on:
+  push:
+    branches: [ml-dev]
+  workflow_dispatch: {}   # manual "Run workflow" button for a forced redeploy
+
+concurrency:
+  group: deploy-stable
+  cancel-in-progress: false   # let an in-flight deploy finish rather than
+                               # restart the service mid-deploy from a second push
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, anther]
+    steps:
+      - name: Checkout (for the deploy script + workflow itself only)
+        uses: actions/checkout@v4
+        with:
+          ref: ml-dev
+
+      - name: Deploy to production
+        run: scripts/deploy/deploy_stable.sh
+        env:
+          ANTHER_STABLE_BRANCH: ml-dev

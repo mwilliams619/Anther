@@ -1,0 +1,37 @@
+# Anther Flask UI — STAGING (feature branches).
+#
+# Runs the currently-deployed feature branch out of the dedicated
+# ~/Dev/Anther-staging worktree (see scripts/deploy/setup_staging_worktree.sh)
+# on a second port, so it can be reached through a staging subdomain
+# (e.g. dev.<your-domain>) via a second cloudflared ingress rule — see
+# CI_CD_SETUP.md for the ingress + DNS route commands.
+#
+# ANTHER_UI_PORT=5001 relies on ui/app.py's existing env var read
+# (`os.environ.get('ANTHER_UI_PORT', '5000')` — no code change needed).
+# ANTHER_CORPUS/ANTHER_POPULARITY/ANTHER_ARTIST_CLUSTERING are left at their
+# defaults since staging shares the same models/ and data/ (symlinked) as
+# stable — override here only if a feature branch needs a different corpus.
+#
+# One-time install (see CI_CD_SETUP.md for the full sequence):
+#   sudo cp systemd/anther-flask-staging.service /etc/systemd/system/anther-flask-staging.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now anther-flask-staging
+#
+# deploy_staging.sh only ever runs `systemctl restart anther-flask-staging`
+# against whatever unit is installed under this name — it never edits or
+# reinstalls the unit file itself.
+[Unit]
+Description=Anther Flask UI (staging)
+After=network.target
+
+[Service]
+Type=simple
+User=matt
+WorkingDirectory=/home/matt/Dev/Anther-staging
+ExecStart=/home/matt/Dev/Anther-staging/.venv/bin/python /home/matt/Dev/Anther-staging/ui/app.py
+Environment=ANTHER_UI_PORT=5001
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
