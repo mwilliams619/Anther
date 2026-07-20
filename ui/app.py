@@ -37,7 +37,7 @@ import requests
 from flask import Flask, request, jsonify, send_from_directory, session
 from werkzeug.utils import secure_filename
 
-from . import atlas
+import atlas
 
 # ── Config ───────────────────────────────────────────────────────────────────
 

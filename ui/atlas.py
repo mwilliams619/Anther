@@ -78,6 +78,15 @@ _link_thresholds = link_calibration.LinkThresholds.defaults()
 # _display_score/_merge_fragment) — this is how a bundle built without
 # --capture-merit-backbone keeps working unmodified.
 _merit_link_thresholds: link_calibration.LinkThresholds | None = None
+# Per-factor (melody/rhythm/timbre) counterpart — each factor calibrated off
+# its OWN raw-cosine distribution rather than sharing _merit_link_thresholds'
+# aggregate-calibrated scale (see calibration.py's
+# CALIBRATION_FILENAME_MERIT_FACTORS docstring for why: e.g. timbre commonly
+# runs much hotter than the aggregate, so a shared scale clips timbre's
+# display score to 100 far more often than melody/rhythm's). None if the
+# bundle predates this sidecar — _breakdown_scores falls back to
+# _merit_link_thresholds for every factor in that case.
+_merit_factor_thresholds: dict[str, link_calibration.LinkThresholds] | None = None
 
 # ── human-readable similarity score ─────────────────────────────────────────
 # Raw cosine is meaningless to a non-technical user (everything sits at 0.96-
@@ -456,6 +465,7 @@ def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
     JSON next to the corpus bundle so the mentor process doesn't have to
     redo this 200k-pair draw itself."""
     global _qq_threshold, _score_ceiling_raw, _link_thresholds, _merit_link_thresholds
+    global _merit_factor_thresholds
     E = corpus.index.embeddings                       # standardized + L2-normalized
     if E.shape[0] < 2:
         return
@@ -471,9 +481,36 @@ def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
     # MERIT-aggregate thresholds are computed once at build time (see
     # merit_index.build_merit_aggregate_index) and persisted alongside the
     # bundle — reload them here rather than recalibrating, so app startup
-    # doesn't pay another 200k-pair draw. None (no MERIT index on this
-    # bundle) leaves every MERIT call site to fall back to MERT.
+    # doesn't pay another 200k-pair draw. If the sidecar is missing (e.g. a
+    # build step that skipped/failed the calibration write) fall back to
+    # calibrating in-process here, same as build time would have, rather
+    # than silently leaving every MERIT call site stuck on MERT-space
+    # thresholds (which flattens MERIT cosines to near-0 display scores).
     _merit_link_thresholds = corpus.merit_calibration
+    if _merit_link_thresholds is None and corpus.merit_index is not None:
+        _merit_link_thresholds = link_calibration.calibrate_link_thresholds(
+            corpus.merit_index, n_pairs=n_pairs, seed=0)
+        try:
+            link_calibration.save_calibration(
+                CORPUS_DIR, _merit_link_thresholds,
+                filename=link_calibration.CALIBRATION_FILENAME_MERIT)
+        except OSError:
+            pass
+
+    # Per-factor (melody/rhythm/timbre) thresholds — see
+    # calibration.py's CALIBRATION_FILENAME_MERIT_FACTORS docstring for why
+    # these can't share the aggregate scale above. Same missing-sidecar
+    # fallback as MERIT-aggregate thresholds.
+    _merit_factor_thresholds = corpus.merit_factor_calibration
+    if _merit_factor_thresholds is None and corpus.merit_factors is not None:
+        _merit_factor_thresholds = link_calibration.calibrate_factor_link_thresholds(
+            corpus.merit_factors, n_pairs=n_pairs, seed=0)
+        try:
+            link_calibration.save_factor_calibration(
+                CORPUS_DIR, _merit_factor_thresholds,
+                filename=link_calibration.CALIBRATION_FILENAME_MERIT_FACTORS)
+        except OSError:
+            pass
 
 
 def _display_score(raw_cos: float, clip_low: bool = True,
@@ -578,17 +615,61 @@ def _merit_breakdown(agg_a, agg_b) -> dict | None:
     return out
 
 
+_FACTOR_NAME_TO_CODE = {v: k for k, v in merit_mod.FACTOR_NAMES.items()}
+
+
 def _breakdown_scores(agg_a, agg_b) -> dict | None:
-    """``_merit_breakdown`` mapped through ``_display_score`` (MERIT
-    calibration, clip_low=False so a factor score reads honestly even when
-    the aggregate is below the map's link threshold) -> 0-100 ints for the
-    UI's expandable per-factor rows, or None if unavailable."""
+    """``_merit_breakdown`` mapped through ``_display_score`` -> 0-100 ints
+    for the UI's expandable per-factor rows, or None if unavailable.
+
+    Each factor (melody/rhythm/timbre) is scored against its OWN calibrated
+    scale (``_merit_factor_thresholds``) rather than the aggregate's
+    (``_merit_link_thresholds``) — the two can differ a lot (e.g. timbre's
+    raw cosines run far hotter than the aggregate's), so reusing one scale
+    for all three either clips a hot factor to 100 constantly or leaves a
+    cold factor never reaching the top of the range. Falls back to the
+    shared aggregate scale for a factor whose sidecar isn't available yet.
+    clip_low=False so a factor score reads honestly even when it's below
+    that factor's own link threshold.
+
+    ``aggregate`` is deliberately NOT scored against its own independently
+    calibrated scale anymore — it's defined as the plain mean of the three
+    factor display scores above. Averaging raw cosines and then calibrating
+    that mean separately (the old approach) has no fixed relationship to
+    averaging the three *already-calibrated* display numbers: each factor's
+    raw-cosine distribution has a different width, so
+    display(mean(raw_i)) can land above every display(raw_i) even though
+    mean(raw_i) itself always sits between them. That produced a single
+    "similarity score" that could read higher than all three melody/rhythm/
+    timbre bars underneath it. Defining aggregate as mean-of-displays
+    instead guarantees it always falls within [min, max] of the three
+    factors shown in the expanded panel."""
     raw = _merit_breakdown(agg_a, agg_b)
     if raw is None:
         return None
-    return {k: round(_display_score(v, clip_low=False,
-                                     thresholds=_merit_link_thresholds), 1)
-            for k, v in raw.items()}
+    out = {}
+    for k in ("melody", "rhythm", "timbre"):
+        v = raw[k]
+        code = _FACTOR_NAME_TO_CODE.get(k)
+        thresholds = (_merit_factor_thresholds or {}).get(code) or _merit_link_thresholds
+        out[k] = _display_score(v, clip_low=False, thresholds=thresholds)
+    out["aggregate"] = round((out["melody"] + out["rhythm"] + out["timbre"]) / 3.0, 1)
+    out["melody"] = round(out["melody"], 1)
+    out["rhythm"] = round(out["rhythm"], 1)
+    out["timbre"] = round(out["timbre"], 1)
+    return out
+
+
+def _merit_aggregate_score(agg_a, agg_b) -> float | None:
+    """The single top-level similarity number for a MERIT-scored pair —
+    identical to ``_breakdown_scores(agg_a, agg_b)['aggregate']`` (the mean
+    of melody/rhythm/timbre's own calibrated display scores). Every call
+    site that shows a bare score next to (or instead of) a breakdown should
+    go through this, so a plain "score" can never contradict the expanded
+    per-factor bars for the same pair. None if MERIT vectors aren't
+    available for either side."""
+    bd = _breakdown_scores(agg_a, agg_b)
+    return bd["aggregate"] if bd is not None else None
 
 
 # ── Full-MPD playlist DB ─────────────────────────────────────────────────────
@@ -1230,10 +1311,26 @@ def _merge_fragment(node: dict, qvec=None, merit_qvec=None) -> dict:
                 # = the fixed-calibration 0-100 human-readable number the UI
                 # actually displays (see _display_score) — computed once here so
                 # it never needs recomputing per-request or per-render.
+                #
+                # In MERIT space, use the same mean-of-3-factor-displays as
+                # _breakdown_scores (via _merit_aggregate_score) rather than
+                # _display_score on the raw aggregate cosine directly — those
+                # two used to diverge (independently-calibrated aggregate
+                # scale vs. per-factor scales), which could persist an edge
+                # score higher than every melody/rhythm/timbre bar the click
+                # panel shows for the same pair. clip_low doesn't apply here
+                # since the mean-of-displays isn't floored/ceilinged again.
+                if use_merit:
+                    display = _merit_aggregate_score(this_vec, space_vecs[other_id])
+                    if display is None:
+                        display = _display_score(
+                            score, clip_low=True, thresholds=thresholds_for_display)
+                else:
+                    display = _display_score(
+                        score, clip_low=True, thresholds=thresholds_for_display)
                 link = {"source": node["id"], "target": other_id,
                         "value": round(score, 3),
-                        "score": round(_display_score(
-                            score, clip_low=True, thresholds=thresholds_for_display), 1),
+                        "score": round(display, 1),
                         "kind": "qq"}
                 st.graph["links"].append(link)
                 st.link_keys.add((node["id"], other_id))
@@ -1669,12 +1766,15 @@ def _map_neighbors(song_id: str, corpus=None) -> list:
     Each row also carries ``breakdown`` — the melody/rhythm/timbre/aggregate
     MERIT scores between ``song_id`` and that neighbor (see
     ``_breakdown_scores``), or None if MERIT vectors aren't available for
-    this pair (older bundle, or one side was cached pre-MERIT). The link's
-    own ``score`` is the aggregate the edge was actually drawn/ranked on
-    (MERIT-space once ``_merit_link_thresholds`` is set — see
-    ``_merge_fragment``); ``breakdown.aggregate`` is recomputed independently
-    and will usually match it closely but isn't guaranteed byte-identical
-    (the edge score may be inherited from a pre-migration MERT-space link)."""
+    this pair (older bundle, or one side was cached pre-MERIT). When a
+    breakdown IS available, ``score`` is set to ``breakdown["aggregate"]``
+    (mean of the three factor display scores) rather than the edge's own
+    persisted ``score`` — those used to diverge slightly since the edge was
+    scored on an independently-calibrated aggregate scale, which could show
+    a top-level number higher than every individual factor underneath it.
+    Falls back to the persisted edge score (or a raw-value recompute for a
+    pre-migration link) only when no breakdown can be computed, so the
+    click panel never has to show a bare score with no bars to back it."""
     self_merit_vec = _merit_vec_for(song_id, corpus)
     st = get_session()
     with st.lock:
@@ -1685,16 +1785,19 @@ def _map_neighbors(song_id: str, corpus=None) -> list:
             if other is None:
                 continue
             on = st.graph["nodes"].get(other, {})
-            score = l.get("score")
-            if score is None and l.get("value") is not None:   # pre-migration edge
-                score = round(_display_score(l["value"], clip_low=True), 1)
+            breakdown = _breakdown_scores(self_merit_vec, _merit_vec_for(other, corpus))
+            if breakdown is not None:
+                score = breakdown["aggregate"]
+            else:
+                score = l.get("score")
+                if score is None and l.get("value") is not None:   # pre-migration edge
+                    score = round(_display_score(l["value"], clip_low=True), 1)
             rows.append({
                 "id":       other,
                 "name":     on.get("name", ""),
                 "artist":   on.get("artist", ""),
                 "score":    score,
-                "breakdown": _breakdown_scores(
-                    self_merit_vec, _merit_vec_for(other, corpus)),
+                "breakdown": breakdown,
                 "on_graph": True,
             })
     rows.sort(key=lambda r: -(r["score"] or 0.0))
@@ -1748,16 +1851,25 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
             else:
                 rows = corpus.index.query(corpus.embeddings[idx], top_k=top_n + 1 + len(seen_ids))
             rows = [r for r in rows if r.get("id") not in seen_ids][:top_n]
-            similar = [{
-                "id":       r.get("id"),
-                "name":     r.get("name", ""),
-                "artist":   r.get("artist", ""),
-                "score":    round(_display_score(float(r.get("score", 0.0)), clip_low=False,
-                                                  thresholds=_merit_link_thresholds if has_merit else None), 1),
-                "breakdown": _breakdown_scores(
-                    self_merit_vec, _merit_vec_for(r.get("id"), corpus)) if has_merit else None,
-                "on_graph": r.get("id") in node_ids,
-            } for r in rows]
+            similar = []
+            for r in rows:
+                breakdown = _breakdown_scores(
+                    self_merit_vec, _merit_vec_for(r.get("id"), corpus)) if has_merit else None
+                # breakdown["aggregate"] (mean of the 3 calibrated factor scores)
+                # is the source of truth for the top-level score whenever a
+                # breakdown is available, so it can't read higher than every
+                # individual factor underneath it — see _breakdown_scores.
+                score = breakdown["aggregate"] if breakdown is not None else round(
+                    _display_score(float(r.get("score", 0.0)), clip_low=False,
+                                    thresholds=_merit_link_thresholds if has_merit else None), 1)
+                similar.append({
+                    "id":       r.get("id"),
+                    "name":     r.get("name", ""),
+                    "artist":   r.get("artist", ""),
+                    "score":    score,
+                    "breakdown": breakdown,
+                    "on_graph": r.get("id") in node_ids,
+                })
         return {
             "id":            song_id,
             "name":          m.get("name", ""),
@@ -1787,13 +1899,19 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
                 nid = corpus.metadata[i].get("id")
                 if nid in seen_ids:
                     continue
+                breakdown = _breakdown_scores(self_merit_vec, corpus.merit_index.embeddings[i])
+                # breakdown["aggregate"] is the source of truth here too (see
+                # the corpus-track branch above) — it can't read higher than
+                # every individual factor underneath it.
+                score = breakdown["aggregate"] if breakdown is not None else round(
+                    _display_score(float(sims[i]), clip_low=False,
+                                    thresholds=_merit_link_thresholds), 1)
                 similar.append({
                     "id":       nid,
                     "name":     corpus.metadata[i].get("name", ""),
                     "artist":   corpus.metadata[i].get("artist", ""),
-                    "score":    round(_display_score(float(sims[i]), clip_low=False,
-                                                      thresholds=_merit_link_thresholds), 1),
-                    "breakdown": _breakdown_scores(self_merit_vec, corpus.merit_index.embeddings[i]),
+                    "score":    score,
+                    "breakdown": breakdown,
                     "on_graph": nid in node_ids,
                 })
                 if len(similar) >= top_n:

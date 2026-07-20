@@ -661,21 +661,67 @@ function closeDetail() {
   state.expanded = false;
 }
 
+// Melody/rhythm/timbre in the same order MERIT emits them (see anther_ml/merit.py
+// FACTORS); "aggregate" is deliberately excluded here — it's already the headline
+// score shown before expansion, not one of the three expanded rows.
+const BREAKDOWN_FACTORS = [
+  { key: 'melody', label: 'Melody', cls: 'melody' },
+  { key: 'rhythm', label: 'Rhythm', cls: 'rhythm' },
+  { key: 'timbre', label: 'Timbre', cls: 'timbre' },
+];
+
+function breakdownHtml(bd) {
+  const rows = BREAKDOWN_FACTORS.map(f => {
+    const v = bd[f.key];
+    if (v == null) return '';
+    const pct = Math.max(0, Math.min(100, v));
+    return `
+      <div class="breakdown-row">
+        <span class="breakdown-label">${f.label}</span>
+        <div class="breakdown-bar"><div class="breakdown-fill breakdown-${f.cls}" style="width:${pct}%"></div></div>
+        <span class="breakdown-val">${Math.round(v)}</span>
+      </div>`;
+  }).join('');
+  return `<div class="breakdown-panel" hidden>${rows}</div>`;
+}
+
+function toggleBreakdown(i, btn) {
+  const row = btn.closest('.similar-row');
+  const panel = row && row.querySelector('.breakdown-panel');
+  if (!panel) return;
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  btn.classList.toggle('open', opening);
+  btn.setAttribute('aria-expanded', String(opening));
+}
+
 function similarRowHtml(s, i) {
+  // Single aggregate score by default; when the corpus carries a MERIT-aggregate
+  // index, `s.breakdown` also gives melody/rhythm/timbre — expand to compare
+  // *why* two songs are similar, not just how much.
+  const hasBreakdown = s.breakdown && typeof s.breakdown === 'object';
   const score = s.score != null
-    ? `<span class="similar-score">Similarity score: ${Math.round(s.score)}</span>` : '';
+    ? `<span class="similar-score" title="${hasBreakdown ? 'Aggregate similarity' : 'Similarity score'}">${Math.round(s.score)}</span>`
+    : '';
+  const expandBtn = hasBreakdown
+    ? `<button class="btn-expand" title="Show melody / rhythm / timbre breakdown"
+         aria-expanded="false" onclick="event.stopPropagation(); toggleBreakdown(${i}, this)">▾</button>`
+    : '';
   const onGraph = s.on_graph || AtlasGraph.hasNode(s.id);
-  const add = onGraph ? '' : `<button class="btn-add" onclick="addSimilar(${i}, this)">Add</button>`;
+  const add = onGraph ? '' : `<button class="btn-add" onclick="event.stopPropagation(); addSimilar(${i}, this)">Add</button>`;
   const preview = `<button class="btn-icon" title="Preview"
        onclick='event.stopPropagation(); playPreview(${JSON.stringify(s.id)}, this)'>▶</button>`;
   return `
-  <div class="similar-row${onGraph ? ' on-graph' : ''}"
-       ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
-    <div class="track-info">
-      <div class="track-title">${esc(s.name)}</div>
-      <div class="track-artist">${esc(s.artist)}</div>
+  <div class="similar-row${onGraph ? ' on-graph' : ''}">
+    <div class="similar-row-main" ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
+      <div class="track-info">
+        <div class="track-title">${esc(s.name)}</div>
+        <div class="track-artist">${esc(s.artist)}</div>
+      </div>
+      <span class="similar-score-group">${score}${expandBtn}</span>
+      ${preview}${add}
     </div>
-    ${score}${preview}${add}
+    ${hasBreakdown ? breakdownHtml(s.breakdown) : ''}
   </div>`;
 }
 

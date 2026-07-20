@@ -54,6 +54,15 @@ CALIBRATION_FILENAME = "link_calibration.json"
 # — never overwrites the MERT-based sidecar above, since the two indices live
 # side by side in the same bundle dir and calibrate independently.
 CALIBRATION_FILENAME_MERIT = "link_calibration_merit.json"
+# Per-factor (melody/rhythm/timbre) sidecar. Each factor's own raw-cosine
+# distribution can run much hotter or colder than the aggregate's — e.g. on
+# the 100k+billboard corpus, timbre's 95th-percentile random-pair cosine is
+# ~0.95 while the aggregate's is ~0.64. Reusing the aggregate-calibrated
+# scale for a factor's display score means that factor either clips to 100
+# constantly (if it runs hotter than the aggregate) or almost never reaches
+# the top of the 0-100 range (if colder). Keyed by FACTOR_NAMES value
+# ("melody"/"rhythm"/"timbre"), not the internal "mel"/"rhy"/"tim" code.
+CALIBRATION_FILENAME_MERIT_FACTORS = "link_calibration_merit_factors.json"
 CALIBRATION_FORMAT_VERSION = 1
 
 BAND_NEAR_IDENTICAL = "near-identical"
@@ -217,5 +226,80 @@ def load_calibration(corpus_dir, filename: str = CALIBRATION_FILENAME):
         return None
     try:
         return LinkThresholds.from_dict(data)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def calibrate_factor_link_thresholds(
+    factor_vectors: dict, n_pairs: int = 200_000, pctl: float = QUERY_LINK_PCTL,
+    seed: int = 0,
+) -> dict:
+    """Independent ``LinkThresholds`` per factor, one per key of
+    ``factor_vectors`` (e.g. ``{"mel": (N,128), "rhy": (N,128), "tim":
+    (N,128)}`` from ``merit_index.load_factor_vectors`` — unit-norm rows).
+    Draws the SAME ``n_pairs`` random index pairs once (seed=0) and reuses
+    them across all factors, so a pair that's "close" on melody and "close"
+    on timbre are compared on the same underlying sample — only the
+    per-factor cosine and its own distribution differ.
+
+    Calibrating each factor off its own draw (rather than reusing the
+    aggregate's ``calibrate_link_thresholds`` scale for all three) matters
+    because factors can have very different raw-cosine spreads — e.g. timbre
+    frequently runs close to 1.0 between unrelated tracks while rhythm
+    spreads much wider, so a shared scale clips one factor to 100 constantly
+    while the other rarely reaches the top.
+    """
+    any_vec = next(iter(factor_vectors.values()))
+    n = any_vec.shape[0]
+    if n < 2:
+        return {f: LinkThresholds.defaults() for f in factor_vectors}
+    rng = np.random.default_rng(seed)
+    a = rng.integers(0, n, n_pairs)
+    b = rng.integers(0, n, n_pairs)
+    mask = a != b
+    a, b = a[mask], b[mask]
+    out = {}
+    for f, E in factor_vectors.items():
+        cos = np.einsum("ij,ij->i", E[a], E[b])
+        qq_threshold = float(np.percentile(cos, pctl))
+        score_ceiling_raw = float(cos.max())
+        close_cutoff = float(np.percentile(cos, CLOSE_PCTL))
+        near_identical_cutoff = max(
+            float(np.percentile(cos, NEAR_IDENTICAL_PCTL)), NEAR_IDENTICAL_FLOOR)
+        out[f] = LinkThresholds(qq_threshold, score_ceiling_raw, close_cutoff,
+                                 near_identical_cutoff, pctl=pctl,
+                                 n_pairs=len(a), seed=seed)
+    return out
+
+
+def save_factor_calibration(
+    corpus_dir, thresholds_by_factor: dict,
+    filename: str = CALIBRATION_FILENAME_MERIT_FACTORS,
+) -> str:
+    """Write the per-factor sidecar (``{factor_name: LinkThresholds.to_dict()}``).
+    Atomic (write-then-rename), same convention as ``save_calibration``."""
+    path = _sidecar_path(corpus_dir, filename)
+    tmp = path + ".tmp"
+    payload = {f: t.to_dict() for f, t in thresholds_by_factor.items()}
+    with open(tmp, "w") as fh:
+        json.dump(payload, fh)
+    os.replace(tmp, path)
+    return path
+
+
+def load_factor_calibration(
+    corpus_dir, filename: str = CALIBRATION_FILENAME_MERIT_FACTORS,
+):
+    """``{factor_name: LinkThresholds}`` from the sidecar, or ``None`` if it
+    doesn't exist yet or fails to parse (caller falls back to a shared/
+    aggregate scale)."""
+    path = _sidecar_path(corpus_dir, filename)
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return {f: LinkThresholds.from_dict(d) for f, d in data.items()}
     except (KeyError, TypeError, ValueError):
         return None

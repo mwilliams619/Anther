@@ -23,6 +23,11 @@ the raw MERT-1024 vector (it was fit on that space; see
     link_calibration_merit.json         LinkThresholds calibrated on
                                          index_merit_agg (separate file from
                                          link_calibration.json)
+    link_calibration_merit_factors.json Per-factor LinkThresholds (melody/
+                                         rhythm/timbre each calibrated off
+                                         their OWN raw-cosine distribution,
+                                         not the aggregate's — see
+                                         calibrate_factor_link_thresholds)
 
 Usage:
     python -m anther_ml.corpus.merit_index --bundle models/corpus_mpd_100k_merit
@@ -39,8 +44,11 @@ import numpy as np
 
 from ..calibration import (
     CALIBRATION_FILENAME_MERIT,
+    CALIBRATION_FILENAME_MERIT_FACTORS,
+    calibrate_factor_link_thresholds,
     calibrate_link_thresholds,
     save_calibration,
+    save_factor_calibration,
 )
 from ..merit import FACTORS, load_heads, merit_config, project
 from ..similarity import SongIndex
@@ -114,9 +122,21 @@ def build_merit_aggregate_index(
     calib_path = save_calibration(bundle_dir, thresholds, filename=CALIBRATION_FILENAME_MERIT)
     print(f"{os.path.basename(calib_path)}: {thresholds.to_dict()}")
 
+    # Per-factor thresholds — each factor's own raw-cosine distribution can
+    # run much hotter/colder than the aggregate's (see calibration.py's
+    # CALIBRATION_FILENAME_MERIT_FACTORS docstring), so reusing `thresholds`
+    # above for melody/rhythm/timbre display scores clips one factor to 100
+    # constantly while another rarely reaches it. Calibrate independently.
+    factor_thresholds = calibrate_factor_link_thresholds(factors, n_pairs=200_000, seed=0)
+    factor_calib_path = save_factor_calibration(
+        bundle_dir, factor_thresholds, filename=CALIBRATION_FILENAME_MERIT_FACTORS)
+    print(f"{os.path.basename(factor_calib_path)}: "
+          f"{ {f: t.to_dict() for f, t in factor_thresholds.items()} }")
+
     return {
         "n_tracks": n,
         "thresholds": thresholds.to_dict(),
+        "factor_thresholds": {f: t.to_dict() for f, t in factor_thresholds.items()},
         "factor_shapes": {f: factors[f].shape for f in FACTORS},
         "agg_shape": concat.shape,
     }

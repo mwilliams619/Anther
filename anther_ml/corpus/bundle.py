@@ -65,6 +65,7 @@ class ReferenceCorpus:
         self._merit_index = _UNSET
         self._merit_factors = _UNSET
         self._merit_calibration = _UNSET
+        self._merit_factor_calibration = _UNSET
 
     # -- convenience views (single source of truth stays in the parts) --------
 
@@ -210,6 +211,28 @@ class ReferenceCorpus:
                     self.dir, filename=CALIBRATION_FILENAME_MERIT
                 )
         return self._merit_calibration
+
+    @property
+    def merit_factor_calibration(self):
+        """``{"melody"|"rhythm"|"timbre": LinkThresholds}`` sidecar
+        (link_calibration_merit_factors.json) — each factor calibrated off
+        its OWN raw-cosine distribution rather than the aggregate's, since
+        e.g. timbre commonly runs much hotter than melody/rhythm (see
+        anther_ml/calibration.py's CALIBRATION_FILENAME_MERIT_FACTORS
+        docstring). ``None`` if not calibrated yet — caller falls back to
+        ``merit_calibration`` (the shared aggregate scale) for all factors."""
+        if self._merit_factor_calibration is _UNSET:
+            self._merit_factor_calibration = None
+            if self.dir is not None:
+                from ..calibration import (
+                    CALIBRATION_FILENAME_MERIT_FACTORS,
+                    load_factor_calibration,
+                )
+
+                self._merit_factor_calibration = load_factor_calibration(
+                    self.dir, filename=CALIBRATION_FILENAME_MERIT_FACTORS
+                )
+        return self._merit_factor_calibration
 
     # -- lookups ---------------------------------------------------------------
 

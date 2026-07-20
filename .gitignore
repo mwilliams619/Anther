@@ -9,6 +9,7 @@ venv/
 data/audio/
 data/fma_metadata/
 data/mpd_dump/
+data/billboard/
 data/*.zip
 
 # derived eval-embedding checkpoints — regenerate via `tagging embed-eval`
