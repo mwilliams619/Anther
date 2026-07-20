@@ -1,43 +1,107 @@
 """
-Flask backend for the song staging + clustering UI.
+Flask backend for the song atlas UI.
 Run:  python ui/app.py
 Open: http://localhost:5000
 """
 
-import sys, json, pickle
+import os
+import secrets
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from flask import Flask, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
-import numpy as np
 
-from anther_ml.spotify_deezer import _deezer_get
-import jobs
+def _load_dotenv(path: Path) -> None:
+    """Populate os.environ from a KEY=VALUE .env file (repo root), without
+    a new dependency and without clobbering real exported env vars — those
+    still win over the file. Must run before `import atlas`, since its
+    module-level config (CORPUS_DIR, MPD_DB, …) reads os.environ at import
+    time; SPOTIFY_CLIENT_ID/SECRET are read lazily so either order works
+    for those, but loading first covers both."""
+    if not path.is_file():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, val = line.partition('=')
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        os.environ.setdefault(key, val)
+
+
+_load_dotenv(Path(__file__).parent.parent / '.env')
+
+import requests
+from flask import Flask, request, jsonify, send_from_directory, session
+from werkzeug.utils import secure_filename
+
+import atlas
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
 ALLOWED_EXTS  = {'.mp3', '.wav', '.flac', '.m4a'}
 MAX_UPLOAD    = 25 * 1024 * 1024   # 25 MB
 SESSION_DIR   = Path(__file__).parent / 'session'
-UPLOADS_DIR   = SESSION_DIR / 'uploads'
-MANIFEST_PATH = SESSION_DIR / 'manifest.json'
+# Uploads are per-session now (session/<sid>/uploads/) — see _session_uploads_dir.
+# The legacy flat session/uploads/ dir, if present, is migrated into the
+# "default" session by atlas on first access, so we must NOT recreate it here.
+
+# mentor/service.py — a separate warm process (see mentor/README.md on why
+# the model isn't loaded in this process); started independently.
+MENTOR_HOST    = os.environ.get('ANTHER_MENTOR_HOST', '127.0.0.1')
+MENTOR_PORT    = os.environ.get('ANTHER_MENTOR_PORT', '5100')
+MENTOR_URL     = f'http://{MENTOR_HOST}:{MENTOR_PORT}'
+MENTOR_TIMEOUT = float(os.environ.get('ANTHER_MENTOR_TIMEOUT', '30'))
 
 SESSION_DIR.mkdir(exist_ok=True)
-UPLOADS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+# Signed session cookie identifies a browser's mentor chat session; a fresh
+# key each restart just means chat history resets, which is fine since the
+# mentor service's own sessions are keyed the same way and get swept by TTL.
+app.secret_key = os.environ.get('ANTHER_UI_SECRET_KEY', secrets.token_hex(32))
 
-# ── Manifest helpers ─────────────────────────────────────────────────────────
 
-def load_manifest() -> list:
-    if MANIFEST_PATH.exists():
-        return json.loads(MANIFEST_PATH.read_text())
-    return []
+# ── Per-session isolation (Option 1) ─────────────────────────────────────────
+# Each browser gets its own map (graph + uploads) keyed by a signed-cookie id.
+# The id is bound into atlas's request-scoped ContextVar at the start of every
+# request and released at the end, so all the atlas.* calls in the handlers
+# below operate on that session's state without threading an id through each
+# signature. No login — a cleared cookie starts a fresh, empty map.
 
-def save_manifest(m: list):
-    MANIFEST_PATH.write_text(json.dumps(m, indent=2))
+def _graph_session_id() -> str:
+    """The browser's graph session id, minted + stored in the signed cookie on
+    first visit. Distinct from mentor_session_id so clearing one doesn't reset
+    the other."""
+    sid = session.get('graph_session_id')
+    if not sid:
+        sid = secrets.token_urlsafe(16)
+        session['graph_session_id'] = sid
+    return sid
+
+
+@app.before_request
+def _bind_graph_session():
+    request._atlas_token = atlas.set_session(_graph_session_id())
+
+
+@app.teardown_request
+def _release_graph_session(exc=None):
+    token = getattr(request, '_atlas_token', None)
+    if token is not None:
+        atlas.reset_session(token)
+
+
+def _session_uploads_dir():
+    """This request's uploads directory (session/<sid>/uploads/), created on
+    demand. Replaces the old global UPLOADS_DIR so one user's uploads aren't
+    served to another."""
+    st = atlas.get_session()
+    st.ensure_dirs()
+    return st.uploads_dir
+
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -46,52 +110,259 @@ def index():
     return send_from_directory('static', 'index.html')
 
 
-@app.route('/api/deezer/search')
-def deezer_search():
+
+
+# ── Atlas: tiered search + force-graph placement ─────────────────────────────
+
+@app.route('/api/search')
+def atlas_search():
     q = request.args.get('q', '').strip()
     if not q:
-        return jsonify([])
-    data = _deezer_get('search/track', params={'q': q, 'limit': 25})
-    if 'error' in data:
-        return jsonify({'error': data['error'].get('message', 'Deezer error')}), 502
-    results = []
-    for h in (data.get('data') or []):
-        if not h.get('preview'):
-            continue    # skip tracks with no 30s preview
-        results.append({
-            'deezer_id':   h['id'],
-            'title':       h.get('title', ''),
-            'artist':      (h.get('artist') or {}).get('name', ''),
-            'album':       (h.get('album')  or {}).get('title', ''),
-            'cover':       (h.get('album')  or {}).get('cover_small', ''),
-            'preview_url': h['preview'],
-            'duration':    h.get('duration', 0),
-        })
-    return jsonify(results)
+        return jsonify({'results': [], 'tiers': {}})
+    try:
+        return jsonify(atlas.search(q))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
-@app.route('/api/stage', methods=['GET'])
-def stage_get():
-    return jsonify(load_manifest())
+@app.route('/api/playlists/search')
+def playlists_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': []})
+    try:
+        limit = int(request.args.get('limit', 20))
+        return jsonify(atlas.search_playlists(q, limit=limit))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
 
 
-@app.route('/api/stage', methods=['POST'])
-def stage_add():
-    hit      = request.get_json(force=True) or {}
-    manifest = load_manifest()
-    item_id  = f"deezer_{hit.get('deezer_id')}"
-    if any(m['id'] == item_id for m in manifest):
-        return jsonify({'status': 'duplicate', 'count': len(manifest)})
-    manifest.append({'id': item_id, 'type': 'deezer', **hit})
-    save_manifest(manifest)
-    return jsonify({'status': 'added', 'count': len(manifest)})
+@app.route('/api/playlist/place', methods=['POST'])
+def playlist_place():
+    body = request.get_json(force=True) or {}
+    try:
+        return jsonify(atlas.place_playlist(body.get('pid')))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
-@app.route('/api/stage/<path:item_id>', methods=['DELETE'])
-def stage_remove(item_id):
-    manifest = [m for m in load_manifest() if m['id'] != item_id]
-    save_manifest(manifest)
-    return jsonify({'status': 'removed', 'count': len(manifest)})
+@app.route('/api/playlist/status/<job_id>')
+def playlist_status(job_id):
+    import playlist_jobs
+    cursor = int(request.args.get('cursor', 0))
+    return jsonify(playlist_jobs.get_status(job_id, cursor))
+
+
+@app.route('/api/playlist/stop/<job_id>', methods=['POST'])
+def playlist_stop(job_id):
+    import playlist_jobs
+    try:
+        return jsonify(playlist_jobs.stop(job_id))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/albums/search')
+def albums_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': []})
+    try:
+        limit = int(request.args.get('limit', 20))
+        return jsonify(atlas.search_albums(q, limit=limit))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/album/place', methods=['POST'])
+def album_place():
+    body = request.get_json(force=True) or {}
+    try:
+        return jsonify(atlas.place_album(body.get('album_id')))
+    except ValueError as exc:
+        import traceback; traceback.print_exc()  # TEMP: reveal exact line
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/place', methods=['POST'])
+def atlas_place():
+    result = request.get_json(force=True) or {}
+    try:
+        fragment = atlas.place_song(result)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify(fragment)
+
+
+@app.route('/api/recommend', methods=['POST'])
+def atlas_recommend():
+    """Multi-song recommendation: body {seed_ids: [...], top_k?, method?}."""
+    body = request.get_json(force=True) or {}
+    seed_ids = body.get('seed_ids') or []
+    try:
+        top_k  = int(body.get('top_k', 20))
+        method = body.get('method', 'centroid')
+        return jsonify(atlas.recommend(seed_ids, top_k=top_k, method=method))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@app.route('/api/graph')
+def atlas_graph():
+    # Never let a per-session load/rebuild error (e.g. a saved graph that
+    # doesn't reconcile against a freshly-swapped corpus) surface as an
+    # unhandled 500. The frontend treats any non-2xx as "not ready yet" and
+    # would retry forever; instead report a ready-but-empty map plus the error
+    # so the rest of the UI stays usable and the cause is visible.
+    try:
+        return jsonify(atlas.get_graph())
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("get_graph failed")
+        return jsonify({'ready': True, 'nodes': [], 'links': [],
+                        'groups': {}, 'error': str(exc)})
+
+
+@app.route('/api/graph/clear', methods=['POST'])
+def graph_clear():
+    atlas.clear_graph()
+    return jsonify({'status': 'cleared'})
+
+
+@app.route('/api/node/<path:node_id>', methods=['DELETE'])
+def node_remove(node_id):
+    result = atlas.remove_node(node_id)
+    if result is None:
+        return jsonify({'error': 'unknown node id'}), 404
+    return jsonify(result)
+
+
+@app.route('/api/song/<path:song_id>')      # <path:> — ids contain ':' and filenames
+def atlas_song(song_id):
+    expand = request.args.get('expand', '').lower() in ('1', 'true', 'yes')
+    try:
+        detail = atlas.song_detail(song_id, top_n=int(request.args.get('n', 10)),
+                                   expand=expand)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    if detail is None:
+        return jsonify({'error': 'unknown song id'}), 404
+    return jsonify(detail)
+
+
+@app.route('/api/song/<path:song_id>/preview')
+def atlas_song_preview(song_id):
+    # Uploaded personal songs have their full audio on disk under UPLOADS_DIR.
+    # Serve it directly instead of trying (and failing) to match a personal
+    # track against Deezer by title/artist. The node id is 'upload:<safe>',
+    # which maps straight back to the saved filename.
+    if song_id.startswith('upload:'):
+        safe = secure_filename(song_id.split(':', 1)[1])
+        if safe and (_session_uploads_dir() / safe).is_file():
+            return jsonify({'preview_url': f'/api/upload-audio/{safe}'})
+        # else fall through — file was swept; normal resolution returns None
+    try:
+        url = atlas.get_preview_url(song_id)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'preview_url': url})
+
+
+@app.route('/api/upload-audio/<path:name>')
+def upload_audio(name):
+    """Serve a previously-uploaded personal song's audio bytes so the detail
+    pane's ▶ button can play the real file (uploads live in session/uploads/).
+    secure_filename + the is_file() guard keep this from serving anything
+    outside UPLOADS_DIR; conditional=True enables Range requests for seeking."""
+    uploads_dir = _session_uploads_dir()
+    safe = secure_filename(name)
+    if not safe or not (uploads_dir / safe).is_file():
+        return jsonify({'error': 'not found'}), 404
+    return send_from_directory(uploads_dir, safe, conditional=True)
+
+
+@app.route('/api/song/<path:song_id>/spotify')
+def atlas_song_spotify(song_id):
+    """Bare Spotify track id for the no-login iframe embed (full track for
+    visitors already logged into Spotify in that browser; 30s preview
+    otherwise — no OAuth, no app registration, no per-user quota)."""
+    try:
+        track_id = atlas.get_spotify_track_id(song_id)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'track_id': track_id})
+
+
+
+
+@app.route('/api/mentor/chat', methods=['POST'])
+def mentor_chat():
+    """Forward a chat turn to the warm mentor service (mentor/service.py)."""
+    body = request.get_json(force=True) or {}
+    question = (body.get('question') or '').strip()
+    selected_node_id = body.get('selected_node_id') or None
+    if not question:
+        return jsonify({'error': 'question is required'}), 400
+    session_id = session.get('mentor_session_id')
+    if not session_id:
+        session_id = secrets.token_urlsafe(16)
+        session['mentor_session_id'] = session_id
+    # The mentor runs in a separate process and can't see our request-scoped
+    # atlas session, so we tell it which browser map to read: the same
+    # graph_session_id that binds this request's atlas.* calls.
+    graph_session_id = _graph_session_id()
+    # Boundary trace: prove what the browser actually sent. If selected_node_id
+    # is None here while a node is pinned, the browser is serving a stale
+    # app.js (hard-refresh). Silence with ANTHER_UI_TRACE=0.
+    if os.environ.get('ANTHER_UI_TRACE', '1') not in ('', '0', 'false'):
+        app.logger.warning('[mentor_chat] graph_session=%s selected_node=%r q=%r',
+                            graph_session_id, selected_node_id, question[:60])
+    try:
+        resp = requests.post(f'{MENTOR_URL}/chat',
+                              json={'session_id': session_id, 'question': question,
+                                    'selected_node_id': selected_node_id,
+                                    'graph_session_id': graph_session_id},
+                              timeout=MENTOR_TIMEOUT)
+    except requests.RequestException:
+        return jsonify({'error': 'Mentor is currently unavailable.'}), 503
+    if resp.status_code != 200:
+        try:
+            err = resp.json().get('error', 'mentor chat failed')
+        except ValueError:
+            err = 'mentor chat failed'
+        return jsonify({'error': err}), 502
+    return jsonify(resp.json())
+
+
+@app.route('/api/mentor/reset', methods=['POST'])
+def mentor_reset():
+    session_id = session.get('mentor_session_id')
+    if not session_id:
+        return jsonify({'ok': True})
+    try:
+        requests.post(f'{MENTOR_URL}/reset', json={'session_id': session_id}, timeout=MENTOR_TIMEOUT)
+    except requests.RequestException:
+        return jsonify({'error': 'Mentor is currently unavailable.'}), 503
+    return jsonify({'ok': True})
+
+
+@app.route('/api/demo/load', methods=['POST'])
+def demo_load():
+    """Load the 2025 year-end top 20 chart as a demo cluster, resolved live
+    against Deezer (same source/pipeline as album import — instant for
+    cached tracks, background-embedded streaming for the rest)."""
+    try:
+        return jsonify(atlas.place_demo_top20())
+    except ValueError as exc:
+        import traceback; traceback.print_exc()  # TEMP: reveal exact line
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -107,51 +378,287 @@ def upload():
         return jsonify({'error': 'File too large (max 25 MB)'}), 400
 
     safe = secure_filename(f.filename)
-    dest = UPLOADS_DIR / safe
+    dest = _session_uploads_dir() / safe
     dest.write_bytes(data)
 
-    manifest = load_manifest()
-    item_id  = f"upload_{safe}"
-    if not any(m['id'] == item_id for m in manifest):
-        manifest.append({
-            'id':       item_id,
-            'type':     'upload',
-            'filename': safe,
-            'title':    Path(safe).stem,
-            'artist':   'personal',
-            'path':     str(dest),
+    # Get artist from request (either from form data or default)
+    artist_id = request.form.get('artist_id', '')
+    artist_name = 'personal'  # default
+    
+    # Look up the artist name if an artist_id was provided
+    if artist_id and atlas._artist_meta:
+        try:
+            aid = int(artist_id)
+            if 0 <= aid < len(atlas._artist_meta):
+                artist_name = atlas._artist_meta[aid].get('artist', 'personal')
+        except (ValueError, TypeError):
+            pass  # fall back to default
+
+    # Place the uploaded file onto the frozen-corpus force graph.
+    try:
+        fragment = atlas.place_song({
+            'source': 'upload',
+            'id':     f'upload:{safe}',
+            'title':  Path(safe).stem,
+            'artist': artist_name,
+            'path':   str(dest),
         })
-        save_manifest(manifest)
-    return jsonify({'status': 'uploaded', 'id': item_id, 'title': Path(safe).stem})
+    except Exception as exc:
+        return jsonify({'error': f'Placement failed: {exc}'}), 500
+    return jsonify({'status': 'uploaded', 'id': f'upload:{safe}',
+                    'title': Path(safe).stem, 'fragment': fragment})
 
 
-@app.route('/api/cluster', methods=['POST'])
-def cluster_start():
-    manifest = load_manifest()
-    if len(manifest) < 15:
-        return jsonify({'error': f'Need at least 15 tracks (have {len(manifest)})'}), 400
-    job_id = jobs.start_cluster_job(manifest)
-    return jsonify({'job_id': job_id})
+# ── Artist clustering API (Phase 2) ────────────────────────────────────────────
 
 
-@app.route('/api/cluster/status/<job_id>')
-def cluster_status(job_id):
-    return jsonify(jobs.get_status(job_id))
+@app.route('/api/artist/search')
+def artist_search():
+    """Search artists by name (fuzzy matching). Returns list of matching artists
+    with metadata (name, track_count, cluster_id)."""
+    if not atlas._artist_meta:
+        return jsonify([])
+    
+    query = request.args.get('q', '').strip()
+    if not query or len(query) < 2:
+        return jsonify([])
+    
+    try:
+        from fuzzywuzzy import fuzz
+        use_fuzz = True
+    except ImportError:
+        use_fuzz = False
+    
+    query_norm = atlas._norm(query)
+    results = []
+    
+    for i, artist_entry in enumerate(atlas._artist_meta):
+        name = artist_entry.get('artist', '')
+        name_norm = atlas._norm(name)
+        
+        # Exact or prefix match
+        if query_norm in name_norm or name_norm.startswith(query_norm):
+            score = 100
+        elif use_fuzz:
+            score = fuzz.token_set_ratio(query_norm, name_norm)
+        else:
+            # Fallback: substring matching if no fuzzywuzzy
+            score = 80 if query_norm in name_norm else 0
+        
+        if score >= 70:  # threshold for inclusion
+            cluster_id = int(atlas._artist_labels[i]) if atlas._artist_labels is not None else None
+            results.append({
+                'id': i,
+                'name': name,
+                'track_count': artist_entry.get('n_tracks', 0),
+                'cluster_id': cluster_id,
+                'score': score,
+            })
+    
+    # Sort by score descending
+    results.sort(key=lambda x: -x['score'])
+    return jsonify(results[:20])  # cap at 20 results
 
 
-@app.route('/api/results')
-def results():
-    emb_path    = SESSION_DIR / 'embedding_2d_phase2.npy'
-    labels_path = SESSION_DIR / 'labels_phase2.npy'
-    meta_path   = SESSION_DIR / 'metadata.pkl'
-    if not (emb_path.exists() and labels_path.exists() and meta_path.exists()):
-        return jsonify({'error': 'no results yet'}), 404
-    embedding_2d = np.load(emb_path).tolist()
-    labels       = np.load(labels_path).tolist()
-    with open(meta_path, 'rb') as fh:
-        metadata = pickle.load(fh)
-    return jsonify({'embedding_2d': embedding_2d, 'labels': labels, 'metadata': metadata})
+@app.route('/api/artist/<int:artist_id>')
+def artist_detail(artist_id):
+    """Get full artist metadata including embedding stats."""
+    if not atlas._artist_meta or artist_id < 0 or artist_id >= len(atlas._artist_meta):
+        return jsonify({'error': 'Artist not found'}), 404
+    
+    artist_entry = atlas._artist_meta[artist_id]
+    cluster_id = int(atlas._artist_labels[artist_id]) if atlas._artist_labels is not None else None
+    
+    return jsonify({
+        'id': artist_id,
+        'name': artist_entry.get('artist', ''),
+        'track_count': artist_entry.get('n_tracks', 0),
+        'sources': artist_entry.get('sources', []),
+        'sample_track': artist_entry.get('sample_track', ''),
+        'cluster_id': cluster_id,
+    })
+
+
+@app.route('/api/artist/graph')
+def artist_graph():
+    """Get the artist clustering graph: artist nodes and kNN edges.
+    
+    Returns:
+    {
+        nodes: [{id, name, cluster_id, track_count}, ...],
+        links: [{source, target, distance}, ...],
+        clusters: {cluster_id: cluster_label, ...}
+    }
+    """
+    if not atlas._artist_meta or atlas._artist_labels is None:
+        return jsonify({'error': 'Artist clustering not loaded'}), 503
+    
+    # Build nodes from artist metadata
+    nodes = []
+    for i, artist_entry in enumerate(atlas._artist_meta):
+        cluster_id = int(atlas._artist_labels[i])
+        nodes.append({
+            'id': i,
+            'name': artist_entry.get('artist', ''),
+            'cluster_id': cluster_id,
+            'track_count': artist_entry.get('n_tracks', 0),
+        })
+    
+    # Compute k-NN edges in embedding space (k=6, cosine distance)
+    links = []
+    if atlas._artist_embeddings is not None:
+        from sklearn.neighbors import NearestNeighbors
+        k = 6
+        try:
+            nbrs = NearestNeighbors(n_neighbors=min(k + 1, len(nodes)), 
+                                    metric='cosine').fit(atlas._artist_embeddings)
+            distances, indices = nbrs.kneighbors(atlas._artist_embeddings)
+            
+            seen_edges = set()
+            for src_id, (dists, neighbor_ids) in enumerate(zip(distances, indices)):
+                for dist, tgt_id in zip(dists, neighbor_ids):
+                    if src_id == tgt_id:  # skip self-loops
+                        continue
+                    # Use frozenset to avoid duplicate undirected edges
+                    edge_key = frozenset([src_id, tgt_id])
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        # Convert cosine distance [0, 2] back to similarity [0, 1]
+                        similarity = 1 - dist / 2
+                        links.append({
+                            'source': src_id,
+                            'target': tgt_id,
+                            'distance': float(dist),
+                            'similarity': float(similarity),
+                        })
+        except Exception as e:
+            print(f"[atlas] error computing artist k-NN: {e}")
+    
+    # Map cluster IDs to labels if available (from the genre labeling done in Phase 2)
+    clusters = {}
+    cluster_labels = {
+        0: 'Industrial/experimental electronic',
+        1: 'Cinematic/orchestral/ambient',
+        2: 'Metal',
+        3: 'Hip-hop/rap',
+        4: 'Classic rock/punk',
+        5: 'Trance/EDM',
+        6: 'Country',
+        7: 'International/world pop',
+        8: 'Pop',
+        9: 'Trap/modern hip-hop',
+        10: 'Pop-rock/alt-pop',
+        11: 'Alt-rock/punk',
+        12: 'New age/instrumental',
+        13: 'Jazz',
+        14: 'Latin/salsa',
+        15: 'Early blues & jazz vocalists',
+        16: 'Film & orchestral score composers',
+        17: 'Classical choral/early music',
+        18: 'Singer-songwriter/Americana',
+        19: 'Baroque classical',
+        20: 'Mid-century pop/crooners',
+        21: 'Reggae/ska',
+        22: 'Euro schlager/adult contemporary',
+        23: 'Turkish/Middle Eastern pop',
+        24: 'Novelty/comedy/children\'s',
+        25: 'Soul/funk',
+        26: 'Classical & flamenco guitar',
+        27: '1950s-60s rock & roll',
+    }
+    for cluster_id in range(28):  # 28 clusters from Phase 2
+        clusters[cluster_id] = cluster_labels.get(cluster_id, f'Cluster {cluster_id}')
+    
+    return jsonify({
+        'nodes': nodes,
+        'links': links,
+        'clusters': clusters,
+    })
+
+
+@app.route('/api/artist/create', methods=['POST'])
+def artist_create():
+    """Create a new artist or return existing if fuzzy-match exceeds threshold.
+    
+    Request body: {name: str}
+    Response: {id: int, name: str, is_new: bool}
+    
+    For now, new artists are ephemeral (session-scoped in-memory) until an upload
+    completes and persists them to disk.
+    """
+    if not atlas._artist_meta:
+        return jsonify({'error': 'Artist clustering not loaded'}), 503
+    
+    data = request.get_json() or {}
+    name = data.get('name', '').strip()
+    
+    if not name:
+        return jsonify({'error': 'Artist name required'}), 400
+    
+    if len(name) > 255:
+        return jsonify({'error': 'Artist name too long (max 255 chars)'}), 400
+    
+    # Check for fuzzy match against existing artists
+    try:
+        from fuzzywuzzy import fuzz
+        use_fuzz = True
+    except ImportError:
+        use_fuzz = False
+    
+    name_norm = atlas._norm(name)
+    best_match_id = None
+    best_score = 0
+    match_threshold = 85  # high threshold for auto-merge
+    
+    for i, artist_entry in enumerate(atlas._artist_meta):
+        existing_name = artist_entry.get('artist', '')
+        existing_norm = atlas._norm(existing_name)
+        
+        if existing_norm == name_norm:
+            # Exact match
+            return jsonify({
+                'id': i,
+                'name': existing_name,
+                'is_new': False,
+            })
+        
+        if use_fuzz:
+            score = fuzz.token_set_ratio(name_norm, existing_norm)
+            if score > best_score:
+                best_score = score
+                best_match_id = i
+    
+    # If we found a high-confidence match, return it
+    if best_match_id is not None and best_score >= match_threshold:
+        artist_entry = atlas._artist_meta[best_match_id]
+        return jsonify({
+            'id': best_match_id,
+            'name': artist_entry.get('artist', ''),
+            'is_new': False,
+        })
+    
+    # Otherwise, create a new artist and persist it to disk
+    try:
+        new_id = atlas.persist_new_artist(name)
+    except Exception as e:
+        return jsonify({'error': f'Failed to create artist: {e}'}), 500
+    
+    if new_id is None:
+        return jsonify({'error': 'Failed to create artist'}), 500
+    
+    return jsonify({
+        'id': new_id,
+        'name': name,
+        'is_new': True,
+    })
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, use_reloader=False)
+    atlas.warm()          # load the frozen corpus in the background at startup
+    # 0.0.0.0 so the UI is reachable from other machines on the LAN
+    # (e.g. a laptop browsing to http://<dev-box-ip>:5000) without VS Code
+    # port forwarding. Dev server on a trusted network only.
+    app.run(debug=os.environ.get('ANTHER_DEBUG') == '1',
+            host=os.environ.get('ANTHER_UI_HOST', '0.0.0.0'),
+            port=int(os.environ.get('ANTHER_UI_PORT', '5000')),
+            use_reloader=False)

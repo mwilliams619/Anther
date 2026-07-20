@@ -16,15 +16,31 @@ from .bundle import ReferenceCorpus
 
 def _add_build_parser(sub):
     p = sub.add_parser("build", help="embed a source and freeze a corpus bundle")
-    p.add_argument("--source", choices=("fma", "local", "mpd"), default="fma")
+    p.add_argument("--source", choices=("fma", "local", "mpd", "sql", "sql_oversampled"),
+                   default="fma")
     p.add_argument("--name", required=True, help="bundle name → models/corpus_<name>/")
     p.add_argument("--out", default="models", help="output parent directory")
     p.add_argument("--audio-dir", default=None,
                    help="audio folder (fma default: data/audio/fma_small; "
                         "required for --source local)")
     p.add_argument("--metadata-dir", default="data/fma_metadata")
-    p.add_argument("--mpd-dir", default=None, help="MPD slice directory")
-    p.add_argument("--sample-n", type=int, default=8000, help="MPD sample size")
+    p.add_argument("--mpd-dir", default=None, help="MPD JSON slice directory (--source mpd)")
+    p.add_argument("--sql-dump", default=None,
+                   help="MySQL MPD dump, e.g. data/mpd_dump/spotifydbdumpshare.sql "
+                        "(--source sql; built into a .sqlite on first use)")
+    p.add_argument("--sql-db", default=None,
+                   help="prebuilt SQLite DB for --source sql (default: dump + .sqlite)")
+    p.add_argument("--min-popularity", type=float, default=None,
+                   help="drop tracks below this Spotify popularity before sampling "
+                        "(--source sql; fewer candidates → faster sampling)")
+    p.add_argument("--no-membership", action="store_true",
+                   help="skip playlist membership when building the SQLite DB "
+                        "(--source sql; much faster, disables playlist-fit)")
+    p.add_argument("--sample-n", type=int, default=8000, help="MPD/SQL sample size")
+    p.add_argument("--oversample-ratio", type=float, default=1.15,
+                   help="--source sql_oversampled: candidate pool size as a "
+                        "multiple of --sample-n, to absorb dead preview URLs "
+                        "while still landing exactly --sample-n tracks")
     p.add_argument("--max-slices", type=int, default=None)
     p.add_argument("--limit", type=int, default=None,
                    help=f"embed only the first N source tracks (smoke test; "
@@ -46,6 +62,20 @@ def _add_build_parser(sub):
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--fresh", action="store_true",
                    help="discard any embed checkpoint instead of resuming")
+    p.add_argument("--batch-tracks", type=int, default=16,
+                   help="tracks embedded per GPU batch (Tier 1A; raise until VRAM ~80%%)")
+    p.add_argument("--batch-windows", type=int, default=32,
+                   help="max equal-length windows per GPU forward pass")
+    p.add_argument("--no-fp16", action="store_true",
+                   help="force fp32 inference (default: fp16 autocast on CUDA)")
+    p.add_argument("--n-workers", type=int, default=12,
+                   help="parallel preview-fetch workers (--source sql/mpd)")
+    p.add_argument("--prefetch", type=int, default=64, dest="prefetch_size",
+                   help="items buffered ahead of the GPU by the fetch producers")
+    p.add_argument("--capture-merit-backbone", action="store_true",
+                   help="additionally save merit_backbone.npy (5120-d, layers "
+                        "3/4/5/6/23) from the same forward pass as the MERT-1024 "
+                        "embedding, for downstream MERIT factor-head projection")
 
 
 def _add_place_parser(sub):
@@ -63,6 +93,24 @@ def _add_place_parser(sub):
     p.add_argument("--json", action="store_true", dest="as_json")
 
 
+def _add_label_parser(sub):
+    p = sub.add_parser(
+        "label",
+        help="(re)generate playlist-derived cluster labels for a built bundle",
+    )
+    p.add_argument("corpus", help="bundle dir, e.g. models/corpus_mpd_100k")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the label table, write nothing")
+    p.add_argument("--set", nargs=2, metavar=("CLUSTER_ID", "NAME"),
+                   dest="override",
+                   help="set a human label override for one cluster")
+    p.add_argument("--top-k-tags", type=int, default=8)
+    p.add_argument("--label-n", type=int, default=3,
+                   help="names joined into the auto label")
+    p.add_argument("--min-support", type=int, default=3,
+                   help="min track count for a name to enter the label")
+
+
 def _make_source(args):
     from . import sources
 
@@ -77,6 +125,33 @@ def _make_source(args):
         if not args.audio_dir:
             sys.exit("--source local requires --audio-dir")
         return sources.local_source(args.audio_dir)
+    if args.source == "sql":
+        if not (args.sql_db or args.sql_dump):
+            sys.exit("--source sql requires --sql-dump (or a prebuilt --sql-db)")
+        return sources.sql_source(
+            db_path=args.sql_db,
+            sql_dump=args.sql_dump,
+            sample_n=args.sample_n,
+            tracks_per_artist_cap=args.artist_cap or 5,
+            seed=args.seed,
+            min_popularity=args.min_popularity,
+            with_membership=not args.no_membership,
+            n_workers=args.n_workers,
+        )
+    if args.source == "sql_oversampled":
+        if not (args.sql_db or args.sql_dump):
+            sys.exit("--source sql_oversampled requires --sql-dump (or a prebuilt --sql-db)")
+        return sources.sql_source_oversampled(
+            db_path=args.sql_db,
+            sql_dump=args.sql_dump,
+            target_n=args.sample_n,
+            oversample_ratio=args.oversample_ratio,
+            tracks_per_artist_cap=args.artist_cap or 5,
+            seed=args.seed,
+            min_popularity=args.min_popularity,
+            with_membership=not args.no_membership,
+            n_workers=args.n_workers,
+        )
     if not args.mpd_dir:
         sys.exit("--source mpd requires --mpd-dir")
     return sources.mpd_source(
@@ -105,6 +180,11 @@ def _cmd_build(args) -> None:
         n_pca_components=args.n_pca_components,
         seed=args.seed,
         resume=not args.fresh,
+        batch_tracks=args.batch_tracks,
+        batch_windows=args.batch_windows,
+        use_fp16=False if args.no_fp16 else None,
+        prefetch_size=args.prefetch_size,
+        capture_merit_backbone=args.capture_merit_backbone,
     )
 
 
@@ -154,14 +234,46 @@ def _cmd_place(args) -> None:
                   f"{r['name']} ({r['n_tracks']} tracks)")
 
 
+def _cmd_label(args) -> None:
+    from .labels import label_bundle, set_cluster_override
+
+    if args.override:
+        cid, name = args.override
+        set_cluster_override(args.corpus, int(cid), name)
+        print(f"cluster {cid} override set to {name!r}")
+        return
+    profiles = label_bundle(
+        args.corpus,
+        dry_run=args.dry_run,
+        top_k_tags=args.top_k_tags,
+        label_n=args.label_n,
+        min_support=args.min_support,
+    )
+    if not args.dry_run:
+        n_labeled = sum(1 for p in profiles if p.get("label"))
+        print(f"labeled {n_labeled}/{len(profiles)} clusters → "
+              f"{args.corpus}/cluster_profiles.json")
+
+
 def main(argv=None) -> None:
+    import logging
+
     parser = argparse.ArgumentParser(prog="python -m anther_ml.corpus")
+    parser.add_argument("--log-level", default="INFO",
+                        help="logging level for the build (DEBUG/INFO/WARNING)")
     sub = parser.add_subparsers(dest="command", required=True)
     _add_build_parser(sub)
     _add_place_parser(sub)
+    _add_label_parser(sub)
     args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     if args.command == "build":
         _cmd_build(args)
+    elif args.command == "label":
+        _cmd_label(args)
     else:
         _cmd_place(args)
 

@@ -1,0 +1,143 @@
+{
+  "n_groups": 2,
+  "query_tracks": [
+    "Mic Check vocals.mp3",
+    "Mic Check vocals_1.mp3",
+    "Mic Check.mp3",
+    "hang v1-1.mp3",
+    "hang v1.mp3"
+  ],
+  "groups": {
+    "mic check": [
+      "Mic Check vocals.mp3",
+      "Mic Check vocals_1.mp3",
+      "Mic Check.mp3"
+    ],
+    "hang": [
+      "hang v1-1.mp3",
+      "hang v1.mp3"
+    ]
+  },
+  "rows": [
+    {
+      "space": "MERT baseline (1024)",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 0.6,
+      "recall@10": 0.8,
+      "mrr": 0.47291925465838514,
+      "ranks": [
+        5,
+        7,
+        46,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "melody (128)",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 0.6,
+      "recall@10": 0.8,
+      "mrr": 0.49107142857142855,
+      "ranks": [
+        7,
+        4,
+        16,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "rhythm (128)",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 0.4,
+      "recall@10": 0.4,
+      "mrr": 0.4241545893719807,
+      "ranks": [
+        46,
+        23,
+        18,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "timbre (128)",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 0.6,
+      "recall@10": 0.6,
+      "mrr": 0.5153361344537816,
+      "ranks": [
+        2,
+        56,
+        17,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "aggregate (equal wts)",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.6666666666666666,
+      "ranks": [
+        2,
+        2,
+        3,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "agg melody-heavy",
+      "n_queries": 5,
+      "recall@1": 0.6,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.7166666666666666,
+      "ranks": [
+        3,
+        1,
+        4,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "agg rhythm-heavy",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.5900000000000001,
+      "ranks": [
+        4,
+        2,
+        5,
+        1,
+        1
+      ]
+    },
+    {
+      "space": "agg timbre-heavy",
+      "n_queries": 5,
+      "recall@1": 0.4,
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.6666666666666666,
+      "ranks": [
+        2,
+        2,
+        3,
+        1,
+        1
+      ]
+    }
+  ]
+}

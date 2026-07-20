@@ -19,6 +19,27 @@ pip install -e '.[dev]'     # + pytest for the test suite
 
 The editable install replaces the `sys.path.insert(0, '..')` used by the notebooks.
 
+`data/` and `models/` are gitignored and large (tens of GB once populated —
+raw audio, FMA metadata, reference-corpus bundles). Cloning this repo gets
+you code only, not a working corpus; see
+[docs/projects/REFERENCE_CORPUS_DESIGN.md](docs/projects/REFERENCE_CORPUS_DESIGN.md)
+for how a bundle is built. There is currently no shortcut path to a
+pre-built bundle for a new collaborator — ask the repo owner.
+
+## Web UI
+
+Flask + d3 song atlas — search, place songs/playlists/albums onto a frozen
+reference corpus, browse the resulting map:
+
+```bash
+python ui/app.py   # http://localhost:5000
+```
+
+Requires a built corpus bundle (`ANTHER_CORPUS`, default
+`models/corpus_corpus_mpd_100k`) and, for full-MPD playlist/album search, an
+MPD SQLite DB (`ANTHER_MPD_DB`). See [docs/ui.md](docs/ui.md) for routes,
+env vars, and session-state details.
+
 ## Tests
 
 ```bash

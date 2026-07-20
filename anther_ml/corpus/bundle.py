@@ -36,6 +36,8 @@ from ..similarity import SongIndex
 
 CORPUS_FORMAT_VERSION = 1
 
+_UNSET = object()  # lazy-load sentinel for optional tag artifacts
+
 
 class ReferenceCorpus:
     """In-memory handle on a frozen corpus bundle. See module docstring."""
@@ -57,6 +59,13 @@ class ReferenceCorpus:
         self.centroids = np.asarray(centroids, dtype=np.float32)
         self.profiles = profiles
         self.manifest = manifest
+        self.dir: Path | None = None  # set by load(); tag artifacts live there
+        self._tag_probe = _UNSET
+        self._track_tags = _UNSET
+        self._merit_index = _UNSET
+        self._merit_factors = _UNSET
+        self._merit_calibration = _UNSET
+        self._merit_factor_calibration = _UNSET
 
     # -- convenience views (single source of truth stays in the parts) --------
 
@@ -111,6 +120,7 @@ class ReferenceCorpus:
             profiles=profiles,
             manifest=manifest,
         )
+        corpus.dir = d
         if verify:
             corpus.verify()
         return corpus
@@ -135,6 +145,94 @@ class ReferenceCorpus:
         }
         if len(set(counts.values())) != 1:
             raise ValueError(f"bundle track counts disagree: {counts}")
+
+    # -- optional tag artifacts (display-only; older bundles lack them) --------
+
+    @property
+    def tag_probe(self):
+        """Frozen TagProbe from the bundle dir, or None (tags are optional —
+        the schema stays additive, format version unchanged)."""
+        if self._tag_probe is _UNSET:
+            self._tag_probe = None
+            if self.dir is not None and (self.dir / "tag_probe.pkl").exists():
+                from .tagging.probe import TagProbe
+
+                self._tag_probe = TagProbe.load(self.dir / "tag_probe.pkl")
+        return self._tag_probe
+
+    @property
+    def track_tags(self) -> list[dict] | None:
+        """track_tags.json rows (metadata order), or None if never built."""
+        if self._track_tags is _UNSET:
+            self._track_tags = None
+            if self.dir is not None and (self.dir / "track_tags.json").exists():
+                with open(self.dir / "track_tags.json") as f:
+                    self._track_tags = json.load(f)
+        return self._track_tags
+
+    # -- optional MERIT-aggregate sidecar (additive; see merit_index.py) ------
+
+    @property
+    def merit_index(self):
+        """The bundle's 384-d MERIT-aggregate ``SongIndex`` (mel+rhy+tim
+        concat), or ``None`` if this bundle hasn't been run through
+        ``anther_ml.corpus.merit_index.build_merit_aggregate_index`` yet."""
+        if self._merit_index is _UNSET:
+            self._merit_index = None
+            if self.dir is not None:
+                from .merit_index import load_merit_aggregate_index
+
+                self._merit_index = load_merit_aggregate_index(self.dir)
+        return self._merit_index
+
+    @property
+    def merit_factors(self) -> dict | None:
+        """``{"mel": (N,128), "rhy": (N,128), "tim": (N,128)}`` unit vectors,
+        metadata-row-aligned, or ``None`` if not built yet."""
+        if self._merit_factors is _UNSET:
+            self._merit_factors = None
+            if self.dir is not None:
+                from .merit_index import load_factor_vectors
+
+                self._merit_factors = load_factor_vectors(self.dir)
+        return self._merit_factors
+
+    @property
+    def merit_calibration(self):
+        """MERIT-aggregate ``LinkThresholds`` sidecar (link_calibration_merit.json),
+        or ``None`` if not calibrated yet — caller falls back to calibrating
+        in-process off ``merit_index``."""
+        if self._merit_calibration is _UNSET:
+            self._merit_calibration = None
+            if self.dir is not None:
+                from ..calibration import CALIBRATION_FILENAME_MERIT, load_calibration
+
+                self._merit_calibration = load_calibration(
+                    self.dir, filename=CALIBRATION_FILENAME_MERIT
+                )
+        return self._merit_calibration
+
+    @property
+    def merit_factor_calibration(self):
+        """``{"melody"|"rhythm"|"timbre": LinkThresholds}`` sidecar
+        (link_calibration_merit_factors.json) — each factor calibrated off
+        its OWN raw-cosine distribution rather than the aggregate's, since
+        e.g. timbre commonly runs much hotter than melody/rhythm (see
+        anther_ml/calibration.py's CALIBRATION_FILENAME_MERIT_FACTORS
+        docstring). ``None`` if not calibrated yet — caller falls back to
+        ``merit_calibration`` (the shared aggregate scale) for all factors."""
+        if self._merit_factor_calibration is _UNSET:
+            self._merit_factor_calibration = None
+            if self.dir is not None:
+                from ..calibration import (
+                    CALIBRATION_FILENAME_MERIT_FACTORS,
+                    load_factor_calibration,
+                )
+
+                self._merit_factor_calibration = load_factor_calibration(
+                    self.dir, filename=CALIBRATION_FILENAME_MERIT_FACTORS
+                )
+        return self._merit_factor_calibration
 
     # -- lookups ---------------------------------------------------------------
 

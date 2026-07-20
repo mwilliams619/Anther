@@ -39,6 +39,22 @@ def test_dedupe_does_not_drop_distinct_same_blob_tracks():
     assert keep.all()
 
 
+def test_dedupe_ann_matches_exact():
+    # Tier 2A: the ANN path must reproduce the exact O(N²) keep-mask.
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(500, 32)).astype(np.float32)
+    for src, dst in [(10, 50), (10, 51), (200, 480), (5, 6), (300, 301)]:
+        X[dst] = X[src] + rng.normal(scale=1e-4, size=32)  # planted near-dupes
+
+    exact = dedupe_near_identical(X, threshold=0.98, method="exact")
+    ann = dedupe_near_identical(X, threshold=0.98, method="ann", n_neighbors=20)
+
+    np.testing.assert_array_equal(exact, ann)
+    # sanity: first occurrence kept, later duplicates dropped
+    for src, dst in [(10, 50), (10, 51), (200, 480), (5, 6), (300, 301)]:
+        assert exact[src] and not exact[dst]
+
+
 # --------------------------------------------------------------------------- #
 # artist cap
 # --------------------------------------------------------------------------- #
@@ -82,6 +98,82 @@ def test_build_end_to_end(tmp_path):
     for profile in corpus.profiles:
         for ex in profile["exemplars"]:
             assert corpus.labels[ex["idx"]] == profile["cluster_id"]
+
+
+class _FakeMeritProcessor:
+    def __call__(self, windows, sampling_rate, return_tensors, padding):
+        import torch
+        maxlen = max(len(w) for w in windows)
+        arr = np.zeros((len(windows), maxlen), dtype=np.float32)
+        for i, w in enumerate(windows):
+            arr[i, : len(w)] = w
+        return {"input_values": torch.tensor(arr)}
+
+
+class _FakeMeritModel:
+    """25 hidden states (real-MERT shape) so merit_concat's layer 23
+    requirement is satisfiable; deterministic per-window/per-layer values."""
+    H = 4
+    N_LAYERS = 25
+
+    def __call__(self, input_values, output_hidden_states):
+        import torch
+        b, t = input_values.shape
+        wmean = input_values.mean(dim=1, keepdim=True)
+        hidden = []
+        for layer in range(self.N_LAYERS):
+            base = (wmean + layer).unsqueeze(1)
+            hidden.append(base.expand(b, 3, self.H).clone())
+
+        class _Out:
+            hidden_states = tuple(hidden)
+        return _Out()
+
+
+def _make_audio_items(n: int, sr: int) -> list[dict]:
+    rng = np.random.default_rng(7)
+    return [
+        {
+            "id": f"aud:{i:03d}",
+            "name": f"audsong {i:03d}",
+            "artist": f"artist {i % 5}",
+            "source": "fake",
+            "playlists": [],
+            "audio": rng.standard_normal(int(sr * 5)).astype(np.float32),
+            "sr": sr,
+        }
+        for i in range(n)
+    ]
+
+
+def test_build_captures_merit_backbone_alongside_mert(tmp_path, monkeypatch):
+    """capture_merit_backbone=True must save a row-aligned merit_backbone.npy
+    without changing the standard 1024-d (well, here 4-d fake-H) MERT path."""
+    from anther_ml.embedding import SR
+
+    items = _make_audio_items(12, SR)
+    corpus = build_corpus(
+        items,
+        name="merit_capture",
+        out_dir=tmp_path,
+        model=_FakeMeritModel(),
+        processor=_FakeMeritProcessor(),
+        device="cpu",
+        seed=42,
+        capture_merit_backbone=True,
+        batch_windows=4,
+        use_fp16=False,
+        dedupe_threshold=None,
+    )
+    bundle_dir = tmp_path / "corpus_merit_capture"
+    backbone_path = bundle_dir / "merit_backbone.npy"
+    assert backbone_path.exists()
+    backbone = np.load(backbone_path)
+    assert backbone.shape == (corpus.n_tracks, _FakeMeritModel.H * 5)  # H * len(MERIT_LAYERS)
+    assert not (bundle_dir / "checkpoint_merit").exists()  # cleared on freeze
+
+    # Row alignment: metadata order matches embeddings.npy order matches backbone order.
+    assert len(corpus.metadata) == backbone.shape[0]
 
 
 def test_build_requires_min_tracks(tmp_path):

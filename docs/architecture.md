@@ -29,20 +29,59 @@ clustering and similarity API — only the input embeddings differ.
 
 | Module | Responsibility |
 |---|---|
-| `mpd_ingest.py` | Spotify Million Playlist Dataset → corpus queries (`build_mpd_queries`, `enrich_isrc`, `ingest_mpd_corpus`) |
-| `spotify_deezer.py` | Spotify metadata → Deezer preview audio (`load_spotify_via_deezer`) |
+| `mpd_sql.py` | **MySQL MPD dump** (`spotifydbdumpshare.sql`) → SQLite → deterministic artist-capped sample (`load_dump_to_sqlite`, `ensure_db`, `sample_tracks`). Streaming, resumable, logged. This is the supported path for our dataset. Also the web UI's full-MPD playlist backend: `--prepare-ui` (one-time index + `playlist_search` table), then `search_playlists_db` / `playlist_tracks` serve any of the 1M playlists |
+| `mpd_ingest.py` | Legacy: RecSys `mpd.slice.*.json` files → corpus queries (`build_mpd_queries`, `enrich_isrc`). Kept for JSON-format MPD downloads |
+| `spotify_deezer.py` | Spotify metadata → Deezer preview audio (`load_spotify_via_deezer`); preview fetch/decode reused by both MPD paths |
 
-> A `corpus/` subpackage is under construction and intentionally undocumented for now.
+The corpus `sql_source` (in `corpus/sources.py`) reads the SQL dump via `mpd_sql`
+and fetches audio from each track's Spotify `preview_url` directly (Deezer
+fallback for dead URLs). Build the DB once, then sample many times:
+
+```bash
+python -m anther_ml.mpd_sql --dump data/mpd_dump/spotifydbdumpshare.sql   # one-time
+python -m anther_ml.corpus build --source sql \
+    --sql-dump data/mpd_dump/spotifydbdumpshare.sql --name mpd_25k --sample-n 25000
+# one-time UI prep (playlist_id index + playlist_search table; minutes, ~4 GB growth)
+python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui
+```
+
+The full dump is ~13.3M tracks — far past the design's 10k–100k range — so `sql_source`
+always *samples down* (artist-capped, deduped post-embed); it is never used to embed
+the whole dump.
+
+## `anther_ml/corpus/` — frozen reference-corpus bundles
+
+A MERT-space reference corpus that new songs are *placed onto*, never re-clustered
+from scratch. Design rationale in [projects/REFERENCE_CORPUS_DESIGN.md](projects/REFERENCE_CORPUS_DESIGN.md).
+CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
+
+| Module | Responsibility |
+|---|---|
+| `sources.py` | Track sources under one item contract (`fma_source`, `local_source`, `mpd_source`) |
+| `build.py` | `build_corpus` — embed (checkpointed/resumable) → dedupe → fit `SongIndex` + Leiden → per-cluster profiles → freeze bundle |
+| `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp); lazily loads the MERIT-aggregate sidecar via `.merit_index`/`.merit_factors`/`.merit_calibration` when present |
+| `place.py` | Placement regime — `place`, `embed_query`/`embed_query_dual`, playlist-fit / `rank_playlists`; `place()` routes to the MERIT-aggregate index when `merit_vec=` is given and the bundle has one, else falls back to the legacy MERT index |
+| `merit_index.py` | Builds the MERIT-aggregate `SongIndex` sidecar (`index_merit_agg.npy/.json`) + per-factor cosine sidecars (`factor_mel/rhy/tim.npy`) + its own calibration (`link_calibration_merit.json`) from a bundle's `merit_backbone.npy` — additive, never touches the MERT index. See [similarity.md](similarity.md)'s "MERIT-aggregate index" section |
+| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle ([projects/PLAYLIST_LABELS_BUILD_PLAN.md](projects/PLAYLIST_LABELS_BUILD_PLAN.md)) |
+| `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; see [tagging.md](tagging.md)) |
+| `__main__.py` | `build` / `place` / `label` CLI |
+
+Bundles are written to `models/corpus_<name>/` (primary:
+`corpus_mpd_100k_merit`, the first bundle built with
+`--capture-merit-backbone` and a MERIT-aggregate sidecar). Tests:
+`tests/test_corpus_{build,bundle,place,labels,tagging,merit_index}.py`.
 
 ## Top-level scripts & `ui/`
 
 | Script | Responsibility |
 |---|---|
 | `export_viz.py` | Bakes an index + 2D embedding into the standalone `song_view.html` d3 map (`PHASE` set at top; re-run after any index rebuild) — see [notebooks.md](notebooks.md) |
-| `ui/app.py` | Flask backend for the song staging + clustering UI |
-| `ui/jobs.py` | Background cluster-job runner (one job at a time; MERT loaded once) |
+| `export_corpus_viz.py` | Canvas scatter-plot viewer for a whole corpus bundle (tens of thousands of points; pan/zoom, no force sim) → `corpus_*_view.html` |
+| `ui/` | Flask + d3 song atlas UI — search, place songs/playlists/albums onto the frozen corpus, browse the map. `python ui/app.py`, port 5000. Details: [ui.md](ui.md) |
 
 ## Tests
 
-`tests/test_{audio,cluster,data,embedding,eval,features,similarity}.py`, one per
-core module. Run with `pytest`.
+`tests/test_{audio,cluster,data,embedding,eval,features,similarity,mpd_sql}.py`
+(one per core module), `tests/test_corpus_*.py` (corpus subpackage), and
+`tests/test_atlas_search.py` (UI atlas search tiers), and
+`tests/test_atlas_playlist.py` (playlist search + placement). Run with `pytest`.

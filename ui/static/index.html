@@ -3,34 +3,77 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Anther — Song Clustering</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <title>Anther — Song Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=4" />
+  <link rel="icon" type="image/x-icon" href="anther_logo.png" />
 </head>
 <body>
 
+  <div id="loader">
+  <img src="/static/images/anther.webp" alt="Loading">
+</div>
 <div class="app">
+
+  <!-- Mobile sidebar toggle -->
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
 
   <!-- ── Left panel: Search + Upload ──────────────────────────────────────── -->
   <div class="panel panel-left">
     <div class="header">
       <h1>Anther</h1>
-      <span style="color:var(--muted);font-size:13px">song clustering</span>
+      <span class="subtitle">song atlas</span>
+      <button id="help-toggle" class="btn-icon" title="Open help" style="margin-left:auto">?</button>
     </div>
 
     <!-- Search -->
     <section>
-      <h2>Search Deezer</h2>
+      <h2>Search &amp; add</h2>
+      <div class="search-mode" role="tablist">
+        <button id="mode-tracks" class="mode-btn active" role="tab">Tracks</button>
+        <button id="mode-playlists" class="mode-btn" role="tab">Playlists</button>
+        <button id="mode-albums" class="mode-btn" role="tab">Albums</button>
+      </div>
+      <p class="hint-text" id="search-hint">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
       <div class="search-bar">
-        <input id="search-input" type="text" placeholder="Artist, track, album…" autocomplete="off" />
+        <input id="search-input" type="text" placeholder="Artist, track…" autocomplete="off" />
       </div>
       <div id="search-results" style="margin-top:10px">
-        <div class="empty">Search for tracks to add to your corpus</div>
+        <div class="empty">Search for a song to add it to the atlas</div>
       </div>
+      <div id="playlist-progress" class="place-status"></div>
+    </section>
+
+    <!-- Map management -->
+    <section>
+      <h2>Map</h2>
+      <div class="filter-box">
+        <div class="search-bar">
+          <input id="filter-input" type="text"
+                 placeholder="Filter by artist, playlist, album…" autocomplete="off" />
+        </div>
+        <div id="filter-suggest"></div>
+      </div>
+      <div id="filter-active"></div>
+      <div id="map-list" class="map-list"></div>
+      <div class="map-actions">
+        <span id="map-count" class="hint-text"></span>
+        <button id="clear-map" title="Remove every node from the map">Clear map</button>
+      </div>
+      <div id="removed-header" class="removed-header" hidden>Recently removed</div>
+      <div id="removed-list" class="map-list"></div>
+      <button id="recommend-btn" class="btn btn-primary" style="margin-top:10px"
+              title="Get corpus tracks similar to everything currently on your map">
+        Recommend similar
+      </button>
+      <div id="recommend-results" class="map-list"></div>
     </section>
 
     <!-- Upload -->
     <section>
-      <h2>Upload files</h2>
+      <h2>Upload a track</h2>
       <div id="upload-zone">
         <p style="margin-bottom:8px">Drag &amp; drop audio here</p>
         <label>or <span>browse files</span>
@@ -38,55 +81,118 @@
         </label>
         <p style="margin-top:6px;font-size:11px">MP3, WAV, FLAC, M4A · max 25 MB each</p>
       </div>
+      <div id="place-status" class="place-status"></div>
     </section>
   </div>
 
-  <!-- ── Right panel: Staging + Cluster ───────────────────────────────────── -->
-  <div class="panel panel-right">
+  <!-- ── Graph ────────────────────────────────────────────────────────────── -->
+  <div class="graph-wrap">
+    <svg id="graph"></svg>
+    <div id="graph-loading">loading corpus… the map will appear shortly</div>
+    <aside id="detail-panel" hidden>
+      <button id="detail-close" class="btn-icon" title="Close">×</button>
+      <div id="detail-body"></div>
+    </aside>
+    <button id="mentor-toggle" class="mentor-toggle-btn" title="Open mentor">💬</button>
+    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs</div>
+  </div>
+
+  <!-- ── Mentor chat ──────────────────────────────────────────────────────── -->
+  <div class="panel panel-right mentor-panel" hidden>
     <div class="header">
-      <h1 id="staging-count">0</h1>
-      <span style="color:var(--muted);font-size:13px">tracks staged</span>
+      <h1>Mentor</h1>
+      <span class="subtitle">ask about your sound</span>
+      <button id="mentor-close" class="btn-icon" title="Close mentor">×</button>
     </div>
-
-    <div id="staging-list">
-      <div class="empty">Add tracks from search or upload</div>
-    </div>
-
-    <div class="cluster-controls">
-      <p class="staging-meta" id="cluster-hint">Add at least 15 tracks to cluster</p>
-      <button id="cluster-btn" class="btn btn-primary" disabled>Cluster songs</button>
-      <div class="progress-wrap" id="progress-wrap">
-        <div class="progress-bg"><div class="progress-fill" id="progress-fill"></div></div>
-        <div class="progress-msg" id="progress-msg">…</div>
+    <section id="mentor-panel">
+      <div id="mentor-messages" class="mentor-messages">
+        <div class="empty">Ask what you sound like, who you're close to, or for music advice.</div>
       </div>
-    </div>
+      <div id="mentor-status" class="hint-text mentor-status" hidden></div>
+      <div class="search-bar">
+        <input id="mentor-input" type="text" placeholder="Ask the mentor…" autocomplete="off" />
+        <button id="mentor-send" class="btn-add">Send</button>
+      </div>
+      <button id="mentor-reset" class="btn-tiny" style="margin-top:6px">Reset conversation</button>
+    </section>
   </div>
 
 </div><!-- .app -->
 
-<!-- ── Results (full-width below the grid) ───────────────────────────────── -->
-<div id="results-section">
-  <div class="results-header">
-    <h2>Results</h2>
-    <span class="result-summary" id="result-summary"></span>
+<!-- ── Help Modal ────────────────────────────────────────────────────────────── -->
+<div id="help-modal" class="modal" hidden>
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>How to use Anther</h2>
+      <button id="help-close" class="btn-icon" title="Close">×</button>
+    </div>
+    
+    <div class="modal-tabs">
+      <button class="modal-tab active" data-tab="getting-started">Getting Started</button>
+      <button class="modal-tab" data-tab="examples">Example Analyses</button>
+      <button class="modal-tab" data-tab="tips">Tips &amp; Tricks</button>
+    </div>
+
+    <div class="modal-body">
+      <!-- Getting Started -->
+      <div class="modal-tab-content active" data-tab="getting-started">
+        <h3>Add songs to the map</h3>
+        <p>Build your own custom sound map by adding songs:</p>
+        <ul>
+          <li><strong>Search tracks:</strong> Find any song in the dataset or Spotify. Click a result to place it on the graph.</li>
+          <li><strong>Load a playlist:</strong> Search for a playlist from the Million Playlist Dataset. All top tracks load as one cluster.</li>
+          <li><strong>Upload audio:</strong> Drag &amp; drop your own MP3, WAV, or FLAC files to analyze your unreleased music.</li>
+        </ul>
+        
+        <h3>Explore the graph</h3>
+        <ul>
+          <li><strong>Hover:</strong> See song details and similarity scores when hovering.</li>
+          <li><strong>Click:</strong> Open the detail panel to see track metadata, related songs, and listen on Spotify.</li>
+          <li><strong>Drag:</strong> Reposition nodes to untangle crowded clusters.</li>
+          <li><strong>Scroll:</strong> Zoom in and out to explore at different scales.</li>
+        </ul>
+        
+        <h3>Filter and manage</h3>
+        <p>The <strong>Map</strong> section lets you filter by artist, playlist, or album. Clear the map at any time to start fresh.</p>
+        
+        <div style="margin-top:20px;padding:12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border)">
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px 0"><strong>Want to see it in action?</strong></p>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">Load the <strong>2025 Year-End Top 20</strong> — a chart-spanning mix of pop, hip-hop, and R&B hits to explore how music clusters by genre, vibe, and similarity.</p>
+          <button id="try-demo-btn" class="btn btn-primary" style="width:100%">Load Top 20 demo →</button>
+        </div>
+      </div>
+
+      <!-- Examples -->
+      <div class="modal-tab-content" data-tab="examples">
+        <h3>Artist &amp; genre discovery</h3>
+        <p>Add a few songs from an artist or genre you like. Then use the <strong>Recommend similar</strong> button to show similar music you might not know. Hover edges to see similarity scores and find hidden gems.</p>
+        
+        <h3>Curation by similarity</h3>
+        <p>Build a smooth musical journey through the map for DJing or sequencing. Identify outliers and remove them.</p>
+        
+        <h3>Music taste fingerprinting</h3>
+        <p>Upload your favorite playlist or unreleased tracks. The emerging clusters and neighborhoods reveal patterns in your sound—what makes it <em>you</em>.</p>
+      </div>
+
+      <!-- Tips -->
+      <div class="modal-tab-content" data-tab="tips">
+        <h3>Get the most out of Anther</h3>
+        <ul>
+          <li><strong>Start small:</strong> Add 5–20 songs first. Larger maps are harder to read but reveal richer neighborhoods.</li>
+          <li><strong>Use filters:</strong> Filter by playlist or artist to zoom in on a specific subset of your map.</li>
+          <li><strong>Recommend similar:</strong> When you're done exploring, get fresh corpus tracks that fit your sound.</li>
+        </ul>
+      </div>
+    </div>
   </div>
-  <div id="scatter"></div>
-  <table id="assignments-table">
-    <thead>
-      <tr>
-        <th>Cluster</th>
-        <th>Track</th>
-        <th>Artist</th>
-        <th>Source</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
 </div>
 
+<div id="graph-tooltip"></div>
 <div id="error-toast"></div>
 
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="https://d3js.org/d3.v4.js"></script>
+<script src="/static/graph.js?v=5"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>
