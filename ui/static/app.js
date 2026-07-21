@@ -79,6 +79,10 @@ function initViewMode() {
   document.getElementById('view-songs').addEventListener('click', () => setViewMode('songs'));
   document.getElementById('view-artists').addEventListener('click', () => setViewMode('artists'));
   document.getElementById('clear-artist-map').addEventListener('click', clearArtistMap);
+  // Apply the state on first render as well as on later tab clicks.  Without
+  // this, startup relies on the HTML's initial hidden attributes and can show
+  // artist controls while the active tab and state still say "songs".
+  setViewMode(state.viewMode);
 }
 
 function setViewMode(mode) {

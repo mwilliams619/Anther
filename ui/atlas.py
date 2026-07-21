@@ -519,7 +519,6 @@ def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
         except OSError:
             pass
 
-
 def _display_score(raw_cos: float, clip_low: bool = True,
                     thresholds=None) -> float:
     """Map a raw cosine to the 0-100 human-readable similarity score.
@@ -624,6 +623,8 @@ def _merit_breakdown(agg_a, agg_b) -> dict | None:
 
 _FACTOR_NAME_TO_CODE = {v: k for k, v in merit_mod.FACTOR_NAMES.items()}
 
+def _compress_merit_score(score: float, floor: float = 35.0) -> float:
+    return floor + (100.0 - floor) * score / 100.0
 
 def _breakdown_scores(agg_a, agg_b) -> dict | None:
     """``_merit_breakdown`` mapped through ``_display_score`` -> 0-100 ints
@@ -659,7 +660,8 @@ def _breakdown_scores(agg_a, agg_b) -> dict | None:
         v = raw[k]
         code = _FACTOR_NAME_TO_CODE.get(k)
         thresholds = (_merit_factor_thresholds or {}).get(code) or _merit_link_thresholds
-        out[k] = _display_score(v, clip_low=False, thresholds=thresholds)
+        score = _display_score(v, clip_low=False, thresholds=thresholds)
+        out[k] = _compress_merit_score(score)
     out["aggregate"] = round((out["melody"] + out["rhythm"] + out["timbre"]) / 3.0, 1)
     out["melody"] = round(out["melody"], 1)
     out["rhythm"] = round(out["rhythm"], 1)
