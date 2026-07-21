@@ -6,7 +6,8 @@ resulting map. `ui/app.py` is a thin router; `ui/atlas.py` owns all
 corpus/MERT state and does the real work.
 
 ```bash
-python ui/app.py   # port 5000
+source .venv/bin/activate
+python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 ```
 
 ## Shape
@@ -16,8 +17,9 @@ python ui/app.py   # port 5000
 | `ui/app.py` | Flask routes only — no business logic, delegates to `atlas` |
 | `ui/atlas.py` | Corpus warm-up; three-tier song search (local corpus → Deezer → Spotify); `place()` onto the frozen corpus; full-MPD playlist/album search + placement; raw-MERT embed cache |
 | `ui/playlist_jobs.py` | Single background worker thread (one GPU consumer) that embeds and places queued tracks asynchronously, polled via `/api/playlist/status/<job_id>` |
-| `ui/static/graph.js` | d3 force graph — hover highlight/tooltip, click-to-pin, warm-up polling |
-| `ui/static/app.js` | Search UI, mode switching (tracks/playlists/albums), detail popover (`renderDetail`), recommend-from-map, mentor chat panel |
+| `ui/static/graph.js` | Isolated song force graph — hover highlight/tooltip, click-to-pin, warm-up polling |
+| `ui/static/artist-graph.js` | Isolated, incremental artist force graph; only explicitly-added artists are rendered |
+| `ui/static/app.js` | Song/artist view switching, search, detail popovers, uploads, recommend-from-map, mentor chat panel |
 | `mentor/service.py` | Separate warm process hosting `MusicMentor` (chat/ReAct) over HTTP; `ui/app.py` forwards `/api/mentor/*` to it (see "Mentor chat" below) |
 
 ## Routes (`ui/app.py`)
@@ -40,6 +42,13 @@ python ui/app.py   # port 5000
 | `DELETE /api/node/<id>` | Remove one placed song + its now-orphaned corpus neighbors |
 | `GET /api/song/<id>` | Song detail (cluster, tags, similar songs — see "Similarity scoring" below for the aggregate/breakdown split) |
 | `POST /api/upload` | Upload a personal track for placement |
+| `GET /api/artist/search` | Search immutable corpus artists plus this session's private artist profiles |
+| `GET /api/artist/graph` | Current session's incremental artist graph |
+| `POST /api/artist/place` | Add one explicitly-selected artist and threshold-clearing links |
+| `GET /api/artist/<id>` | Artist detail and currently connected artists |
+| `DELETE /api/artist/node/<id>` | Remove an artist from this session's artist graph |
+| `POST /api/artist/graph/clear` | Clear only the artist graph |
+| `POST /api/artist/demo` | Idempotently add the curated 20-artist demo |
 
 ## Runtime facts worth knowing
 
@@ -55,6 +64,11 @@ python ui/app.py   # port 5000
   mentor chat sessions), `ANTHER_MENTOR_HOST`/`ANTHER_MENTOR_PORT` (where
   `ui/app.py` reaches the mentor service, default `127.0.0.1:5100`),
   `ANTHER_MENTOR_TIMEOUT` (request timeout in seconds, default 30).
+- **Artist mode**: `ANTHER_ARTIST_MODE=0` is an emergency kill switch. Artist
+  corpus artifacts are immutable and must have identical row counts; invalid
+  artifacts disable Artist View without affecting Song View. Artist graphs,
+  uploaded-track associations, and newly-created artist profiles are private
+  per browser session under `ui/session/<sid>/`.
 - **Session state** lives under `ui/session/`: `embed_cache.sqlite` (raw
   MERT vectors, avoids re-embedding on repeat placement) and the saved graph
   JSON (persists the map across restarts).

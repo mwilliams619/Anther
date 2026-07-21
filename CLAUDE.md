@@ -17,10 +17,14 @@ This minimizes token cost by routing simple tasks to cheaper models and reservin
 ## Environment
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate  # this workspace's corpus-compatible Python 3.11 env
 pip install -e .          # editable install (pyproject.toml) — preferred
 pip install -e '.[dev]'   # + pytest
 ```
+
+Use Python 3.11 for the existing frozen corpus artifacts. The local `venv/`
+currently uses Python 3.12 and cannot deserialize the saved Numba/UMAP object
+inside `leiden.pkl`; `.venv/` is the verified runtime for `python ui/app.py`.
 
 `import anther_ml` works from anywhere after the editable install; the
 `sys.path.insert(0, '..')` in the notebooks is no longer required (harmless if
