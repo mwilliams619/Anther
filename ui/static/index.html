@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=4" />
+  <link rel="stylesheet" href="/static/style.css?v=5" />
   <link rel="icon" type="image/x-icon" href="anther_logo.png" />
 </head>
 <body>
@@ -28,8 +28,13 @@
       <button id="help-toggle" class="btn-icon" title="Open help" style="margin-left:auto">?</button>
     </div>
 
+    <div id="view-mode" class="search-mode view-mode" role="tablist" aria-label="Atlas view">
+      <button id="view-songs" class="mode-btn active" role="tab" aria-selected="true">Songs</button>
+      <button id="view-artists" class="mode-btn" role="tab" aria-selected="false">Artists</button>
+    </div>
+
     <!-- Search -->
-    <section>
+    <section id="song-search-section">
       <h2>Search &amp; add</h2>
       <div class="search-mode" role="tablist">
         <button id="mode-tracks" class="mode-btn active" role="tab">Tracks</button>
@@ -46,8 +51,19 @@
       <div id="playlist-progress" class="place-status"></div>
     </section>
 
+    <section id="artist-search-section" hidden>
+      <h2>Search &amp; add artists</h2>
+      <p class="hint-text">Only artists you add appear on this private graph.</p>
+      <div class="search-bar">
+        <input id="artist-search-input" type="text" placeholder="Artist name…" autocomplete="off" />
+      </div>
+      <div id="artist-search-results" style="margin-top:10px">
+        <div class="empty">Search for an artist to begin</div>
+      </div>
+    </section>
+
     <!-- Map management -->
-    <section>
+    <section id="song-map-section">
       <h2>Map</h2>
       <div class="filter-box">
         <div class="search-bar">
@@ -71,6 +87,15 @@
       <div id="recommend-results" class="map-list"></div>
     </section>
 
+    <section id="artist-map-section" hidden>
+      <h2>Artist map</h2>
+      <div id="artist-map-list" class="map-list"></div>
+      <div class="map-actions">
+        <span id="artist-map-count" class="hint-text"></span>
+        <button id="clear-artist-map" title="Remove every artist from this map">Clear map</button>
+      </div>
+    </section>
+
     <!-- Upload -->
     <section>
       <h2>Upload a track</h2>
@@ -88,6 +113,10 @@
   <!-- ── Graph ────────────────────────────────────────────────────────────── -->
   <div class="graph-wrap">
     <svg id="graph"></svg>
+    <svg id="artist-graph" hidden></svg>
+    <div id="artist-graph-empty" class="graph-empty" hidden>
+      Search for artists and add them to build your artist graph.
+    </div>
     <div id="graph-loading">loading corpus… the map will appear shortly</div>
     <aside id="detail-panel" hidden>
       <button id="detail-close" class="btn-icon" title="Close">×</button>
@@ -160,6 +189,7 @@
           <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px 0"><strong>Want to see it in action?</strong></p>
           <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">Load the <strong>2025 Year-End Top 20</strong> — a chart-spanning mix of pop, hip-hop, and R&B hits to explore how music clusters by genre, vibe, and similarity.</p>
           <button id="try-demo-btn" class="btn btn-primary" style="width:100%">Load Top 20 demo →</button>
+          <button id="try-artist-demo-btn" class="btn" style="width:100%;margin-top:8px">Load 20-artist demo →</button>
         </div>
       </div>
 
@@ -188,11 +218,34 @@
   </div>
 </div>
 
+<!-- Upload artist assignment is session-private; profiles are created only after upload succeeds. -->
+<div id="artist-assignment-modal" class="modal" hidden>
+  <div class="modal-overlay"></div>
+  <div class="modal-content artist-assignment-content">
+    <div class="modal-header">
+      <h2>Assign artist</h2>
+      <button id="artist-assignment-close" class="btn-icon" title="Cancel">×</button>
+    </div>
+    <div class="modal-body">
+      <p id="artist-assignment-file" class="hint-text"></p>
+      <div class="search-bar">
+        <input id="artist-assignment-input" type="text" placeholder="Search or enter a new artist…" autocomplete="off" />
+      </div>
+      <div id="artist-assignment-results" class="artist-assignment-results"></div>
+      <div class="artist-assignment-actions">
+        <button id="artist-assignment-personal" class="btn">No artist</button>
+        <button id="artist-assignment-create" class="btn btn-primary" disabled>Create private artist</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="graph-tooltip"></div>
 <div id="error-toast"></div>
 
 <script src="https://d3js.org/d3.v4.js"></script>
 <script src="/static/graph.js?v=5"></script>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/artist-graph.js?v=2"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>

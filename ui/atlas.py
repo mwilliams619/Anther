@@ -21,6 +21,7 @@ import tempfile
 import threading
 import contextlib
 import contextvars
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ import requests
 from anther_ml import mpd_sql
 from anther_ml import merit as merit_mod
 from anther_ml import calibration as link_calibration
+from anther_ml.cluster import assign_cluster_knn
 from anther_ml.corpus.bundle import ReferenceCorpus
 from anther_ml.corpus.place import embed_query, embed_query_dual, place, recommend_from_seeds
 from anther_ml.corpus.popularity import load_popularity_by_track_id, popularity_percentiles
@@ -48,6 +50,10 @@ POPULARITY_BETA = float(os.environ.get("ANTHER_POPULARITY_BETA", "0.15"))
 ARTIST_CLUSTERING_DIR = os.environ.get(
     "ANTHER_ARTIST_CLUSTERING", "data/artist_clustering"
 )
+ARTIST_MODE_ENABLED = os.environ.get("ANTHER_ARTIST_MODE", "1").lower() not in (
+    "0", "false", "no", "off"
+)
+ARTIST_MAX_EDGES_PER_NODE = 6
 MPD_PREP_HINT   = ("full-MPD playlist data unavailable — run: "
                    "python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui")
 TOP_K           = 8       # neighbors pulled in per placed song
@@ -132,6 +138,31 @@ _artist_labels: np.ndarray = None     # shape (n_artists,) — Leiden cluster ID
 _artist_embedding_2d: np.ndarray = None  # shape (n_artists, 2) — UMAP projection
 _artist_id_map: dict = {}         # artist name -> index in _artist_meta (for search)
 _artist_leiden: dict = None       # loaded Leiden pickle: {labels, scaler, pca, ...}
+_artist_space: np.ndarray = None  # L2-normalized Leiden clustering space
+_artist_thresholds: link_calibration.LinkThresholds | None = None
+_artist_ready = False
+_artist_error = "artist data has not loaded"
+
+ARTIST_CLUSTER_LABELS = {
+    0: "Industrial/experimental electronic", 1: "Cinematic/orchestral/ambient",
+    2: "Metal", 3: "Hip-hop/rap", 4: "Classic rock/punk", 5: "Trance/EDM",
+    6: "Country", 7: "International/world pop", 8: "Pop",
+    9: "Trap/modern hip-hop", 10: "Pop-rock/alt-pop", 11: "Alt-rock/punk",
+    12: "New age/instrumental", 13: "Jazz", 14: "Latin/salsa",
+    15: "Early blues & jazz vocalists", 16: "Film & orchestral score composers",
+    17: "Classical choral/early music", 18: "Singer-songwriter/Americana",
+    19: "Baroque classical", 20: "Mid-century pop/crooners", 21: "Reggae/ska",
+    22: "Euro schlager/adult contemporary", 23: "Turkish/Middle Eastern pop",
+    24: "Novelty/comedy/children's", 25: "Soul/funk",
+    26: "Classical & flamenco guitar", 27: "1950s-60s rock & roll",
+}
+
+ARTIST_DEMO_NAMES = [
+    "Drake", "Kendrick Lamar", "Beyoncé", "Taylor Swift", "Metallica",
+    "Miles Davis", "Johnny Cash", "Aretha Franklin", "Madonna", "David Bowie",
+    "Bad Bunny", "Lady Gaga", "Black Sabbath", "Frank Sinatra", "Willie Nelson",
+    "Adele", "Rihanna", "Eminem", "Dolly Parton", "The Cure",
+]
 
 _corpus_lock = threading.Lock()
 
@@ -166,6 +197,7 @@ class _SessionState:
         self.session_id = session_id
         self.dir = SESSION_DIR / session_id
         self.graph_path = self.dir / "graph.json"
+        self.artist_graph_path = self.dir / "artist_graph.json"
         self.embed_cache_path = self.dir / "embed_cache.sqlite"
         self.uploads_dir = self.dir / "uploads"
         self.graph = {"nodes": {}, "links": []}   # nodes keyed by id; links is a list
@@ -173,6 +205,9 @@ class _SessionState:
         self.query_vecs: dict = {}                 # placed-song id → MERT index-space unit vec
         self.merit_vecs: dict = {}                 # placed-song id → MERIT-aggregate index-space unit vec
         self.groups: dict = {}                     # gid → {"name", "kind"}
+        self.artist_graph = {"nodes": {}, "links": []}
+        self.artist_vectors: dict[str, np.ndarray] = {}
+        self._artist_loaded = False
         self.lock = threading.Lock()
         self._loaded = False
 
@@ -192,6 +227,7 @@ class _SessionState:
             # not reentrant, so the flag must already be True to short-circuit.
             self._loaded = True
             _load_graph(self)
+            _load_artist_graph(self)
 
 
 # Registry of live sessions, and the request-scoped selector.
@@ -348,109 +384,80 @@ def _load_custom_playlists() -> dict:
     return index
 
 
-def persist_new_artist(artist_name: str) -> int:
-    """Persist a new user-created artist to disk.
-    
-    Appends to artist_meta.json with default metadata (1 track, user_upload source).
-    Returns the new artist_id.
-    
-    Called when a user uploads a track and assigns it to a new artist.
-    """
-    global _artist_meta, _artist_id_map, _artist_embeddings, _artist_labels
-    
-    if not _artist_meta:
-        return None
-    
-    # Check if already exists (fuzzy match)
-    name_norm = _norm(artist_name)
-    if name_norm in _artist_id_map:
-        return _artist_id_map[name_norm]
-    
-    # Create new artist entry
-    new_id = len(_artist_meta)
-    new_artist = {
-        'artist': artist_name,
-        'n_tracks': 1,
-        'sources': ['user_upload'],
-        'sample_track': '',
-    }
-    
-    # Append to metadata list
-    _artist_meta.append(new_artist)
-    _artist_id_map[name_norm] = new_id
-    
-    # Save to disk
-    meta_path = Path(ARTIST_CLUSTERING_DIR) / 'artist_meta.json'
-    try:
-        with open(meta_path, 'w') as f:
-            json.dump(_artist_meta, f, indent=2)
-        print(f'[atlas] persisted new artist {new_id}: {artist_name}')
-    except Exception as e:
-        print(f'[atlas] WARNING: failed to persist artist {artist_name}: {e}')
-    
-    # Extend embedding arrays (with placeholder zero vectors for now)
-    if _artist_embeddings is not None:
-        new_emb = np.zeros((1, _artist_embeddings.shape[1]), dtype=np.float32)
-        _artist_embeddings = np.vstack([_artist_embeddings, new_emb])
-    
-    if _artist_labels is not None:
-        _artist_labels = np.append(_artist_labels, 0)  # assign to cluster 0 by default
-    
-    return new_id
-
-
 def _load_artist_clustering() -> None:
-    """Load artist clustering data (embeddings, labels, 2D coords) from disk.
-    Populates module-level _artist_* globals. Called once at corpus load time."""
+    """Load and validate the immutable artist clustering bundle."""
     global _artist_meta, _artist_embeddings, _artist_labels, _artist_embedding_2d
     global _artist_id_map, _artist_leiden
+    global _artist_space, _artist_thresholds, _artist_ready, _artist_error
+
+    _artist_ready = False
+    _artist_error = "artist mode is disabled"
+    if not ARTIST_MODE_ENABLED:
+        print("[atlas] artist mode disabled by ANTHER_ARTIST_MODE")
+        return
     
     art_dir = Path(ARTIST_CLUSTERING_DIR)
     if not art_dir.exists():
-        print(f"[atlas] no artist clustering dir at {art_dir} — artist mode disabled")
+        _artist_error = f"artist clustering directory not found: {art_dir}"
+        print(f"[atlas] {_artist_error}")
         return
     
     try:
-        # Load metadata (list of {artist, n_tracks, sources, sample_track})
-        meta_path = art_dir / "artist_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                _artist_meta = json.load(f)
-            # Build artist name → index map for fast search
-            for i, entry in enumerate(_artist_meta):
-                _artist_id_map[_norm(entry.get("artist", ""))] = i
-        
-        # Load embeddings (shape n_artists × 1024)
-        emb_path = art_dir / "artist_embeddings.npy"
-        if emb_path.exists():
-            _artist_embeddings = np.load(emb_path, allow_pickle=False)
-        
-        # Load Leiden cluster labels (shape n_artists,)
-        labels_path = art_dir / "artist_labels.npy"
-        if labels_path.exists():
-            _artist_labels = np.load(labels_path, allow_pickle=False)
-        
-        # Load 2D projection for visualization (shape n_artists × 2)
-        coord_2d_path = art_dir / "artist_embedding_2d.npy"
-        if coord_2d_path.exists():
-            _artist_embedding_2d = np.load(coord_2d_path, allow_pickle=False)
-        
-        # Load Leiden clustering object (for potential future use)
-        leiden_path = art_dir / "artist_leiden.pkl"
-        if leiden_path.exists():
-            import pickle
-            with open(leiden_path, "rb") as f:
-                _artist_leiden = pickle.load(f)
-        
-        if _artist_meta and _artist_embeddings is not None:
-            print(f"[atlas] loaded artist clustering: {len(_artist_meta)} artists, "
-                  f"embeddings shape {_artist_embeddings.shape}, "
-                  f"clusters {len(np.unique(_artist_labels)) if _artist_labels is not None else 0}")
-        else:
-            print(f"[atlas] artist clustering data incomplete (meta: {len(_artist_meta)}, "
-                  f"embeddings: {_artist_embeddings is not None})")
+        import pickle
+        required = ["artist_meta.json", "artist_embeddings.npy", "artist_labels.npy",
+                    "artist_embedding_2d.npy", "artist_leiden.pkl"]
+        missing = [name for name in required if not (art_dir / name).is_file()]
+        if missing:
+            raise ValueError("missing artist artifacts: " + ", ".join(missing))
+
+        _artist_meta = json.loads((art_dir / "artist_meta.json").read_text())
+        _artist_embeddings = np.load(art_dir / "artist_embeddings.npy", allow_pickle=False)
+        _artist_labels = np.load(art_dir / "artist_labels.npy", allow_pickle=False)
+        _artist_embedding_2d = np.load(art_dir / "artist_embedding_2d.npy", allow_pickle=False)
+        with open(art_dir / "artist_leiden.pkl", "rb") as f:
+            _artist_leiden = pickle.load(f)
+
+        n = len(_artist_meta)
+        lengths = {
+            "metadata": n,
+            "embeddings": len(_artist_embeddings),
+            "labels": len(_artist_labels),
+            "coordinates": len(_artist_embedding_2d),
+            "clustering_space": len(_artist_leiden.get("clustering_space", [])),
+        }
+        if n == 0 or len(set(lengths.values())) != 1:
+            raise ValueError("artist artifact row mismatch: " +
+                             ", ".join(f"{k}={v}" for k, v in lengths.items()))
+        if _artist_embeddings.ndim != 2 or _artist_embedding_2d.shape[1] != 2:
+            raise ValueError("artist embedding artifacts have invalid dimensions")
+        if not np.isfinite(_artist_embeddings).all() or not np.isfinite(_artist_embedding_2d).all():
+            raise ValueError("artist embedding artifacts contain non-finite values")
+
+        _artist_id_map = {}
+        for i, entry in enumerate(_artist_meta):
+            normalized = _norm(entry.get("artist", ""))
+            if normalized:
+                _artist_id_map.setdefault(normalized, i)
+
+        space = np.asarray(_artist_leiden["clustering_space"], dtype=np.float32)
+        norms = np.linalg.norm(space, axis=1, keepdims=True)
+        if np.any(norms == 0):
+            raise ValueError("artist clustering space contains zero vectors")
+        _artist_space = space / norms
+        artist_index = type("ArtistIndex", (), {"embeddings": _artist_space})()
+        _artist_thresholds = link_calibration.calibrate_link_thresholds(
+            artist_index, pctl=95.0, seed=0)
+        _artist_ready = True
+        _artist_error = ""
+        print(f"[atlas] loaded artist clustering: {n} artists, "
+              f"embeddings shape {_artist_embeddings.shape}, "
+              f"clusters {len(np.unique(_artist_labels))}")
     except Exception as e:
-        print(f"[atlas] error loading artist clustering: {e}")
+        _artist_meta, _artist_id_map = [], {}
+        _artist_embeddings = _artist_labels = _artist_embedding_2d = None
+        _artist_leiden = _artist_space = _artist_thresholds = None
+        _artist_error = str(e)
+        print(f"[atlas] artist mode unavailable: {_artist_error}")
 
 
 def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
@@ -1969,6 +1976,470 @@ def song_detail(song_id: str, top_n: int = 10, expand: bool = False) -> dict | N
 
 
 # ── Graph persistence ────────────────────────────────────────────────────────
+
+def artist_status() -> dict:
+    return {"enabled": ARTIST_MODE_ENABLED, "available": _artist_ready,
+            "error": _artist_error or None}
+
+
+def _require_artist_ready() -> None:
+    if not ARTIST_MODE_ENABLED:
+        raise RuntimeError("artist mode is disabled")
+    if not _artist_ready:
+        raise RuntimeError(_artist_error or "artist clustering is unavailable")
+
+
+def _ensure_artist_tables(st: "_SessionState") -> None:
+    st.ensure_dirs()
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        _ensure_cache_columns(con)
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS artist_profiles ("
+            "profile_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+            "name_norm TEXT NOT NULL UNIQUE, created REAL NOT NULL)"
+        )
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS artist_track_assignments ("
+            "track_id TEXT PRIMARY KEY, artist_id TEXT NOT NULL, created REAL NOT NULL)"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _session_artist_rows(st: "_SessionState") -> list[dict]:
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(
+            "SELECT p.profile_id, p.name, COUNT(a.track_id) AS upload_count "
+            "FROM artist_profiles p LEFT JOIN artist_track_assignments a "
+            "ON a.artist_id = p.profile_id GROUP BY p.profile_id, p.name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def _artist_upload_count(st: "_SessionState", artist_id: str) -> int:
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        row = con.execute(
+            "SELECT COUNT(*) FROM artist_track_assignments WHERE artist_id = ?",
+            (artist_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        con.close()
+
+
+def _artist_upload_counts(st: "_SessionState") -> dict[str, int]:
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        rows = con.execute(
+            "SELECT artist_id, COUNT(*) FROM artist_track_assignments GROUP BY artist_id"
+        ).fetchall()
+        return {str(artist_id): int(count) for artist_id, count in rows}
+    finally:
+        con.close()
+
+
+def _parse_corpus_artist_id(artist_id: str) -> int | None:
+    if not str(artist_id).startswith("corpus:"):
+        return None
+    try:
+        idx = int(str(artist_id).split(":", 1)[1])
+    except (TypeError, ValueError):
+        return None
+    return idx if 0 <= idx < len(_artist_meta) else None
+
+
+def _artist_raw_profile_vector(st: "_SessionState", artist_id: str) -> np.ndarray | None:
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        rows = con.execute(
+            "SELECT e.vec FROM artist_track_assignments a "
+            "JOIN embed_cache e ON e.track_id = a.track_id WHERE a.artist_id = ?",
+            (artist_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return None
+    vectors = [np.frombuffer(row[0], dtype=np.float32) for row in rows]
+    if any(v.shape != vectors[0].shape for v in vectors):
+        return None
+    return np.mean(np.stack(vectors), axis=0).astype(np.float32)
+
+
+def _artist_vector_for_id(st: "_SessionState", artist_id: str) -> np.ndarray | None:
+    idx = _parse_corpus_artist_id(artist_id)
+    if idx is not None:
+        return _artist_space[idx]
+    if not str(artist_id).startswith("session:"):
+        return None
+    raw = _artist_raw_profile_vector(st, artist_id)
+    if raw is None:
+        return None
+    x = raw.reshape(1, -1)
+    scaler, pca = _artist_leiden.get("scaler"), _artist_leiden.get("pca")
+    if scaler is not None:
+        x = scaler.transform(x)
+    if pca is not None:
+        x = pca.transform(x)
+    vec = np.asarray(x[0], dtype=np.float32)
+    norm = float(np.linalg.norm(vec))
+    return vec / norm if norm else None
+
+
+def _session_profile(st: "_SessionState", artist_id: str) -> dict | None:
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT profile_id, name FROM artist_profiles WHERE profile_id = ?",
+            (artist_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return dict(row) if row else None
+
+
+def _artist_node_for_id(st: "_SessionState", artist_id: str) -> dict | None:
+    idx = _parse_corpus_artist_id(artist_id)
+    if idx is not None:
+        meta = _artist_meta[idx]
+        uploads = _artist_upload_count(st, artist_id)
+        return {"id": artist_id, "name": meta.get("artist", ""),
+                "track_count": int(meta.get("n_tracks", 0)), "upload_count": uploads,
+                "cluster_id": int(_artist_labels[idx]), "source": "corpus",
+                "kind": "artist"}
+    profile = _session_profile(st, artist_id)
+    if profile is None:
+        return None
+    raw = _artist_raw_profile_vector(st, artist_id)
+    if raw is None:
+        return None
+    cluster_id, _confidence = assign_cluster_knn(
+        raw, _artist_leiden["clustering_space"], _artist_labels,
+        scaler=_artist_leiden.get("scaler"), pca=_artist_leiden.get("pca"),
+        k=15, metric=_artist_leiden.get("metric", "cosine"),
+    )
+    uploads = _artist_upload_count(st, artist_id)
+    return {"id": artist_id, "name": profile["name"], "track_count": uploads,
+            "upload_count": uploads, "cluster_id": cluster_id,
+            "source": "session", "kind": "artist"}
+
+
+def search_artists(query: str, limit: int = 20) -> dict:
+    _require_artist_ready()
+    q = (query or "").strip()
+    if len(q) < 2:
+        return {"results": []}
+    qn = _norm(q)
+    st = get_session()
+    upload_counts = _artist_upload_counts(st)
+    results = []
+    for i, meta in enumerate(_artist_meta):
+        name = meta.get("artist", "")
+        nn = _norm(name)
+        score = 100 if nn == qn else (96 if nn.startswith(qn) else _ratio(qn, nn) * 100)
+        if qn in nn:
+            score = max(score, 92)
+        if score >= 70:
+            results.append({"id": f"corpus:{i}", "name": name,
+                            "track_count": int(meta.get("n_tracks", 0)),
+                            "upload_count": upload_counts.get(f"corpus:{i}", 0),
+                            "cluster_id": int(_artist_labels[i]), "source": "corpus",
+                            "score": round(float(score), 1)})
+    for row in _session_artist_rows(st):
+        nn = _norm(row["name"])
+        score = 100 if nn == qn else (96 if nn.startswith(qn) else _ratio(qn, nn) * 100)
+        if qn in nn:
+            score = max(score, 92)
+        if score >= 70:
+            node = _artist_node_for_id(st, row["profile_id"])
+            if node:
+                results.append({**node, "score": round(float(score), 1)})
+    results.sort(key=lambda r: (-r["score"], r["name"].casefold(), r["id"]))
+    return {"results": results[:max(1, min(int(limit), 50))]}
+
+
+def _save_artist_graph(st: "_SessionState") -> None:
+    st.dir.mkdir(parents=True, exist_ok=True)
+    st.artist_graph_path.write_text(json.dumps({
+        "nodes": list(st.artist_graph["nodes"].values()),
+        "links": st.artist_graph["links"],
+    }))
+
+
+def _load_artist_graph(st: "_SessionState") -> None:
+    st.artist_graph = {"nodes": {}, "links": []}
+    st.artist_vectors = {}
+    st._artist_loaded = False
+    if not _artist_ready or not st.artist_graph_path.is_file():
+        st._artist_loaded = _artist_ready
+        return
+    try:
+        data = json.loads(st.artist_graph_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        st._artist_loaded = True
+        return
+    for saved in data.get("nodes", []):
+        artist_id = saved.get("id", "")
+        node = _artist_node_for_id(st, artist_id)
+        vec = _artist_vector_for_id(st, artist_id)
+        if node is not None and vec is not None:
+            st.artist_graph["nodes"][artist_id] = node
+            st.artist_vectors[artist_id] = vec
+    valid = set(st.artist_graph["nodes"])
+    st.artist_graph["links"] = [l for l in data.get("links", [])
+                                 if l.get("source") in valid and l.get("target") in valid]
+    st._artist_loaded = True
+
+
+def _ensure_artist_graph_loaded(st: "_SessionState") -> None:
+    if st._artist_loaded:
+        return
+    with st.lock:
+        if not st._artist_loaded:
+            _load_artist_graph(st)
+
+
+def get_artist_graph() -> dict:
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    with st.lock:
+        return {"ready": True, "nodes": list(st.artist_graph["nodes"].values()),
+                "links": list(st.artist_graph["links"])}
+
+
+def place_artist(artist_id: str) -> dict:
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    artist_id = str(artist_id or "")
+    with st.lock:
+        if artist_id in st.artist_graph["nodes"]:
+            return {"nodes": [], "links": [], "existing": True, "id": artist_id}
+        node = _artist_node_for_id(st, artist_id)
+        vec = _artist_vector_for_id(st, artist_id)
+        if node is None or vec is None:
+            raise ValueError("unknown artist id")
+        candidates = []
+        for other_id, other_vec in st.artist_vectors.items():
+            cosine = float(np.dot(vec, other_vec))
+            if cosine >= _artist_thresholds.qq_threshold:
+                candidates.append((cosine, other_id))
+        candidates.sort(reverse=True)
+        links = [{"source": artist_id, "target": other_id, "value": cosine,
+                  "score": round(link_calibration.display_score(
+                      cosine, _artist_thresholds, clip_low=True), 1), "kind": "artist"}
+                 for cosine, other_id in candidates[:ARTIST_MAX_EDGES_PER_NODE]]
+        st.artist_graph["nodes"][artist_id] = node
+        st.artist_vectors[artist_id] = vec
+        st.artist_graph["links"].extend(links)
+        _save_artist_graph(st)
+        return {"nodes": [node], "links": links, "existing": False, "id": artist_id}
+
+
+def _refresh_artist_node(st: "_SessionState", artist_id: str) -> dict:
+    node = _artist_node_for_id(st, artist_id)
+    vec = _artist_vector_for_id(st, artist_id)
+    if node is None or vec is None:
+        raise ValueError("artist profile has no usable uploaded tracks")
+    st.artist_graph["nodes"][artist_id] = node
+    st.artist_vectors[artist_id] = vec
+    st.artist_graph["links"] = [l for l in st.artist_graph["links"]
+                                if artist_id not in (l["source"], l["target"])]
+    candidates = []
+    for other_id, other_vec in st.artist_vectors.items():
+        if other_id == artist_id:
+            continue
+        cosine = float(np.dot(vec, other_vec))
+        if cosine >= _artist_thresholds.qq_threshold:
+            candidates.append((cosine, other_id))
+    candidates.sort(reverse=True)
+    new_links = [{"source": artist_id, "target": other_id, "value": cosine,
+                  "score": round(link_calibration.display_score(
+                      cosine, _artist_thresholds, clip_low=True), 1), "kind": "artist"}
+                 for cosine, other_id in candidates[:ARTIST_MAX_EDGES_PER_NODE]]
+    st.artist_graph["links"].extend(new_links)
+    _save_artist_graph(st)
+    return {"nodes": [node], "links": new_links, "replace": True, "id": artist_id}
+
+
+def assign_upload_artist(track_id: str, artist_id: str = "",
+                         artist_name: str = "") -> dict | None:
+    """Associate a successfully embedded upload with a frozen or private artist."""
+    artist_id, artist_name = str(artist_id or "").strip(), str(artist_name or "").strip()
+    if artist_id and artist_name:
+        raise ValueError("provide artist_id or artist_name, not both")
+    if not artist_id and not artist_name:
+        return None
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    _ensure_artist_tables(st)
+    created_profile = False
+    previous_assignment = None
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        if con.execute("SELECT 1 FROM embed_cache WHERE track_id = ?", (track_id,)).fetchone() is None:
+            raise ValueError("uploaded track embedding is unavailable")
+        if artist_name:
+            if len(artist_name) > 255:
+                raise ValueError("artist name must be at most 255 characters")
+            normalized = _norm(artist_name)
+            if not normalized:
+                raise ValueError("artist name is required")
+            if normalized in _artist_id_map:
+                raise ValueError(
+                    f"artist already exists; select corpus:{_artist_id_map[normalized]}")
+            row = con.execute("SELECT profile_id FROM artist_profiles WHERE name_norm = ?",
+                              (normalized,)).fetchone()
+            if row:
+                raise ValueError(f"artist already exists; select {row[0]}")
+            artist_id = f"session:{uuid.uuid4().hex}"
+            con.execute("INSERT INTO artist_profiles VALUES (?, ?, ?, ?)",
+                        (artist_id, artist_name, normalized, time.time()))
+            created_profile = True
+        else:
+            idx = _parse_corpus_artist_id(artist_id)
+            if idx is None and _session_profile(st, artist_id) is None:
+                raise ValueError("unknown artist id")
+        previous_assignment = con.execute(
+            "SELECT artist_id, created FROM artist_track_assignments WHERE track_id = ?",
+            (track_id,),
+        ).fetchone()
+        con.execute(
+            "INSERT OR REPLACE INTO artist_track_assignments(track_id, artist_id, created) "
+            "VALUES (?, ?, ?)", (track_id, artist_id, time.time()))
+        con.commit()
+    finally:
+        con.close()
+
+    try:
+        with st.lock:
+            if artist_id in st.artist_graph["nodes"]:
+                return _refresh_artist_node(st, artist_id)
+        return place_artist(artist_id)
+    except Exception:
+        # Keep failed graph/profile updates from leaving an orphan identity.
+        con = sqlite3.connect(str(st.embed_cache_path))
+        try:
+            con.execute("DELETE FROM artist_track_assignments WHERE track_id = ?", (track_id,))
+            if previous_assignment is not None:
+                con.execute(
+                    "INSERT INTO artist_track_assignments(track_id, artist_id, created) "
+                    "VALUES (?, ?, ?)",
+                    (track_id, previous_assignment[0], previous_assignment[1]),
+                )
+            if created_profile:
+                con.execute("DELETE FROM artist_profiles WHERE profile_id = ?", (artist_id,))
+            con.commit()
+        finally:
+            con.close()
+        raise
+
+
+def validate_upload_artist(artist_id: str = "", artist_name: str = "") -> str:
+    """Validate an upload assignment without mutating state; return display name."""
+    artist_id, artist_name = str(artist_id or "").strip(), str(artist_name or "").strip()
+    if artist_id and artist_name:
+        raise ValueError("provide artist_id or artist_name, not both")
+    if not artist_id and not artist_name:
+        return "personal"
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    if artist_id:
+        node = _artist_node_for_id(st, artist_id)
+        if node is None:
+            raise ValueError("unknown artist id")
+        return node["name"]
+    if len(artist_name) > 255 or not _norm(artist_name):
+        raise ValueError("artist name must be between 1 and 255 characters")
+    normalized = _norm(artist_name)
+    if normalized in _artist_id_map:
+        raise ValueError(f"artist already exists; select corpus:{_artist_id_map[normalized]}")
+    for row in _session_artist_rows(st):
+        if _norm(row["name"]) == normalized:
+            raise ValueError(f"artist already exists; select {row['profile_id']}")
+    return artist_name
+
+
+def artist_detail(artist_id: str) -> dict | None:
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    node = _artist_node_for_id(st, artist_id)
+    if node is None:
+        return None
+    idx = _parse_corpus_artist_id(artist_id)
+    meta = _artist_meta[idx] if idx is not None else {}
+    with st.lock:
+        connected_ids = []
+        for link in st.artist_graph["links"]:
+            if link["source"] == artist_id:
+                connected_ids.append((link["target"], link.get("score")))
+            elif link["target"] == artist_id:
+                connected_ids.append((link["source"], link.get("score")))
+        connected = [{**st.artist_graph["nodes"][other_id], "score": score}
+                     for other_id, score in connected_ids
+                     if other_id in st.artist_graph["nodes"]]
+    connected.sort(key=lambda row: -(row.get("score") or 0))
+    return {**node, "cluster_label": ARTIST_CLUSTER_LABELS.get(
+                node["cluster_id"], f"Cluster {node['cluster_id']}"),
+            "sources": meta.get("sources", ["user_upload"]),
+            "sample_track": meta.get("sample_track", ""),
+            "connected_artists": connected}
+
+
+def remove_artist(artist_id: str) -> dict | None:
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    with st.lock:
+        node = st.artist_graph["nodes"].pop(artist_id, None)
+        if node is None:
+            return None
+        st.artist_vectors.pop(artist_id, None)
+        st.artist_graph["links"] = [l for l in st.artist_graph["links"]
+                                    if artist_id not in (l["source"], l["target"])]
+        _save_artist_graph(st)
+        return {"removed": [artist_id], "node": node}
+
+
+def clear_artist_graph() -> None:
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    with st.lock:
+        st.artist_graph = {"nodes": {}, "links": []}
+        st.artist_vectors = {}
+        _save_artist_graph(st)
+
+
+def place_artist_demo() -> dict:
+    _require_artist_ready()
+    fragments = []
+    for name in ARTIST_DEMO_NAMES:
+        idx = _artist_id_map.get(_norm(name))
+        if idx is None:
+            raise ValueError(f"demo artist missing from corpus: {name}")
+        fragments.append(place_artist(f"corpus:{idx}"))
+    graph = get_artist_graph()
+    return {"nodes": graph["nodes"], "links": graph["links"],
+            "added": sum(1 for f in fragments if not f.get("existing"))}
+
 
 def get_graph() -> dict:
     # "ready" lets the frontend tell "corpus still warming up" apart from "empty

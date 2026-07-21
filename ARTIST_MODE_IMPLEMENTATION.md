@@ -1,5 +1,15 @@
 # Artist Clustering Mode UI — Implementation Summary
 
+> **Current implementation (July 2026):** The original full-corpus dual-mode
+> frontend described below was reverted and has now been replaced by an
+> isolated incremental Artist View. It renders only artists explicitly added
+> by search, upload, or the curated demo; persists a separate per-session
+> `artist_graph.json`; stores private uploaded-artist profiles in the session
+> embed-cache SQLite database; and never writes to the frozen artist bundle.
+> The artist artifacts are validated as a single 2,163-row unit at startup.
+> The APIs now use stable `corpus:<index>` and `session:<uuid>` identifiers;
+> the unsafe server-wide `/api/artist/create` endpoint no longer exists.
+
 ## Overview
 Extended the Anther music recommendation interface with an **Artist Clustering Mode**, allowing users to explore artist relationships in addition to individual songs. The feature includes artist search, dual-mode D3 visualization, and artist assignment during track uploads.
 

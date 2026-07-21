@@ -17542,21 +17542,5 @@
       "mpd_sql"
     ],
     "sample_track": "Benim Hayat?m"
-  },
-  {
-    "artist": "Test Artist QA",
-    "n_tracks": 1,
-    "sources": [
-      "user_upload"
-    ],
-    "sample_track": ""
-  },
-  {
-    "artist": "New Test Artist",
-    "n_tracks": 1,
-    "sources": [
-      "user_upload"
-    ],
-    "sample_track": ""
   }
 ]

@@ -1,5 +1,7 @@
 /* ── State ──────────────────────────────────────────────────────────────── */
 const state = {
+  viewMode:   'songs',   // song and artist maps are independent
+  artistAvailable: false,
   audio:      null,
   audioUrl:   null,
   audioBtn:   null,
@@ -14,6 +16,7 @@ const state = {
   activeFilter: null, // {label, kind, ids:Set} | null
   recommendRows: [],  // rows backing the recommend-results list
   mentorBusy: false,
+  detailType: 'song',
 };
 
 const REMOVED_MAX = 20;
@@ -41,7 +44,10 @@ async function init() {
   console.log("starting graph");
   await AtlasGraph.init('#graph');
   console.log("graph finished");
+  await initArtistMode();
+  initViewMode();
   initSearch();
+  initArtistSearch();
   initUpload();
   initDetail();
   initMapPanel();
@@ -50,6 +56,62 @@ async function init() {
   initMobileSidebar();
   initHelp();
   renderMapPanel();
+  renderArtistMapPanel();
+}
+
+async function initArtistMode() {
+  try {
+    const status = await fetch('/api/artist/status').then(r => r.json());
+    state.artistAvailable = !!status.available;
+    if (state.artistAvailable) await ArtistGraph.init('#artist-graph');
+    else {
+      const btn = document.getElementById('view-artists');
+      btn.disabled = true;
+      btn.title = status.error || 'Artist mode unavailable';
+    }
+  } catch (err) {
+    state.artistAvailable = false;
+    document.getElementById('view-artists').disabled = true;
+  }
+}
+
+function initViewMode() {
+  document.getElementById('view-songs').addEventListener('click', () => setViewMode('songs'));
+  document.getElementById('view-artists').addEventListener('click', () => setViewMode('artists'));
+  document.getElementById('clear-artist-map').addEventListener('click', clearArtistMap);
+}
+
+function setViewMode(mode) {
+  if (mode === 'artists' && !state.artistAvailable) return;
+  state.viewMode = mode;
+  const artists = mode === 'artists';
+  document.getElementById('view-songs').classList.toggle('active', !artists);
+  document.getElementById('view-artists').classList.toggle('active', artists);
+  document.getElementById('view-songs').setAttribute('aria-selected', String(!artists));
+  document.getElementById('view-artists').setAttribute('aria-selected', String(artists));
+  document.getElementById('song-search-section').hidden = artists;
+  document.getElementById('artist-search-section').hidden = !artists;
+  document.getElementById('song-map-section').hidden = artists;
+  document.getElementById('artist-map-section').hidden = !artists;
+  // SVGElement does not consistently expose HTMLElement's `hidden` property.
+  // Toggle the actual attribute so the `[hidden]` CSS rule applies in every
+  // browser (and so switching back to songs removes it again).
+  document.getElementById('graph').toggleAttribute('hidden', artists);
+  document.getElementById('artist-graph').toggleAttribute('hidden', !artists);
+  document.getElementById('artist-graph-empty').hidden = !artists || ArtistGraph.getNodes().length > 0;
+  document.querySelector('.panel-left .subtitle').textContent = artists ? 'artist atlas' : 'song atlas';
+  document.querySelector('.graph-hint').textContent = artists
+    ? 'drag artists · scroll to zoom · hover for connections · click for details'
+    : 'drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs';
+  if (artists) {
+    ArtistGraph.activate();
+    const id = ArtistGraph.getSelectedId();
+    if (id) openArtistDetail(id); else document.getElementById('detail-panel').hidden = true;
+    document.getElementById('artist-search-input').focus();
+  } else {
+    const id = AtlasGraph.getSelectedId();
+    if (id) openDetail(id); else document.getElementById('detail-panel').hidden = true;
+  }
 }
 
 /* ── Search (tracks: corpus → deezer → spotify · playlists: corpus) ──────── */
@@ -182,7 +244,105 @@ function renderAlbumResults(data) {
       <div class="track-actions">
         <button class="btn-add" onclick='loadAlbum(${JSON.stringify(h)}, this)'>Load</button>
       </div>
+  </div>`).join('');
+}
+
+/* ── Artist search and incremental placement ─────────────────────────────── */
+function initArtistSearch() {
+  let timer;
+  const input = document.getElementById('artist-search-input');
+  input.addEventListener('input', e => {
+    clearTimeout(timer);
+    const q = e.target.value.trim();
+    if (!q) {
+      document.getElementById('artist-search-results').innerHTML =
+        '<div class="empty">Search for an artist to begin</div>';
+      return;
+    }
+    timer = setTimeout(() => doArtistSearch(q), 350);
+  });
+}
+
+async function doArtistSearch(q) {
+  const el = document.getElementById('artist-search-results');
+  el.innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const response = await fetch(`/api/artist/search?q=${encodeURIComponent(q)}`);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Artist search failed');
+    renderArtistResults(data.results || []);
+  } catch (err) {
+    showError(err.message);
+    el.innerHTML = '<div class="empty">Artist search unavailable</div>';
+  }
+}
+
+function renderArtistResults(results) {
+  const el = document.getElementById('artist-search-results');
+  if (!results.length) { el.innerHTML = '<div class="empty">No artists found</div>'; return; }
+  el.innerHTML = results.map(row => `
+    <div class="track-row">
+      <div class="track-info">
+        <div class="track-title">${esc(row.name)}</div>
+        <div class="track-artist">${row.track_count || 0} tracks · cluster ${row.cluster_id}${row.source === 'session' ? ' · private' : ''}</div>
+      </div>
+      <button class="btn-add" onclick='placeArtist(${JSON.stringify(row.id)}, this)'>${ArtistGraph.hasNode(row.id) ? 'On map ✓' : 'Add'}</button>
     </div>`).join('');
+}
+
+async function placeArtist(artistId, btn) {
+  if (ArtistGraph.hasNode(artistId)) {
+    ArtistGraph.selectNode(artistId);
+    return;
+  }
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const response = await fetch('/api/artist/place', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({artist_id: artistId}),
+    });
+    const fragment = await response.json();
+    if (!response.ok || fragment.error) throw new Error(fragment.error || 'Could not add artist');
+    ArtistGraph.mergeFragment(fragment);
+    renderArtistMapPanel();
+    btn.textContent = 'Added ✓';
+  } catch (err) {
+    showError(err.message); btn.disabled = false; btn.textContent = 'Add';
+  }
+}
+
+function renderArtistMapPanel() {
+  const list = document.getElementById('artist-map-list');
+  const nodes = state.artistAvailable ? ArtistGraph.getNodes() : [];
+  document.getElementById('artist-map-count').textContent =
+    `${nodes.length} artist${nodes.length === 1 ? '' : 's'}`;
+  list.innerHTML = nodes.length ? nodes.map(node => `
+    <div class="map-row" onclick='ArtistGraph.selectNode(${JSON.stringify(node.id)})'>
+      <div class="track-info">
+        <div class="track-title">${esc(node.name)}</div>
+        <div class="track-artist">${node.track_count || 0} tracks${node.source === 'session' ? ' · private' : ''}</div>
+      </div>
+      <button class="btn-icon" title="Remove" onclick='event.stopPropagation(); removeArtist(${JSON.stringify(node.id)})'>×</button>
+    </div>`).join('') : '<div class="empty">No artists added yet</div>';
+}
+
+async function removeArtist(artistId) {
+  try {
+    const response = await fetch('/api/artist/node/' + encodeURIComponent(artistId), {method: 'DELETE'});
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Could not remove artist');
+    ArtistGraph.removeNodes(data.removed || [artistId]);
+    renderArtistMapPanel();
+  } catch (err) { showError(err.message); }
+}
+
+async function clearArtistMap() {
+  try {
+    const response = await fetch('/api/artist/graph/clear', {method: 'POST'});
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Could not clear artist map');
+    ArtistGraph.reset(); renderArtistMapPanel(); closeDetail();
+  } catch (err) { showError(err.message); }
 }
 
 /* ── Place onto the graph ───────────────────────────────────────────────── */
@@ -626,14 +786,22 @@ async function resetMentor() {
 function initDetail() {
   AtlasGraph.onSelect(openDetail);
   AtlasGraph.onDeselect(closeDetail);
+  if (state.artistAvailable) {
+    ArtistGraph.onSelect(openArtistDetail);
+    ArtistGraph.onDeselect(closeDetail);
+  }
   document.getElementById('detail-close')
-    .addEventListener('click', () => AtlasGraph.clearSelection());
+    .addEventListener('click', () => {
+      if (state.viewMode === 'artists') ArtistGraph.clearSelection();
+      else AtlasGraph.clearSelection();
+    });
 }
 
 async function openDetail(id) {
   const panel = document.getElementById('detail-panel');
   const body  = document.getElementById('detail-body');
   state.detailId = id;
+  state.detailType = 'song';
   state.expanded = false;
   panel.hidden = false;
   body.innerHTML = '<div class="empty">Loading…</div>';
@@ -654,11 +822,48 @@ async function openDetail(id) {
   }
 }
 
+async function openArtistDetail(id) {
+  if (state.viewMode !== 'artists') return;
+  const panel = document.getElementById('detail-panel');
+  const body = document.getElementById('detail-body');
+  state.detailId = id;
+  state.detailType = 'artist';
+  panel.hidden = false;
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const response = await fetch('/api/artist/' + encodeURIComponent(id));
+    const data = await response.json();
+    if (state.detailId !== id || state.detailType !== 'artist') return;
+    if (!response.ok || data.error) throw new Error(data.error || 'Failed to load artist');
+    const connected = data.connected_artists || [];
+    body.innerHTML = `
+      <div class="detail-title">${esc(data.name)}</div>
+      <div class="detail-artist">${esc(data.cluster_label || `Cluster ${data.cluster_id}`)}</div>
+      <div class="detail-section">
+        <div class="positioning-size">${data.track_count || 0} corpus/private track${data.track_count === 1 ? '' : 's'}${data.upload_count ? ` · ${data.upload_count} uploaded` : ''}</div>
+        ${data.sample_track ? `<div class="positioning-pitch">Representative track: ${esc(data.sample_track)}</div>` : ''}
+      </div>
+      <div class="detail-section"><h3>Connected artists</h3>
+        ${connected.length ? connected.map(row => `
+          <div class="similar-row on-graph" onclick='ArtistGraph.selectNode(${JSON.stringify(row.id)})'>
+            <div class="similar-row-main"><div class="track-info">
+              <div class="track-title">${esc(row.name)}</div>
+              <div class="track-artist">${row.track_count || 0} tracks</div>
+            </div><span class="similar-score">${Math.round(row.score || 0)}</span></div>
+          </div>`).join('') : '<div class="empty-hint">No threshold-clearing connections on this map yet.</div>'}
+      </div>`;
+  } catch (err) {
+    showError(err.message);
+    ArtistGraph.clearSelection();
+  }
+}
+
 function closeDetail() {
   document.getElementById('detail-panel').hidden = true;
   state.detailId = null;
   state.similar = [];
   state.expanded = false;
+  state.detailType = state.viewMode === 'artists' ? 'artist' : 'song';
 }
 
 // Melody/rhythm/timbre in the same order MERIT emits them (see anther_ml/merit.py
@@ -946,6 +1151,7 @@ function renderSpotifyEmbed(wrap, id, trackId) {
 
 /* ── Upload → place ─────────────────────────────────────────────────────── */
 function initUpload() {
+  initArtistAssignment();
   const zone  = document.getElementById('upload-zone');
   const input = document.getElementById('upload-input');
 
@@ -964,19 +1170,97 @@ function initUpload() {
 }
 
 async function uploadFile(file) {
+  const assignment = await chooseArtistForUpload(file);
+  if (assignment === null) return;
   const status = document.getElementById('place-status');
   status.textContent = `Placing ${file.name}…`;
   const fd = new FormData();
   fd.append('file', file);
+  if (assignment.artist_id) fd.append('artist_id', assignment.artist_id);
+  if (assignment.artist_name) fd.append('artist_name', assignment.artist_name);
   try {
     const data = await fetch('/api/upload', { method: 'POST', body: fd }).then(r => r.json());
     if (data.error) { showError(data.error); status.textContent = ''; return; }
     if (data.fragment) { AtlasGraph.mergeFragment(data.fragment); renderMapPanel(); }
+    if (data.artist_fragment && state.artistAvailable) {
+      ArtistGraph.mergeFragment(data.artist_fragment);
+      renderArtistMapPanel();
+    }
     status.textContent = `Placed ${data.title} ✓`;
     setTimeout(() => { status.textContent = ''; }, 2500);
   } catch (err) {
     showError('Upload failed: ' + err.message);
     status.textContent = '';
+  }
+}
+
+let artistAssignmentResolve = null;
+let artistAssignmentTimer = null;
+
+function initArtistAssignment() {
+  const modal = document.getElementById('artist-assignment-modal');
+  const input = document.getElementById('artist-assignment-input');
+  document.getElementById('artist-assignment-close').addEventListener('click', () => settleArtistAssignment(null));
+  modal.querySelector('.modal-overlay').addEventListener('click', () => settleArtistAssignment(null));
+  document.getElementById('artist-assignment-personal').addEventListener('click', () => settleArtistAssignment({}));
+  document.getElementById('artist-assignment-create').addEventListener('click', () => {
+    const name = input.value.trim();
+    if (name) settleArtistAssignment({artist_name: name});
+  });
+  input.addEventListener('input', () => {
+    clearTimeout(artistAssignmentTimer);
+    const q = input.value.trim();
+    const create = document.getElementById('artist-assignment-create');
+    create.disabled = !q;
+    create.textContent = q ? `Create private “${q}”` : 'Create private artist';
+    if (!q) {
+      document.getElementById('artist-assignment-results').innerHTML = '';
+      return;
+    }
+    artistAssignmentTimer = setTimeout(() => searchUploadArtists(q), 300);
+  });
+}
+
+function chooseArtistForUpload(file) {
+  if (!state.artistAvailable) return Promise.resolve({});
+  const modal = document.getElementById('artist-assignment-modal');
+  const input = document.getElementById('artist-assignment-input');
+  document.getElementById('artist-assignment-file').textContent = `Choose an artist for ${file.name}`;
+  document.getElementById('artist-assignment-results').innerHTML = '';
+  document.getElementById('artist-assignment-create').disabled = true;
+  document.getElementById('artist-assignment-create').textContent = 'Create private artist';
+  input.value = '';
+  modal.hidden = false;
+  setTimeout(() => input.focus(), 0);
+  return new Promise(resolve => { artistAssignmentResolve = resolve; });
+}
+
+function settleArtistAssignment(value) {
+  if (!artistAssignmentResolve) return;
+  const resolve = artistAssignmentResolve;
+  artistAssignmentResolve = null;
+  document.getElementById('artist-assignment-modal').hidden = true;
+  resolve(value);
+}
+
+async function searchUploadArtists(q) {
+  const el = document.getElementById('artist-assignment-results');
+  el.innerHTML = '<div class="empty">Searching…</div>';
+  try {
+    const response = await fetch(`/api/artist/search?q=${encodeURIComponent(q)}&limit=8`);
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Artist search failed');
+    const rows = data.results || [];
+    el.innerHTML = rows.length ? rows.map(row => `
+      <button class="artist-assignment-row" onclick='settleArtistAssignment({artist_id:${JSON.stringify(row.id)}})'>
+        <span>${esc(row.name)}</span><small>${row.track_count || 0} tracks${row.source === 'session' ? ' · private' : ''}</small>
+      </button>`).join('') : '<div class="empty">No existing artist found</div>';
+    const exact = rows.some(row => row.score === 100);
+    const create = document.getElementById('artist-assignment-create');
+    create.disabled = exact;
+    if (exact) create.textContent = 'Select the existing artist above';
+  } catch (err) {
+    el.innerHTML = '<div class="empty">Search unavailable</div>';
   }
 }
 
@@ -1052,6 +1336,7 @@ function initHelp() {
   const helpToggle = document.getElementById('help-toggle');
   const helpClose = document.getElementById('help-close');
   const demoBtnEl = document.getElementById('try-demo-btn');
+  const artistDemoBtn = document.getElementById('try-artist-demo-btn');
   const tabs = document.querySelectorAll('.modal-tab');
   const tabContents = document.querySelectorAll('.modal-tab-content');
 
@@ -1108,5 +1393,25 @@ function initHelp() {
     // custom-playlist id) — a mismatched guard key here let duplicate clicks
     // fire overlapping loads instead of being coalesced.
     await loadCollection('/api/demo/load', {}, 'demo_top20_2025', demoBtnEl);
+  });
+
+  artistDemoBtn.disabled = !state.artistAvailable;
+  artistDemoBtn.addEventListener('click', async () => {
+    if (!state.artistAvailable) return;
+    artistDemoBtn.disabled = true;
+    artistDemoBtn.textContent = 'Loading artists…';
+    try {
+      const response = await fetch('/api/artist/demo', {method: 'POST'});
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || 'Artist demo failed');
+      ArtistGraph.replaceData(data);
+      renderArtistMapPanel();
+      modal.setAttribute('hidden', '');
+      setViewMode('artists');
+    } catch (err) { showError(err.message); }
+    finally {
+      artistDemoBtn.disabled = false;
+      artistDemoBtn.textContent = 'Load 20-artist demo →';
+    }
   });
 }

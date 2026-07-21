@@ -377,22 +377,16 @@ def upload():
     if len(data) > MAX_UPLOAD:
         return jsonify({'error': 'File too large (max 25 MB)'}), 400
 
+    artist_id = request.form.get('artist_id', '').strip()
+    new_artist_name = request.form.get('artist_name', '').strip()
+    try:
+        artist_name = atlas.validate_upload_artist(artist_id, new_artist_name)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({'error': str(exc)}), 400
+
     safe = secure_filename(f.filename)
     dest = _session_uploads_dir() / safe
     dest.write_bytes(data)
-
-    # Get artist from request (either from form data or default)
-    artist_id = request.form.get('artist_id', '')
-    artist_name = 'personal'  # default
-    
-    # Look up the artist name if an artist_id was provided
-    if artist_id and atlas._artist_meta:
-        try:
-            aid = int(artist_id)
-            if 0 <= aid < len(atlas._artist_meta):
-                artist_name = atlas._artist_meta[aid].get('artist', 'personal')
-        except (ValueError, TypeError):
-            pass  # fall back to default
 
     # Place the uploaded file onto the frozen-corpus force graph.
     try:
@@ -405,252 +399,92 @@ def upload():
         })
     except Exception as exc:
         return jsonify({'error': f'Placement failed: {exc}'}), 500
+    try:
+        artist_fragment = atlas.assign_upload_artist(
+            f'upload:{safe}', artist_id=artist_id, artist_name=new_artist_name)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({'error': f'Artist assignment failed: {exc}'}), 400
     return jsonify({'status': 'uploaded', 'id': f'upload:{safe}',
-                    'title': Path(safe).stem, 'fragment': fragment})
+                    'title': Path(safe).stem, 'fragment': fragment,
+                    'artist_fragment': artist_fragment})
 
 
 # ── Artist clustering API (Phase 2) ────────────────────────────────────────────
 
 
+def _artist_error_response(exc):
+    code = 400 if isinstance(exc, ValueError) else 503
+    return jsonify({'error': str(exc), **atlas.artist_status()}), code
+
+
+@app.route('/api/artist/status')
+def artist_status():
+    return jsonify(atlas.artist_status())
+
+
 @app.route('/api/artist/search')
 def artist_search():
-    """Search artists by name (fuzzy matching). Returns list of matching artists
-    with metadata (name, track_count, cluster_id)."""
-    if not atlas._artist_meta:
-        return jsonify([])
-    
-    query = request.args.get('q', '').strip()
-    if not query or len(query) < 2:
-        return jsonify([])
-    
     try:
-        from fuzzywuzzy import fuzz
-        use_fuzz = True
-    except ImportError:
-        use_fuzz = False
-    
-    query_norm = atlas._norm(query)
-    results = []
-    
-    for i, artist_entry in enumerate(atlas._artist_meta):
-        name = artist_entry.get('artist', '')
-        name_norm = atlas._norm(name)
-        
-        # Exact or prefix match
-        if query_norm in name_norm or name_norm.startswith(query_norm):
-            score = 100
-        elif use_fuzz:
-            score = fuzz.token_set_ratio(query_norm, name_norm)
-        else:
-            # Fallback: substring matching if no fuzzywuzzy
-            score = 80 if query_norm in name_norm else 0
-        
-        if score >= 70:  # threshold for inclusion
-            cluster_id = int(atlas._artist_labels[i]) if atlas._artist_labels is not None else None
-            results.append({
-                'id': i,
-                'name': name,
-                'track_count': artist_entry.get('n_tracks', 0),
-                'cluster_id': cluster_id,
-                'score': score,
-            })
-    
-    # Sort by score descending
-    results.sort(key=lambda x: -x['score'])
-    return jsonify(results[:20])  # cap at 20 results
+        return jsonify(atlas.search_artists(
+            request.args.get('q', ''), limit=int(request.args.get('limit', 20))))
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
 
 
-@app.route('/api/artist/<int:artist_id>')
+@app.route('/api/artist/<path:artist_id>')
 def artist_detail(artist_id):
-    """Get full artist metadata including embedding stats."""
-    if not atlas._artist_meta or artist_id < 0 or artist_id >= len(atlas._artist_meta):
-        return jsonify({'error': 'Artist not found'}), 404
-    
-    artist_entry = atlas._artist_meta[artist_id]
-    cluster_id = int(atlas._artist_labels[artist_id]) if atlas._artist_labels is not None else None
-    
-    return jsonify({
-        'id': artist_id,
-        'name': artist_entry.get('artist', ''),
-        'track_count': artist_entry.get('n_tracks', 0),
-        'sources': artist_entry.get('sources', []),
-        'sample_track': artist_entry.get('sample_track', ''),
-        'cluster_id': cluster_id,
-    })
+    try:
+        detail = atlas.artist_detail(artist_id)
+        if detail is None:
+            return jsonify({'error': 'Artist not found'}), 404
+        return jsonify(detail)
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
 
 
 @app.route('/api/artist/graph')
 def artist_graph():
-    """Get the artist clustering graph: artist nodes and kNN edges.
-    
-    Returns:
-    {
-        nodes: [{id, name, cluster_id, track_count}, ...],
-        links: [{source, target, distance}, ...],
-        clusters: {cluster_id: cluster_label, ...}
-    }
-    """
-    if not atlas._artist_meta or atlas._artist_labels is None:
-        return jsonify({'error': 'Artist clustering not loaded'}), 503
-    
-    # Build nodes from artist metadata
-    nodes = []
-    for i, artist_entry in enumerate(atlas._artist_meta):
-        cluster_id = int(atlas._artist_labels[i])
-        nodes.append({
-            'id': i,
-            'name': artist_entry.get('artist', ''),
-            'cluster_id': cluster_id,
-            'track_count': artist_entry.get('n_tracks', 0),
-        })
-    
-    # Compute k-NN edges in embedding space (k=6, cosine distance)
-    links = []
-    if atlas._artist_embeddings is not None:
-        from sklearn.neighbors import NearestNeighbors
-        k = 6
-        try:
-            nbrs = NearestNeighbors(n_neighbors=min(k + 1, len(nodes)), 
-                                    metric='cosine').fit(atlas._artist_embeddings)
-            distances, indices = nbrs.kneighbors(atlas._artist_embeddings)
-            
-            seen_edges = set()
-            for src_id, (dists, neighbor_ids) in enumerate(zip(distances, indices)):
-                for dist, tgt_id in zip(dists, neighbor_ids):
-                    if src_id == tgt_id:  # skip self-loops
-                        continue
-                    # Use frozenset to avoid duplicate undirected edges
-                    edge_key = frozenset([src_id, tgt_id])
-                    if edge_key not in seen_edges:
-                        seen_edges.add(edge_key)
-                        # Convert cosine distance [0, 2] back to similarity [0, 1]
-                        similarity = 1 - dist / 2
-                        links.append({
-                            'source': src_id,
-                            'target': tgt_id,
-                            'distance': float(dist),
-                            'similarity': float(similarity),
-                        })
-        except Exception as e:
-            print(f"[atlas] error computing artist k-NN: {e}")
-    
-    # Map cluster IDs to labels if available (from the genre labeling done in Phase 2)
-    clusters = {}
-    cluster_labels = {
-        0: 'Industrial/experimental electronic',
-        1: 'Cinematic/orchestral/ambient',
-        2: 'Metal',
-        3: 'Hip-hop/rap',
-        4: 'Classic rock/punk',
-        5: 'Trance/EDM',
-        6: 'Country',
-        7: 'International/world pop',
-        8: 'Pop',
-        9: 'Trap/modern hip-hop',
-        10: 'Pop-rock/alt-pop',
-        11: 'Alt-rock/punk',
-        12: 'New age/instrumental',
-        13: 'Jazz',
-        14: 'Latin/salsa',
-        15: 'Early blues & jazz vocalists',
-        16: 'Film & orchestral score composers',
-        17: 'Classical choral/early music',
-        18: 'Singer-songwriter/Americana',
-        19: 'Baroque classical',
-        20: 'Mid-century pop/crooners',
-        21: 'Reggae/ska',
-        22: 'Euro schlager/adult contemporary',
-        23: 'Turkish/Middle Eastern pop',
-        24: 'Novelty/comedy/children\'s',
-        25: 'Soul/funk',
-        26: 'Classical & flamenco guitar',
-        27: '1950s-60s rock & roll',
-    }
-    for cluster_id in range(28):  # 28 clusters from Phase 2
-        clusters[cluster_id] = cluster_labels.get(cluster_id, f'Cluster {cluster_id}')
-    
-    return jsonify({
-        'nodes': nodes,
-        'links': links,
-        'clusters': clusters,
-    })
+    try:
+        return jsonify(atlas.get_artist_graph())
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
 
 
-@app.route('/api/artist/create', methods=['POST'])
-def artist_create():
-    """Create a new artist or return existing if fuzzy-match exceeds threshold.
-    
-    Request body: {name: str}
-    Response: {id: int, name: str, is_new: bool}
-    
-    For now, new artists are ephemeral (session-scoped in-memory) until an upload
-    completes and persists them to disk.
-    """
-    if not atlas._artist_meta:
-        return jsonify({'error': 'Artist clustering not loaded'}), 503
-    
-    data = request.get_json() or {}
-    name = data.get('name', '').strip()
-    
-    if not name:
-        return jsonify({'error': 'Artist name required'}), 400
-    
-    if len(name) > 255:
-        return jsonify({'error': 'Artist name too long (max 255 chars)'}), 400
-    
-    # Check for fuzzy match against existing artists
+@app.route('/api/artist/place', methods=['POST'])
+def artist_place():
+    body = request.get_json(force=True) or {}
     try:
-        from fuzzywuzzy import fuzz
-        use_fuzz = True
-    except ImportError:
-        use_fuzz = False
-    
-    name_norm = atlas._norm(name)
-    best_match_id = None
-    best_score = 0
-    match_threshold = 85  # high threshold for auto-merge
-    
-    for i, artist_entry in enumerate(atlas._artist_meta):
-        existing_name = artist_entry.get('artist', '')
-        existing_norm = atlas._norm(existing_name)
-        
-        if existing_norm == name_norm:
-            # Exact match
-            return jsonify({
-                'id': i,
-                'name': existing_name,
-                'is_new': False,
-            })
-        
-        if use_fuzz:
-            score = fuzz.token_set_ratio(name_norm, existing_norm)
-            if score > best_score:
-                best_score = score
-                best_match_id = i
-    
-    # If we found a high-confidence match, return it
-    if best_match_id is not None and best_score >= match_threshold:
-        artist_entry = atlas._artist_meta[best_match_id]
-        return jsonify({
-            'id': best_match_id,
-            'name': artist_entry.get('artist', ''),
-            'is_new': False,
-        })
-    
-    # Otherwise, create a new artist and persist it to disk
+        return jsonify(atlas.place_artist(body.get('artist_id', '')))
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
+@app.route('/api/artist/graph/clear', methods=['POST'])
+def artist_graph_clear():
     try:
-        new_id = atlas.persist_new_artist(name)
-    except Exception as e:
-        return jsonify({'error': f'Failed to create artist: {e}'}), 500
-    
-    if new_id is None:
-        return jsonify({'error': 'Failed to create artist'}), 500
-    
-    return jsonify({
-        'id': new_id,
-        'name': name,
-        'is_new': True,
-    })
+        atlas.clear_artist_graph()
+        return jsonify({'status': 'cleared'})
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
+@app.route('/api/artist/node/<path:artist_id>', methods=['DELETE'])
+def artist_remove(artist_id):
+    try:
+        result = atlas.remove_artist(artist_id)
+        if result is None:
+            return jsonify({'error': 'unknown artist id'}), 404
+        return jsonify(result)
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
+@app.route('/api/artist/demo', methods=['POST'])
+def artist_demo():
+    try:
+        return jsonify(atlas.place_artist_demo())
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
 
 
 if __name__ == '__main__':
