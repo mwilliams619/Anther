@@ -87,10 +87,12 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 - **Recommend from map**: the "Recommend similar" button (`doRecommend` in
   `app.js`) seeds `/api/recommend` with every `kind: 'query'` node currently
   on the map (i.e. what's shown in the Map panel list, not corpus-neighbor
-  context nodes). Results are already spliced into the shared graph
-  server-side (`atlas.recommend`'s `splice=True` default); the frontend just
-  mirrors that into the local d3 model as `kind: 'corpus'` nodes and lists
-  them for click-to-zoom.
+  context nodes). It uses MERIT-aggregate `topk` ranking by default: a result
+  is rewarded for fitting the strongest subset of the seeds, which preserves
+  distinct moods in a varied map. Every existing map node is excluded. Results
+  are spliced into the shared graph as `kind: 'corpus'` context nodes, and the
+  frontend mirrors that same kind, so recommendations never become future seeds
+  merely because the graph reloads.
 
 ## Similarity scoring — aggregate score + expandable breakdown
 

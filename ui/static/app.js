@@ -68,10 +68,12 @@ async function initArtistMode() {
       const btn = document.getElementById('view-artists');
       btn.disabled = true;
       btn.title = status.error || 'Artist mode unavailable';
+      document.getElementById('build-artist-graph').disabled = true;
     }
   } catch (err) {
     state.artistAvailable = false;
     document.getElementById('view-artists').disabled = true;
+    document.getElementById('build-artist-graph').disabled = true;
   }
 }
 
@@ -519,6 +521,84 @@ function initMapPanel() {
     clearFilter();
     renderMapPanel();
   });
+
+  document.getElementById('build-artist-graph').addEventListener('click', buildArtistGraphFromSongMap);
+}
+
+function chooseArtistGraphMode() {
+  const modal = document.getElementById('artist-graph-choice-modal');
+  const overlay = modal.querySelector('.modal-overlay');
+  const close = document.getElementById('artist-graph-choice-close');
+  const cancel = document.getElementById('artist-graph-choice-cancel');
+  const replace = document.getElementById('artist-graph-choice-replace');
+  const append = document.getElementById('artist-graph-choice-append');
+
+  return new Promise(resolve => {
+    const finish = choice => {
+      modal.setAttribute('hidden', '');
+      overlay.removeEventListener('click', dismiss);
+      close.removeEventListener('click', dismiss);
+      cancel.removeEventListener('click', dismiss);
+      replace.removeEventListener('click', startNew);
+      append.removeEventListener('click', addExisting);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(choice);
+    };
+    const dismiss = () => finish(null);
+    const startNew = () => finish('replace');
+    const addExisting = () => finish('append');
+    const onKeydown = event => { if (event.key === 'Escape') dismiss(); };
+    overlay.addEventListener('click', dismiss);
+    close.addEventListener('click', dismiss);
+    cancel.addEventListener('click', dismiss);
+    replace.addEventListener('click', startNew);
+    append.addEventListener('click', addExisting);
+    document.addEventListener('keydown', onKeydown);
+    modal.removeAttribute('hidden');
+    append.focus();
+  });
+}
+
+async function buildArtistGraphFromSongMap() {
+  if (!state.artistAvailable) {
+    showError('Artist graph is unavailable.');
+    return;
+  }
+  const seedCount = AtlasGraph.getNodes().filter(node => node.kind === 'query').length;
+  if (!seedCount) {
+    showError('Add a song to the map first.');
+    return;
+  }
+  const mode = ArtistGraph.getNodes().length ? await chooseArtistGraphMode() : 'append';
+  if (!mode) return;
+
+  const button = document.getElementById('build-artist-graph');
+  button.disabled = true;
+  button.textContent = 'Building…';
+  try {
+    const response = await fetch('/api/artist/from-song-graph', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode}),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Could not build artist graph');
+    if (!data.artist_count) {
+      showError('None of the artists from your added songs are available in the artist graph.');
+      return;
+    }
+    ArtistGraph.replaceData(data);
+    renderArtistMapPanel();
+    setViewMode('artists');
+    if (data.skipped_count) {
+      showError(`${data.skipped_count} artist${data.skipped_count === 1 ? '' : 's'} could not be added because no artist profile is available.`);
+    }
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Artist graph';
+  }
 }
 
 /* Candidates: artists on the map + imported playlist/album groups. */
@@ -698,7 +778,10 @@ function renderRecommendResults(data) {
   // The backend already splices these into the shared graph (recommend()'s
   // splice=True) — mirror that locally so the map and this list agree.
   AtlasGraph.mergeFragment({
-    nodes: results.map(r => ({ id: r.id, name: r.name, artist: r.artist, kind: 'corpus' })),
+    nodes: results.map(r => ({
+      id: r.id, name: r.name, artist: r.artist, kind: 'corpus',
+      recommended: r.recommended === true,
+    })),
     links: [],
   }, { focus: false });
   state.recommendRows = results;

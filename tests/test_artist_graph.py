@@ -90,6 +90,37 @@ def test_artist_graphs_are_session_isolated(isolated_artist_sessions):
         assert atlas.get_artist_graph()["nodes"] == []
 
 
+def test_build_artist_graph_from_added_song_nodes(isolated_artist_sessions):
+    atlas = isolated_artist_sessions
+    with atlas.use_session("song-seeds"):
+        st = atlas.get_session()
+        st.graph["nodes"] = {
+            "added": {"id": "added", "artist": "Drake", "kind": "query"},
+            # Context nodes must not influence the artist graph.
+            "context": {"id": "context", "artist": "The Beatles", "kind": "corpus"},
+            "unknown": {"id": "unknown", "artist": "Uncatalogued Artist", "kind": "query"},
+        }
+
+        result = atlas.build_artist_graph_from_song_graph("append")
+        assert result["artist_count"] == 1
+        assert result["skipped_artists"] == ["Uncatalogued Artist"]
+        assert [node["id"] for node in result["nodes"]] == ["corpus:546"]
+
+        atlas.place_artist("corpus:1039")
+        replaced = atlas.build_artist_graph_from_song_graph("replace")
+        assert [node["id"] for node in replaced["nodes"]] == ["corpus:546"]
+
+
+def test_artist_graph_from_song_map_route(isolated_artist_sessions):
+    atlas = isolated_artist_sessions
+    st = atlas.get_session()
+    st.graph["nodes"] = {"added": {"id": "added", "artist": "Drake", "kind": "query"}}
+    import app
+    response = app.app.test_client().post('/api/artist/from-song-graph', json={'mode': 'append'})
+    assert response.status_code == 200
+    assert response.get_json()["artist_count"] == 1
+
+
 def test_private_profile_uses_cached_upload_and_survives_reload(isolated_artist_sessions):
     atlas = isolated_artist_sessions
     with atlas.use_session("profile"):

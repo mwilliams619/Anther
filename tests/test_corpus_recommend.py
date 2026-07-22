@@ -35,7 +35,7 @@ def test_centroid_ranks_shared_center_first():
     # Seeds t0=[1,0,0,0] and t1=[0,1,0,0]. Centroid ∝ [1,1,0,0]/√2.
     # Cosine to t0 and t1 = 1/√2 (tied top); to t2,t3 = 0.
     res = recommend_from_seeds(corpus, [corpus.embeddings[0], corpus.embeddings[1]],
-                               top_k=4)
+                               top_k=4, method="centroid")
     top_ids = {r["id"] for r in res[:2]}
     assert top_ids == {"t0", "t1"}
     assert res[0]["score"] == pytest.approx(1 / np.sqrt(2))
@@ -60,6 +60,16 @@ def test_rank_and_score_shape_matches_query():
     assert res[0]["id"] == "t0" and res[0]["score"] == pytest.approx(1.0)
 
 
+def test_topk_is_the_default_method():
+    corpus = _orthogonal_corpus()
+    seeds = [corpus.embeddings[0], corpus.embeddings[1]]
+    default = recommend_from_seeds(corpus, seeds, top_k=4)
+    explicit = recommend_from_seeds(corpus, seeds, top_k=4, method="topk")
+    assert [(r["id"], r["score"]) for r in default] == [
+        (r["id"], r["score"]) for r in explicit
+    ]
+
+
 def test_empty_seeds_raise():
     corpus = _orthogonal_corpus()
     with pytest.raises(ValueError, match="at least one seed"):
@@ -82,7 +92,7 @@ def test_antipodal_centroid_raises():
     corpus = ReferenceCorpus(emb, index, leiden, np.zeros((3, 2)), emb[:1], [],
                              {"corpus_format_version": 1, "embedding_config": {}})
     with pytest.raises(ValueError, match="degenerate"):
-        recommend_from_seeds(corpus, [emb[0], emb[1]])
+        recommend_from_seeds(corpus, [emb[0], emb[1]], method="centroid")
 
 
 # --------------------------------------------------------------------------- #

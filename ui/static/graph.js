@@ -35,11 +35,12 @@ const AtlasGraph = (() => {
     return playlistAccent.get(pid);
   };
 
-  let svg, g, gLink, gNode, sim, zoom;
+  let svg, g, gLink, gHoverLink, gNode, sim, zoom;
   let nodes = [], links = [];
   const byId = new Map();
   let adjacency = new Map();            // id → Set(neighbor ids), rebuilt in restart()
-  let linkSel, hitLinkSel, nodeSel, tooltip;
+  let linkSel, hitLinkSel, hoverLinkSel, nodeSel, tooltip;
+  let hoverLinks = [];                 // transient corpus-result → seed links
   let pinnedId = null;                  // clicked node: highlight locked until deselect
   let filterIds = null;                 // active filter: Set of node ids to keep lit
   let groups = {};                      // gid → {name, kind} for imported playlists/albums
@@ -98,6 +99,9 @@ const AtlasGraph = (() => {
 
     g      = svg.append('g');
     gLink  = g.append('g').attr('class', 'links');
+    // Hover links are not persisted graph structure: they only explain which
+    // placed songs a muted similarity/result node is being shown in relation to.
+    gHoverLink = g.append('g').attr('class', 'hover-links');
     gNode  = g.append('g').attr('class', 'nodes');
     tooltip = d3.select('#graph-tooltip');
 
@@ -151,6 +155,8 @@ const AtlasGraph = (() => {
            .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
     hitLinkSel.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
               .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    hoverLinkSel.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
     nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
   }
 
@@ -169,7 +175,18 @@ const AtlasGraph = (() => {
     hitLinkSel.exit().remove();
     hitLinkSel = hitLinkSel.enter().append('line')
       .attr('class', 'glink-hit')
+      .on('mouseover', onLinkHover).on('mousemove', onMove)
+      .on('mouseout', () => tooltip.style('display', 'none'))
       .merge(hitLinkSel);
+
+    hoverLinkSel = gHoverLink.selectAll('line.hover-similarity-link')
+      .data(hoverLinks, d => `${d.source.id}->${d.target.id}`);
+    hoverLinkSel.exit().remove();
+    hoverLinkSel = hoverLinkSel.enter().append('line')
+      .attr('class', 'hover-similarity-link')
+      .merge(hoverLinkSel)
+      .attr('class', d => 'hover-similarity-link'
+        + (d.source.recommended === true ? ' recommendation-link' : ''));
 
     // ── nodes (a <g> per node: circle + label) ──
     nodeSel = gNode.selectAll('g.gnode').data(nodes, d => d.id);
@@ -201,8 +218,8 @@ const AtlasGraph = (() => {
       .style('--breathe-delay', d => breatheDelay(d.id) + 's');
 
     nodeSel.select('text.glabel')
-      .text(d => d.kind === 'query' ? d.name : '')
-      .attr('class', d => 'glabel ' + (d.kind === 'query' ? 'glabel-query' : ''));
+      .text(d => d.name || '')
+      .attr('class', d => 'glabel ' + (d.kind === 'query' ? 'glabel-query' : 'glabel-corpus'));
 
     sim.nodes(nodes);
     sim.force('link').links(links);
@@ -246,6 +263,35 @@ const AtlasGraph = (() => {
   }
 
   const idOf = e => (typeof e === 'object' ? e.id : e);
+
+  function setHoverSimilarityLinks(d) {
+    // Corpus nodes are recommendations/context. Their permanent graph links
+    // are intentionally omitted to keep the force map sparse; reveal their
+    // relationship to every placed seed only while the result is hovered.
+    hoverLinks = d.kind === 'query'
+      ? []
+      : nodes.filter(n => n.kind === 'query' && n.id !== d.id)
+        .map(n => ({ source: d, target: n }));
+    const relatedIds = new Set(hoverLinks.map(l => l.target.id));
+    // A recommendation is related to the placed seed set as a whole. Keep
+    // those seed songs visible (rather than letting generic hover dimming hide
+    // them) so the temporary spokes identify their endpoints.
+    nodeSel.classed('hover-related-query', n => relatedIds.has(n.id))
+      .classed('hover-related-recommendation',
+        n => d.recommended === true && relatedIds.has(n.id));
+    restartHoverLinks();
+  }
+
+  function restartHoverLinks() {
+    hoverLinkSel = gHoverLink.selectAll('line.hover-similarity-link')
+      .data(hoverLinks, d => `${d.source.id}->${d.target.id}`);
+    hoverLinkSel.exit().remove();
+    hoverLinkSel = hoverLinkSel.enter().append('line')
+      .merge(hoverLinkSel)
+      .attr('class', d => 'hover-similarity-link'
+        + (d.source.recommended === true ? ' recommendation-link' : ''));
+    ticked();
+  }
 
   function mergeFragment(frag, opts) {
     if (!frag) return;
@@ -458,6 +504,7 @@ const AtlasGraph = (() => {
 
   function onHover(d) {
     if (pinnedId === null) applyHighlight(d);   // hover previews only when unpinned
+    setHoverSimilarityLinks(d);
     // raise the entire node group (circle + label) so they're on top of all
     // other nodes and labels in the graph. The group contains both elements so
     // they come to the front together.
@@ -487,6 +534,10 @@ const AtlasGraph = (() => {
   }
   function onOut() {
     if (pinnedId === null) clearHighlight();
+    hoverLinks = [];
+    nodeSel.classed('hover-related-query', false)
+      .classed('hover-related-recommendation', false);
+    restartHoverLinks();
     // lower the entire node group back to its natural position if the node is not selected
     // (selected nodes keep their group raised until deselected)
     const d = d3.select(this).datum();

@@ -981,8 +981,9 @@ class PlacementSkip(Exception):
         self.reason = reason
 
 
-def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
-    """Place a corpus row by index and merge it into the graph."""
+def _place_corpus_track(idx: int, extra: dict | None = None,
+                        kind: str = "query") -> dict:
+    """Merge a corpus row into the graph as a placed song or context node."""
     corpus = load()
     self_id = corpus.metadata[idx].get("id")
     raw_vec = corpus.embeddings[idx]
@@ -991,7 +992,7 @@ def _place_corpus_track(idx: int, extra: dict | None = None) -> dict:
         "name":       corpus.metadata[idx].get("name", ""),
         "artist":     corpus.metadata[idx].get("artist", ""),
         "cluster":    _id_to_cluster.get(self_id),
-        "kind":       "query",
+        "kind":       kind,
         "confidence": 1.0,
         "source":     "corpus",
         **(extra or {}),
@@ -1163,16 +1164,25 @@ def place_external_track(track: dict, raw_vec, playlist_pid=None, backbone=None)
                             merit_vec=merit_vec)
 
 
-def _seed_vec(seed_id: str) -> np.ndarray | None:
-    """Raw MERT vector for a placed seed id: corpus row if in-corpus, else the
-    embed cache (populated when the song was searched/placed). None if neither."""
+def _seed_vec(seed_id: str, *, use_merit: bool = False) -> np.ndarray | None:
+    """Seed vector in the active recommendation space, or ``None``.
+
+    Corpus rows are already aligned to the MERIT sidecar. External songs need
+    their cached raw MERIT backbone projected through the local factor heads;
+    a legacy MERT-only cache entry is skipped rather than mixed into a MERIT
+    recommendation.
+    """
     idx = _id_to_idx.get(seed_id)
     if idx is not None:
-        return load().embeddings[idx]
+        corpus = load()
+        return (corpus.merit_index.embeddings[idx]
+                if use_merit else corpus.embeddings[idx])
+    if use_merit:
+        return _merit_query_vec(cached_backbone(seed_id))
     return cached_vec(seed_id)
 
 
-def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
+def recommend(seed_ids: list, top_k: int = 20, method: str = "topk",
               splice: bool = True) -> dict:
     """
     Multi-song recommendation (use-case 2): given the ids of several placed seed
@@ -1183,21 +1193,22 @@ def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
     with no cached vector is reported in ``skipped`` rather than silently
     dropped. Seeds are excluded from their own results.
 
-    ``method`` is passed through to ``recommend_from_seeds`` ("centroid" default,
-    "topk" fallback for multi-mood seed sets). When ``splice`` is true the
-    returned tracks are also merged into the shared graph (as corpus nodes wired
-    to the seeds' neighborhood) so the list and the map stay in sync.
+    ``method`` is passed through to ``recommend_from_seeds`` ("topk" default;
+    "centroid" remains available for an explicitly shared-center query). When ``splice`` is true the
+    returned tracks are also merged into the shared graph as corpus context
+    nodes, so the list and the map stay in sync without changing the seed set.
 
     Returns {"results": [...], "n_seeds": int, "skipped": [ids], "method": str}.
     """
     ids = [s for s in (seed_ids or []) if s]
     if not ids:
         raise ValueError("recommend needs at least one seed id")
-    load()
+    corpus = load()
+    use_merit = corpus.merit_index is not None
 
     vecs, used, skipped = [], [], []
     for sid in ids:
-        v = _seed_vec(sid)
+        v = _seed_vec(sid, use_merit=use_merit)
         if v is None:
             skipped.append(sid)
         else:
@@ -1206,22 +1217,38 @@ def recommend(seed_ids: list, top_k: int = 20, method: str = "centroid",
     if not vecs:
         raise ValueError("no seed ids resolved to a vector (none cached yet)")
 
+    # Exclude the whole current map, not only the submitted seeds. A result
+    # should always be a fresh context node rather than duplicate a song the
+    # user already placed (including nodes added by another UI action).
+    st = get_session()
+    with st.lock:
+        placed_ids = set(st.graph["nodes"])
     results = recommend_from_seeds(
-        load(), vecs, top_k=top_k, exclude_ids=set(used), method=method,
+        corpus, vecs, top_k=top_k, exclude_ids=set(used) | placed_ids, method=method,
         popularity_pct=_popularity_pct or None, popularity_beta=POPULARITY_BETA,
+        index=corpus.merit_index if use_merit else corpus.index,
     )
     # Recommendations aren't guaranteed map edges (seeds' centroid/topk score is
     # a different quantity than a pairwise qq cosine) so use the same open
     # floor as the "show more" search — a weak recommendation can honestly
     # read below 55 rather than being floored to look stronger than it is.
     for r in results:
-        r["score"] = round(_display_score(float(r["score"]), clip_low=False), 1)
+        r["score"] = round(_display_score(
+            float(r["score"]), clip_low=False,
+            thresholds=_merit_link_thresholds if use_merit else _link_thresholds,
+        ), 1)
+        # Carries through the API and graph reload so the renderer can give
+        # recommendation relationships their distinct hover treatment.
+        r["recommended"] = True
 
     if splice:
         for r in results:
             idx = _id_to_idx.get(r.get("id"))
             if idx is not None:
-                _place_corpus_track(idx, extra={"recommended": True})
+                # Recommendations are graph context, not newly placed seeds.
+                # Keeping this kind aligned with the frontend means reloading
+                # the graph cannot silently change the next recommendation.
+                _place_corpus_track(idx, extra={"recommended": True}, kind="corpus")
 
     return {"results": results, "n_seeds": len(used),
             "skipped": skipped, "method": method}
@@ -2229,27 +2256,66 @@ def place_artist(artist_id: str) -> dict:
     _ensure_artist_graph_loaded(st)
     artist_id = str(artist_id or "")
     with st.lock:
-        if artist_id in st.artist_graph["nodes"]:
-            return {"nodes": [], "links": [], "existing": True, "id": artist_id}
-        node = _artist_node_for_id(st, artist_id)
-        vec = _artist_vector_for_id(st, artist_id)
-        if node is None or vec is None:
-            raise ValueError("unknown artist id")
-        candidates = []
-        for other_id, other_vec in st.artist_vectors.items():
-            cosine = float(np.dot(vec, other_vec))
-            if cosine >= _artist_thresholds.qq_threshold:
-                candidates.append((cosine, other_id))
-        candidates.sort(reverse=True)
-        links = [{"source": artist_id, "target": other_id, "value": cosine,
-                  "score": round(link_calibration.display_score(
-                      cosine, _artist_thresholds, clip_low=True), 1), "kind": "artist"}
-                 for cosine, other_id in candidates[:ARTIST_MAX_EDGES_PER_NODE]]
-        st.artist_graph["nodes"][artist_id] = node
-        st.artist_vectors[artist_id] = vec
-        st.artist_graph["links"].extend(links)
+        fragment = _place_artist_locked(st, artist_id)
         _save_artist_graph(st)
-        return {"nodes": [node], "links": links, "existing": False, "id": artist_id}
+        return fragment
+
+
+def _place_artist_locked(st: "_SessionState", artist_id: str) -> dict:
+    """Add an artist while ``st.lock`` is held; persistence is the caller's job."""
+    if artist_id in st.artist_graph["nodes"]:
+        return {"nodes": [], "links": [], "existing": True, "id": artist_id}
+    node = _artist_node_for_id(st, artist_id)
+    vec = _artist_vector_for_id(st, artist_id)
+    if node is None or vec is None:
+        raise ValueError("unknown artist id")
+    candidates = []
+    for other_id, other_vec in st.artist_vectors.items():
+        cosine = float(np.dot(vec, other_vec))
+        if cosine >= _artist_thresholds.qq_threshold:
+            candidates.append((cosine, other_id))
+    candidates.sort(reverse=True)
+    links = [{"source": artist_id, "target": other_id, "value": cosine,
+              "score": round(link_calibration.display_score(
+                  cosine, _artist_thresholds, clip_low=True), 1), "kind": "artist"}
+             for cosine, other_id in candidates[:ARTIST_MAX_EDGES_PER_NODE]]
+    st.artist_graph["nodes"][artist_id] = node
+    st.artist_vectors[artist_id] = vec
+    st.artist_graph["links"].extend(links)
+    return {"nodes": [node], "links": links, "existing": False, "id": artist_id}
+
+
+def build_artist_graph_from_song_graph(mode: str = "append") -> dict:
+    """Use only user-added song nodes to seed the persisted artist graph."""
+    _require_artist_ready()
+    if mode not in {"append", "replace"}:
+        raise ValueError("artist graph mode must be 'append' or 'replace'")
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    with st.lock:
+        artist_names = {
+            _norm(node.get("artist", "")): str(node.get("artist", "")).strip()
+            for node in st.graph["nodes"].values()
+            if node.get("kind") == "query" and _norm(node.get("artist", ""))
+        }
+        artist_ids = [f"corpus:{_artist_id_map[name]}" for name in sorted(artist_names)
+                      if name in _artist_id_map]
+        skipped = [artist_names[name] for name in sorted(artist_names)
+                   if name not in _artist_id_map]
+        if not artist_ids:
+            return {"nodes": list(st.artist_graph["nodes"].values()),
+                    "links": list(st.artist_graph["links"]), "artist_count": 0,
+                    "skipped_count": len(skipped), "skipped_artists": skipped}
+        if mode == "replace":
+            st.artist_graph = {"nodes": {}, "links": []}
+            st.artist_vectors = {}
+        fragments = [_place_artist_locked(st, artist_id) for artist_id in artist_ids]
+        _save_artist_graph(st)
+        return {"nodes": list(st.artist_graph["nodes"].values()),
+                "links": list(st.artist_graph["links"]),
+                "artist_count": len(artist_ids),
+                "added": sum(not fragment["existing"] for fragment in fragments),
+                "skipped_count": len(skipped), "skipped_artists": skipped}
 
 
 def _refresh_artist_node(st: "_SessionState", artist_id: str) -> dict:
@@ -2524,6 +2590,14 @@ def _load_graph(st: "_SessionState") -> None:
     # ordinary query nodes now) — strip them from sessions saved by older code.
     nodes = {n["id"]: n for n in data.get("nodes", [])
              if n.get("kind") != "playlist"}
+    # Recommendation nodes used to be persisted as ``query`` even though the
+    # frontend rendered them as corpus context. Normalize old sessions too, so
+    # a reload cannot turn an earlier recommendation into a future seed.
+    migrated_recommendations = False
+    for node in nodes.values():
+        if node.get("recommended") and node.get("kind") == "query":
+            node["kind"] = "corpus"
+            migrated_recommendations = True
     links = [l for l in data.get("links", [])
              if l.get("kind") != "member"
              and l["source"] in nodes and l["target"] in nodes]
@@ -2539,7 +2613,7 @@ def _load_graph(st: "_SessionState") -> None:
         if l.get("kind") == "qq" and l.get("score") is None and l.get("value") is not None:
             l["score"] = round(_display_score(l["value"], clip_low=True), 1)
             backfilled = True
-    if backfilled:
+    if backfilled or migrated_recommendations:
         _save_graph(st)
 
     # Groups registry (for the filter UI). Backfill display names for gids

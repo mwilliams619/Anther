@@ -223,6 +223,77 @@ section { display: flex; flex-direction: column; }
   margin-bottom: var(--spacing); 
 }
 
+/* Compact graph-type switcher.  This intentionally does not share .mode-btn,
+   which is also used for the text-based search filters below. */
+.view-mode {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: var(--spacing);
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.view-toggle-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+
+.view-toggle-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.view-toggle-btn img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  opacity: .6;
+  transition: opacity var(--transition);
+}
+
+.view-toggle-btn:hover:not(:disabled) img,
+.view-toggle-btn.active img {
+  opacity: 1;
+}
+
+.view-toggle-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hi);
+}
+
+.view-toggle-btn.active {
+  color: var(--text);
+  background: var(--primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+}
+
+.view-toggle-btn:focus-visible {
+  outline: 2px solid var(--primary-hi);
+  outline-offset: 2px;
+}
+
+.view-toggle-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: .4;
+}
+
 .mode-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -472,11 +543,15 @@ input[type="text"]::placeholder {
 /* ── Header bar ───────────────────────────────────────────────────────────── */
 .header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: calc(var(--spacing) * 1.5);
   padding-bottom: calc(var(--spacing) * 2);
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--spacing);
+}
+
+.header .view-mode {
+  margin: 0;
 }
 
 .subtitle {
@@ -688,6 +763,34 @@ input[type="text"]::placeholder {
   margin-top: 8px;
 }
 
+.map-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#build-artist-graph {
+  background: var(--surface-hi);
+  border: 1px solid var(--border);
+  color: var(--text-mid);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+#build-artist-graph:hover:not(:disabled) {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+#build-artist-graph:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
 #clear-map,
 #clear-artist-map {
   background: none;
@@ -766,6 +869,27 @@ input[type="text"]::placeholder {
   transition: stroke-opacity var(--transition);
 }
 
+/* A muted corpus/result node gets these temporary spokes only while it is
+   hovered. They explain the recommendation without turning every result into
+   permanent force-graph clutter. */
+.hover-similarity-link {
+  stroke: var(--text-muted);
+  stroke-opacity: 0.34;
+  stroke-width: 1px;
+  stroke-dasharray: 1 4;
+  pointer-events: none;
+}
+
+/* Recommendation spokes use the same green as persistent query↔query edges.
+   They are dashed because they describe a set-level recommendation, not a
+   stored pairwise graph edge. */
+.hover-similarity-link.recommendation-link {
+  stroke: var(--success);
+  stroke-opacity: 0.72;
+  stroke-width: 1.2px;
+  stroke-dasharray: 5 3;
+}
+
 /* links outside the active artist/playlist/album filter */
 .glink.filter-out {
   stroke-opacity: 0.05;
@@ -785,6 +909,15 @@ input[type="text"]::placeholder {
 .gnode.dimmed-mid { opacity: 0.05; }
 
 .gnode.dimmed { opacity: 0.01; }
+
+/* Temporary corpus-hover links must name visible endpoints. Recommendation
+   seeds receive the stronger treatment; generic corpus context stays muted. */
+.gnode.hover-related-query { opacity: 0.62; }
+.gnode.hover-related-recommendation { opacity: 1; }
+.gnode.hover-related-recommendation .glabel-query {
+  fill: var(--text);
+  filter: drop-shadow(0 0 1.5px rgba(107, 204, 143, 0.45));
+}
 
 /* when a node is clicked, its 1-hop neighbors stay visible but dim to 0.8
    opacity to reduce visual crowding around the selected node. The selected
@@ -865,6 +998,20 @@ circle.corpus-node {
   fill: var(--text); 
   font-size: 12px; 
   font-weight: 500; 
+}
+
+/* Similarity/result labels stay deliberately quieter than songs the user has
+   actively placed, matching their smaller muted nodes. */
+.glabel-corpus {
+  fill: var(--text-muted);
+  font-size: 10px;
+  opacity: 0.72;
+}
+
+.gnode:hover .glabel-corpus,
+.gnode.lit .glabel-corpus {
+  fill: var(--text);
+  opacity: 1;
 }
 
 /* labels of 1-hop neighbors of selected node: slightly gray so they don't
@@ -1462,6 +1609,15 @@ circle.corpus-node {
 .artist-assignment-row:hover { background: var(--surface-hi); }
 .artist-assignment-row small { color: var(--text-muted); white-space: nowrap; }
 .artist-assignment-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+
+.artist-graph-choice-content { max-width: 460px; }
+.artist-graph-choice-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
 
 @keyframes modal-slide-up {
   from { transform: translateY(20px); opacity: 0; }

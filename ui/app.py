@@ -205,7 +205,7 @@ def atlas_recommend():
     seed_ids = body.get('seed_ids') or []
     try:
         top_k  = int(body.get('top_k', 20))
-        method = body.get('method', 'centroid')
+        method = body.get('method', 'topk')
         return jsonify(atlas.recommend(seed_ids, top_k=top_k, method=method))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -455,6 +455,15 @@ def artist_place():
     body = request.get_json(force=True) or {}
     try:
         return jsonify(atlas.place_artist(body.get('artist_id', '')))
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
+@app.route('/api/artist/from-song-graph', methods=['POST'])
+def artist_from_song_graph():
+    body = request.get_json(force=True) or {}
+    try:
+        return jsonify(atlas.build_artist_graph_from_song_graph(body.get('mode', 'append')))
     except (ValueError, RuntimeError) as exc:
         return _artist_error_response(exc)
 

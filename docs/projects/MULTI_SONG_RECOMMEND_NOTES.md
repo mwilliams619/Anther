@@ -16,10 +16,10 @@ centroid/topk switch, dedup/skip/empty handling) not yet built.
 
 - **Output:** *both* a distinct ranked recommendation list **and** the existing
   force-graph view (recommended tracks are spliced into the graph as well).
-- **Aggregation:** **centroid** — average the seed vectors, rank corpus tracks
-  by cosine to that shared center. `topk` (mean of top-k per-seed cosines) is
-  implemented as a drop-in fallback for the known centroid failure mode (see
-  Caveats), selectable per request; centroid is the default.
+- **Aggregation:** **topk** — score a candidate by its mean similarity to its
+  strongest seed subset. This avoids stranding a varied/multi-mood map at an
+  artificial centroid. `centroid` remains selectable per request for an
+  explicitly shared-center query.
 
 ## Design finding: the ML core did not need to change
 
@@ -63,10 +63,10 @@ Embedding recipe, `SongIndex`, Leiden partition, the frozen corpus bundle,
 
 3. **`ui/app.py` → `POST /api/recommend`**
    - Body `{seed_ids: [...], top_k?: int, method?: "centroid"|"topk"}`.
-   - `400` on bad input (empty/unresolvable seeds), `500` otherwise; mirrors the
+   - Defaults to `method="topk"`; `400` on bad input (empty/unresolvable seeds), `500` otherwise; mirrors the
      existing `/api/place` and `/api/playlist/place` handlers.
 
-4. **`tests/test_corpus_recommend.py`** — 8 tests, all green. Centroid ranks the
+4. **`tests/test_corpus_recommend.py`** — 9 tests. Centroid ranks the
    shared center first on a hand-checkable orthonormal corpus; `exclude_ids`
    drops seeds; rank/score shape matches `query`; empty/unknown-method/antipodal
    error paths; `topk` recovers a two-mood seed set the centroid strands; real
@@ -75,11 +75,9 @@ Embedding recipe, `SongIndex`, Leiden partition, the frozen corpus bundle,
 
 ## Caveats / known tradeoffs
 
-- **Centroid strands multi-mood seed sets.** If the seeds span two distinct
-  moods, the average lands in the sparse valley between them and top results can
-  feel like neither. Mitigation is already in place: pass `method="topk"` (no
-  interface change) to score by nearest-subset instead. `test_topk_recovers_
-  both_modes_when_centroid_strands` demonstrates this.
+- **Centroid strands multi-mood seed sets.** It remains available for callers
+  that specifically want a shared center, but is no longer the UI default.
+  `topk` is the default because it scores by the strongest seed subset.
 - **Seeds must be embedded first.** A seed id only resolves if it's in-corpus or
   was previously searched/placed (embed cache). Ids with no vector come back in
   `skipped`; the frontend should surface that ("2 of 5 seeds not yet embedded").

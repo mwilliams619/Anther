@@ -183,10 +183,11 @@ def recommend_from_seeds(
     seed_vecs,
     top_k: int = 20,
     exclude_ids=None,
-    method: str = "centroid",
+    method: str = "topk",
     per_seed_k: int = 3,
     popularity_pct: dict[str, float] | None = None,
     popularity_beta: float = 0.15,
+    index=None,
 ) -> list[dict]:
     """
     Recommend corpus tracks similar to a *set* of seed songs — the multi-song
@@ -198,13 +199,17 @@ def recommend_from_seeds(
     L2), so seeds and corpus rows are compared in the same space.
 
     Scoring (``method``):
-      * ``"centroid"`` (default) — average the transformed unit seed vectors,
+      * ``"centroid"`` — average the transformed unit seed vectors,
         re-normalize, and rank corpus tracks by cosine to that centroid. Rewards
         songs near the shared center of all seeds.
-      * ``"topk"`` — score each candidate by the mean of its top-``per_seed_k``
+      * ``"topk"`` (default) — score each candidate by the mean of its top-``per_seed_k``
         cosines across the seeds (the reverse of ``playlist_fit``). Rewards a
         song strongly similar to a *subset* of seeds, so a two-mood seed set
         doesn't collapse to an empty midpoint. Interface-compatible drop-in.
+
+    ``index`` optionally selects the similarity space. It defaults to the
+    corpus's base index; callers using a MERIT sidecar must pass that sidecar
+    and vectors from the same space.
 
     A seed that is itself a corpus track would score ~1.0 against itself; pass
     the seed ids (plus anything the user already has) via ``exclude_ids`` to
@@ -218,7 +223,7 @@ def recommend_from_seeds(
     ``top_k`` — a metadata-only blend that never touches embeddings/index.
     Omit it and behavior is byte-identical to before this parameter existed.
     """
-    index = corpus.index
+    index = index or corpus.index
     seeds = list(seed_vecs)
     if not seeds:
         raise ValueError("recommend_from_seeds needs at least one seed vector")

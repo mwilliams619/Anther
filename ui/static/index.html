@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=5" />
+  <link rel="stylesheet" href="/static/style.css?v=9" />
   <link rel="icon" type="image/x-icon" href="anther_logo.png" />
 </head>
 <body>
@@ -25,12 +25,19 @@
     <div class="header">
       <h1>Anther</h1>
       <span class="subtitle">song atlas</span>
+      <div id="view-mode" class="view-mode" role="tablist" aria-label="Atlas view">
+        <button id="view-songs" class="view-toggle-btn active" role="tab" aria-selected="true"
+                title="Song atlas" aria-label="Show song atlas">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 12h2m1.5-5v10m3-14v18m3-12v6m3-10v14m3-8v2" />
+          </svg>
+        </button>
+        <button id="view-artists" class="view-toggle-btn" role="tab" aria-selected="false"
+                title="Artist atlas" aria-label="Show artist atlas">
+          <img src="/static/images/artist_icon_white_2.png" alt="" aria-hidden="true" />
+        </button>
+      </div>
       <button id="help-toggle" class="btn-icon" title="Open help" style="margin-left:auto">?</button>
-    </div>
-
-    <div id="view-mode" class="search-mode view-mode" role="tablist" aria-label="Atlas view">
-      <button id="view-songs" class="mode-btn active" role="tab" aria-selected="true">Songs</button>
-      <button id="view-artists" class="mode-btn" role="tab" aria-selected="false">Artists</button>
     </div>
 
     <!-- Search -->
@@ -76,7 +83,10 @@
       <div id="map-list" class="map-list"></div>
       <div class="map-actions">
         <span id="map-count" class="hint-text"></span>
-        <button id="clear-map" title="Remove every node from the map">Clear map</button>
+        <div class="map-action-buttons">
+          <button id="build-artist-graph" title="Build an artist graph from songs you added">Artist graph</button>
+          <button id="clear-map" title="Remove every node from the map">Clear map</button>
+        </div>
       </div>
       <div id="removed-header" class="removed-header" hidden>Recently removed</div>
       <div id="removed-list" class="map-list"></div>
@@ -240,12 +250,32 @@
   </div>
 </div>
 
+<!-- Choosing replacement is explicit so an existing artist map is never discarded by accident. -->
+<div id="artist-graph-choice-modal" class="modal" hidden role="dialog" aria-modal="true"
+     aria-labelledby="artist-graph-choice-title">
+  <div class="modal-overlay"></div>
+  <div class="modal-content artist-graph-choice-content">
+    <div class="modal-header">
+      <h2 id="artist-graph-choice-title">Build artist graph</h2>
+      <button id="artist-graph-choice-close" class="btn-icon" title="Cancel" aria-label="Cancel">×</button>
+    </div>
+    <div class="modal-body">
+      <p>Your artist graph already has artists. Add artists from the songs on this map, or replace it with a new graph?</p>
+      <div class="artist-graph-choice-actions">
+        <button id="artist-graph-choice-cancel" class="btn">Cancel</button>
+        <button id="artist-graph-choice-replace" class="btn">Start new graph</button>
+        <button id="artist-graph-choice-append" class="btn btn-primary">Add to existing</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="graph-tooltip"></div>
 <div id="error-toast"></div>
 
 <script src="https://d3js.org/d3.v4.js"></script>
 <script src="/static/graph.js?v=5"></script>
 <script src="/static/artist-graph.js?v=2"></script>
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>
