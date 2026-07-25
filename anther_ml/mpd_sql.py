@@ -474,15 +474,16 @@ def sample_tracks(
     artist_cap: int | None = 5,
     seed: int = 42,
     min_popularity: float | None = None,
+    max_popularity: float | None = None,
     require_preview: bool = True,
 ) -> tuple[list[dict], dict[str, list[dict]]]:
     """
     Deterministic, artist-capped random sample of tracks, plus playlist membership.
 
     Returns ``(rows, membership)`` where each row is
-    ``{"track_id", "name", "preview_url", "artist_name"}`` and ``membership`` maps
+    ``{"track_id", "name", "preview_url", "artist_name", "popularity"}`` and ``membership`` maps
     ``track_id -> [{"pid", "name"}, ...]``. The filter (preview present, optional
-    popularity floor), the per-artist cap, and the sample all run inside SQLite;
+    popularity bounds), the per-artist cap, and the sample all run inside SQLite;
     only the ~``sample_n`` chosen rows are materialized in Python.
 
     The cap mirrors the corpus design's hygiene rule (no single artist forms a
@@ -500,11 +501,15 @@ def sample_tracks(
         if min_popularity is not None:
             where.append("t.popularity >= :minpop")
             params["minpop"] = min_popularity
+        if max_popularity is not None:
+            where.append("t.popularity <= :maxpop")
+            params["maxpop"] = max_popularity
         where_sql = " AND ".join(where)
 
         # One representative artist per track (MIN is arbitrary but deterministic).
         candidate = f"""
             SELECT t.id AS track_id, t.name AS name, t.preview_url AS preview_url,
+                   t.popularity AS popularity,
                    MIN(ta.artist_id) AS artist_id
             FROM track t
             JOIN track_artist1 ta ON ta.track_id = t.id
@@ -527,7 +532,8 @@ def sample_tracks(
                             ) AS rn
                      FROM cand
                  )
-            SELECT r.track_id, r.name, r.preview_url, a.name AS artist_name
+            SELECT r.track_id, r.name, r.preview_url, r.popularity,
+                   a.name AS artist_name
             FROM ranked r
             LEFT JOIN artist a ON a.id = r.artist_id
             WHERE r.rn <= :cap
@@ -540,7 +546,7 @@ def sample_tracks(
             # Old SQLite without window functions → uncapped fallback.
             log.warning("windowed sample failed (%s); falling back to uncapped sample", e)
             fallback = f"""
-                SELECT t.id, t.name, t.preview_url,
+                SELECT t.id, t.name, t.preview_url, t.popularity,
                        (SELECT a.name FROM track_artist1 ta JOIN artist a
                         ON a.id = ta.artist_id WHERE ta.track_id = t.id LIMIT 1)
                 FROM track t
@@ -551,8 +557,9 @@ def sample_tracks(
             cur = con.execute(fallback, params)
 
         rows = [
-            {"track_id": tid, "name": name, "preview_url": purl, "artist_name": artist}
-            for tid, name, purl, artist in cur.fetchall()
+            {"track_id": tid, "name": name, "preview_url": purl,
+             "popularity": popularity, "artist_name": artist}
+            for tid, name, purl, popularity, artist in cur.fetchall()
         ]
         log.info("sampled %d tracks (cap=%s, seed=%d)", len(rows), artist_cap, seed)
 

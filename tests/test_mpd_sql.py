@@ -95,6 +95,14 @@ def test_sample_excludes_missing_preview_and_attaches_membership(loaded_db):
     assert membership["t2"] == [{"pid": "p1", "name": "Chill"}]
 
 
+def test_sample_supports_long_tail_popularity_bound(loaded_db):
+    rows, _ = mpd_sql.sample_tracks(
+        loaded_db, sample_n=None, artist_cap=None, max_popularity=180000
+    )
+    assert {r["track_id"] for r in rows} == {"t2", "t4"}
+    assert {r["popularity"] for r in rows} == {180000.0, 90000.0}
+
+
 def test_artist_cap_limits_per_artist(loaded_db):
     # a1 has t1,t2 with previews; cap=1 keeps exactly one of them
     rows, _ = mpd_sql.sample_tracks(loaded_db, sample_n=None, artist_cap=1, seed=7)

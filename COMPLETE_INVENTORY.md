@@ -193,6 +193,7 @@
 | `GET /api/playlists/search` | Full-MPD playlist search (DB) |
 | `POST /api/playlist/place` | Async place playlist |
 | `GET /api/playlist/status/<job_id>` | Poll placement progress |
+| `POST /api/playlist/stop/<job_id>` | Gracefully stop a running placement job |
 | `GET /api/albums/search` | Deezer album search |
 | `POST /api/album/place` | Async place album |
 | `POST /api/place` | Place single song |
@@ -202,8 +203,21 @@
 | `GET /api/graph` | Current map state (JSON) |
 | `POST /api/graph/clear` | Wipe the map |
 | `DELETE /api/node/<id>` | Remove one placed song |
+| `GET /api/song/<id>/preview` | Resolve a playable preview URL |
+| `GET /api/song/<id>/spotify` | Resolve a Spotify track link when available |
+| `GET /api/upload-audio/<name>` | Serve uploaded audio |
+| `POST /api/demo/load` | Load the curated demo playlist |
 | `POST /api/mentor/chat` | Chat with mentor (ReAct) |
 | `POST /api/mentor/reset` | Clear mentor session |
+| `GET /api/artist/status` | Report Artist View availability |
+| `GET /api/artist/search` | Search artists |
+| `GET /api/artist/<id>` | Artist detail and optional enrichment profile |
+| `GET /api/artist/graph` | Current session artist graph |
+| `POST /api/artist/place` | Place an artist |
+| `POST /api/artist/from-song-graph` | Build an artist graph from the song map |
+| `DELETE /api/artist/node/<id>` | Remove an artist from the session graph |
+| `POST /api/artist/graph/clear` | Clear the session artist graph |
+| `POST /api/artist/demo` | Load the curated artist demo |
 
 ### Graph Visualization (ui/static/)
 

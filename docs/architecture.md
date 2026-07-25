@@ -62,7 +62,7 @@ CLI: `python -m anther_ml.corpus build …` / `… place song.mp3 …`.
 | `bundle.py` | `ReferenceCorpus` — the frozen, versioned bundle (`save`/`load`, config stamp); lazily loads the MERIT-aggregate sidecar via `.merit_index`/`.merit_factors`/`.merit_calibration` when present |
 | `place.py` | Placement regime — `place`, `embed_query`/`embed_query_dual`, playlist-fit / `rank_playlists`; `place()` routes to the MERIT-aggregate index when `merit_vec=` is given and the bundle has one, else falls back to the legacy MERT index |
 | `merit_index.py` | Builds the MERIT-aggregate `SongIndex` sidecar (`index_merit_agg.npy/.json`) + per-factor cosine sidecars (`factor_mel/rhy/tim.npy`) + its own calibration (`link_calibration_merit.json`) from a bundle's `merit_backbone.npy` — additive, never touches the MERT index. See [similarity.md](similarity.md)'s "MERIT-aggregate index" section |
-| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle ([projects/PLAYLIST_LABELS_BUILD_PLAN.md](projects/PLAYLIST_LABELS_BUILD_PLAN.md)) |
+| `labels.py` | Playlist-name cluster labels — post-processing over a built bundle; implemented and exposed through the `label` CLI |
 | `tagging/` | Micro-genre tag probe — vocab, weak seeds, probe fit/predict, FMA held-out eval (`python -m anther_ml.corpus.tagging`; see [tagging.md](tagging.md)) |
 | `__main__.py` | `build` / `place` / `label` CLI |
 
