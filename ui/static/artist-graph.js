@@ -195,7 +195,12 @@ const ArtistGraph = (() => {
         byId.set(node.id, node); nodes.push(node);
       }
     });
-    (fragment.links || []).forEach(link => links.push(link));
+    (fragment.links || []).forEach(link => {
+      // only keep edges whose endpoints are both on the map — a dangling edge
+      // stays a bare string id in d3.forceLink and crashes the sim ("Cannot
+      // create property 'vx' on string …"). replaceData filters the same way.
+      if (byId.has(idOf(link.source)) && byId.has(idOf(link.target))) links.push(link);
+    });
     restart();
     if (fragment.id) setTimeout(() => zoomTo(fragment.id), 450);
   }

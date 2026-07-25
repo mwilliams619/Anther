@@ -346,9 +346,14 @@ const AtlasGraph = (() => {
             x: W / 2 + (Math.random() - 0.5) * 100,
             y: H / 2 + (Math.random() - 0.5) * 100
           }));
-                    links = (data.links || []);
           groups = data.groups || {};
           nodes.forEach(n => byId.set(n.id, n));
+          // Drop any dangling link (endpoint not on the map). A stale edge whose
+          // source/target node is missing stays a bare string id through
+          // d3.forceLink — the sim then does `str.vx += …` every tick, throwing
+          // "Cannot create property 'vx' on string …" thousands of times and
+          // freezing the graph. mergeFragment already filters the same way.
+          links = (data.links || []).filter(l => byId.has(idOf(l.source)) && byId.has(idOf(l.target)));
           break;
         }
       } catch (_) { /* server not up yet — keep retrying */ }

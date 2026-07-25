@@ -474,6 +474,10 @@ def artist_from_song_graph():
         return jsonify(atlas.build_artist_graph_from_song_graph(body.get('mode', 'append')))
     except (ValueError, RuntimeError) as exc:
         return _artist_error_response(exc)
+    except Exception as exc:  # noqa: BLE001 — always answer the JSON client, never HTML
+        app.logger.exception("build_artist_graph_from_song_graph failed")
+        return jsonify({'error': f'Could not build artist graph: {exc}',
+                        **atlas.artist_status()}), 500
 
 
 @app.route('/api/artist/graph/clear', methods=['POST'])
