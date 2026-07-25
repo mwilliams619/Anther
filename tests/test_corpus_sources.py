@@ -54,6 +54,7 @@ def _pool(n: int, dead: frozenset = frozenset()) -> list[dict]:
             "track_id": f"t{i:04d}",
             "name": f"song {i}",
             "preview_url": f"spotify_preview:t{i:04d}",
+            "popularity": float(i),
             "artist_name": f"artist{i % 7}",
         }
         for i in range(n)
@@ -123,6 +124,7 @@ def test_oversampled_items_match_source_contract(monkeypatch):
         assert set(it) == {
             "id", "name", "artist", "source", "genre", "playlists",
             "audio", "sr",
+            "popularity",
         }
         assert it["source"] == "mpd_sql"
         assert it["genre"] is None  # display-only invariant

@@ -55,3 +55,12 @@ packages = ["anther_ml", "anther_ml.corpus", "anther_ml.corpus.tagging", "mentor
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The default suite excludes `stale` tests. These were written against the
+# pre-multi-session atlas (module-global _graph/_link_keys/_query_vecs/_groups,
+# GRAPH_PATH) that the per-session _SessionState refactor removed; they error at
+# fixture setup and have not been ported. Run them explicitly with
+# `pytest -m stale` if/when you rewrite them against the session model.
+addopts = "-m 'not stale'"
+markers = [
+    "stale: test targets a removed pre-multi-session code path; excluded from the default run",
+]

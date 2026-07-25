@@ -53,6 +53,9 @@ ARTIST_CLUSTERING_DIR = os.environ.get(
 ARTIST_MODE_ENABLED = os.environ.get("ANTHER_ARTIST_MODE", "1").lower() not in (
     "0", "false", "no", "off"
 )
+ARTIST_PROFILES_DB = os.environ.get(
+    "ANTHER_ARTIST_PROFILES", "data/artist_profiles.sqlite"
+)
 ARTIST_MAX_EDGES_PER_NODE = 6
 MPD_PREP_HINT   = ("full-MPD playlist data unavailable — run: "
                    "python -m anther_ml.mpd_sql --db data/mpd_dump/spotifydbdumpshare.sqlite --prepare-ui")
@@ -137,11 +140,23 @@ _artist_embeddings: np.ndarray = None  # shape (n_artists, 1024)
 _artist_labels: np.ndarray = None     # shape (n_artists,) — Leiden cluster IDs
 _artist_embedding_2d: np.ndarray = None  # shape (n_artists, 2) — UMAP projection
 _artist_id_map: dict = {}         # artist name -> index in _artist_meta (for search)
+# Low-confidence pool: corpus artists with 1-4 tracks, excluded from the frozen
+# ≥5-track reference bundle but kNN-placeable against it on demand. Built in
+# memory from the corpus each load; each row is
+# {artist, n_tracks, track_indices, sources, sample_track}. Node id is
+# "lowconf:<idx>" where idx indexes _artist_lowconf_rows.
+_artist_lowconf_rows: list = []
+_artist_lowconf_by_norm: dict = {}  # normalized name -> index in _artist_lowconf_rows
 _artist_leiden: dict = None       # loaded Leiden pickle: {labels, scaler, pca, ...}
 _artist_space: np.ndarray = None  # L2-normalized Leiden clustering space
 _artist_thresholds: link_calibration.LinkThresholds | None = None
 _artist_ready = False
 _artist_error = "artist data has not loaded"
+# Durable enrichment profiles (name/image/following/genres/origin/labels), keyed
+# by normalized artist name so they survive a corpus rebuild. Read-only here;
+# built offline by `python -m anther_ml.artist_enrichment`. Empty if the DB is
+# absent — profile fields simply don't appear. See ARTIST_ENRICHMENT_PLAN.md.
+_artist_profiles: dict = {}       # _norm(name) -> compact api_profile dict
 
 ARTIST_CLUSTER_LABELS = {
     0: "Industrial/experimental electronic", 1: "Cinematic/orchestral/ambient",
@@ -329,6 +344,7 @@ def load() -> ReferenceCorpus:
             print(f"[atlas] no popularity sidecar at {pop_path} — reranking disabled")
         # Load artist clustering data (Phase 2) if available
         _load_artist_clustering()
+        _load_artist_profiles()
         # Per-session graphs are loaded lazily on first access (see
         # _SessionState.ensure_loaded); nothing to load here.
         return _corpus
@@ -388,6 +404,7 @@ def _load_artist_clustering() -> None:
     """Load and validate the immutable artist clustering bundle."""
     global _artist_meta, _artist_embeddings, _artist_labels, _artist_embedding_2d
     global _artist_id_map, _artist_leiden
+    global _artist_lowconf_rows, _artist_lowconf_by_norm
     global _artist_space, _artist_thresholds, _artist_ready, _artist_error
 
     _artist_ready = False
@@ -439,6 +456,8 @@ def _load_artist_clustering() -> None:
             if normalized:
                 _artist_id_map.setdefault(normalized, i)
 
+        _build_lowconf_pool()
+
         space = np.asarray(_artist_leiden["clustering_space"], dtype=np.float32)
         norms = np.linalg.norm(space, axis=1, keepdims=True)
         if np.any(norms == 0):
@@ -454,10 +473,82 @@ def _load_artist_clustering() -> None:
               f"clusters {len(np.unique(_artist_labels))}")
     except Exception as e:
         _artist_meta, _artist_id_map = [], {}
+        _artist_lowconf_rows, _artist_lowconf_by_norm = [], {}
         _artist_embeddings = _artist_labels = _artist_embedding_2d = None
         _artist_leiden = _artist_space = _artist_thresholds = None
         _artist_error = str(e)
         print(f"[atlas] artist mode unavailable: {_artist_error}")
+
+
+def _build_lowconf_pool() -> None:
+    """Index corpus artists with 1-4 tracks (the low-confidence pool).
+
+    These artists are excluded from the frozen ≥5-track reference bundle (their
+    means are too noisy to *build* clusters from) but can still be kNN-assigned
+    into it on demand — the artist-level analogue of placing a non-corpus song
+    against the frozen song corpus. Same artist grouping as
+    scripts/artist_clustering/01_aggregate_artist_embeddings.py, but keeping the
+    1-4 track artists instead of discarding them.
+    """
+    global _artist_lowconf_rows, _artist_lowconf_by_norm
+    _artist_lowconf_rows, _artist_lowconf_by_norm = [], {}
+    if _corpus is None:
+        return
+    by_artist_idx: dict[str, list[int]] = {}
+    for i, m in enumerate(_corpus.metadata):
+        artist = (m.get("artist") or "").strip()
+        if not artist or artist in ("???", "Unknown Artist"):
+            continue
+        by_artist_idx.setdefault(artist, []).append(i)
+
+    rows = []
+    for artist, idx in by_artist_idx.items():
+        if not (1 <= len(idx) < 5):
+            continue
+        normalized = _norm(artist)
+        # Skip if this name is already a ≥5-track reference artist (defensive —
+        # a <5 artist cannot be in the reference bundle, but names can collide).
+        if not normalized or normalized in _artist_id_map:
+            continue
+        sample = _corpus.metadata[idx[0]]
+        sources = sorted({_corpus.metadata[i].get("source") for i in idx})
+        rows.append({
+            "artist": artist,
+            "n_tracks": len(idx),
+            "track_indices": idx,
+            "sources": sources,
+            "sample_track": sample.get("name"),
+        })
+
+    rows.sort(key=lambda r: r["artist"].casefold())
+    _artist_lowconf_rows = rows
+    for i, row in enumerate(rows):
+        _artist_lowconf_by_norm.setdefault(_norm(row["artist"]), i)
+    print(f"[atlas] loaded low-confidence artist pool: {len(rows)} artists (1-4 tracks)")
+
+
+def _load_artist_profiles() -> None:
+    """Load the optional artist-profile enrichment layer into ``_artist_profiles``.
+
+    Read-only, keyed by normalized artist name. A missing/broken DB is not an
+    error — profile fields just won't appear (the invariant is that enrichment
+    never affects clustering or the map). Built offline via
+    ``python -m anther_ml.artist_enrichment``."""
+    global _artist_profiles
+    _artist_profiles = {}
+    try:
+        from anther_ml.artist_enrichment.store import open_readonly
+        store = open_readonly(ARTIST_PROFILES_DB)
+        if store is None:
+            print(f"[atlas] no artist profiles at {ARTIST_PROFILES_DB} — "
+                  "profile fields disabled")
+            return
+        _artist_profiles = store.load_all()
+        store.close()
+        print(f"[atlas] loaded artist profiles: {len(_artist_profiles)} enriched")
+    except Exception as e:  # never let enrichment break artist mode
+        _artist_profiles = {}
+        print(f"[atlas] artist profiles unavailable: {e}")
 
 
 def _calibrate_qq_threshold(corpus, n_pairs: int = 200_000) -> None:
@@ -2087,6 +2178,50 @@ def _parse_corpus_artist_id(artist_id: str) -> int | None:
     return idx if 0 <= idx < len(_artist_meta) else None
 
 
+def _parse_lowconf_artist_id(artist_id: str) -> int | None:
+    """Index into _artist_lowconf_rows for a "lowconf:<idx>" id, else None."""
+    if not str(artist_id).startswith("lowconf:"):
+        return None
+    try:
+        idx = int(str(artist_id).split(":", 1)[1])
+    except (TypeError, ValueError):
+        return None
+    return idx if 0 <= idx < len(_artist_lowconf_rows) else None
+
+
+def _lowconf_session_vectors(st: "_SessionState", artist_id: str) -> list[np.ndarray]:
+    """Raw MERT vectors for any supplemented preview tracks assigned to a
+    lowconf artist (empty until the easter-egg supplement runs)."""
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        rows = con.execute(
+            "SELECT e.vec FROM artist_track_assignments a "
+            "JOIN embed_cache e ON e.track_id = a.track_id WHERE a.artist_id = ?",
+            (artist_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return [np.frombuffer(r[0], dtype=np.float32) for r in rows]
+
+
+def _lowconf_raw_mean(st: "_SessionState", artist_id: str) -> tuple[np.ndarray, int] | None:
+    """Combined raw mean embedding (base corpus tracks + supplemented previews)
+    for a lowconf artist, and the total track count. None if unresolvable."""
+    idx = _parse_lowconf_artist_id(artist_id)
+    if idx is None or _corpus is None:
+        return None
+    row = _artist_lowconf_rows[idx]
+    base = _corpus.embeddings[row["track_indices"]]
+    vectors = [np.asarray(v, dtype=np.float32) for v in base]
+    for v in _lowconf_session_vectors(st, artist_id):
+        if v.shape == vectors[0].shape:
+            vectors.append(v)
+    if not vectors:
+        return None
+    return np.mean(np.stack(vectors), axis=0).astype(np.float32), len(vectors)
+
+
 def _artist_raw_profile_vector(st: "_SessionState", artist_id: str) -> np.ndarray | None:
     _ensure_artist_tables(st)
     con = sqlite3.connect(str(st.embed_cache_path))
@@ -2106,16 +2241,10 @@ def _artist_raw_profile_vector(st: "_SessionState", artist_id: str) -> np.ndarra
     return np.mean(np.stack(vectors), axis=0).astype(np.float32)
 
 
-def _artist_vector_for_id(st: "_SessionState", artist_id: str) -> np.ndarray | None:
-    idx = _parse_corpus_artist_id(artist_id)
-    if idx is not None:
-        return _artist_space[idx]
-    if not str(artist_id).startswith("session:"):
-        return None
-    raw = _artist_raw_profile_vector(st, artist_id)
-    if raw is None:
-        return None
-    x = raw.reshape(1, -1)
+def _transform_raw_to_space(raw: np.ndarray) -> np.ndarray | None:
+    """Put a raw MERT mean vector through the Leiden scaler/PCA and L2-normalize,
+    matching the frozen clustering space. Shared by session and lowconf artists."""
+    x = np.asarray(raw, dtype=np.float32).reshape(1, -1)
     scaler, pca = _artist_leiden.get("scaler"), _artist_leiden.get("pca")
     if scaler is not None:
         x = scaler.transform(x)
@@ -2124,6 +2253,21 @@ def _artist_vector_for_id(st: "_SessionState", artist_id: str) -> np.ndarray | N
     vec = np.asarray(x[0], dtype=np.float32)
     norm = float(np.linalg.norm(vec))
     return vec / norm if norm else None
+
+
+def _artist_vector_for_id(st: "_SessionState", artist_id: str) -> np.ndarray | None:
+    idx = _parse_corpus_artist_id(artist_id)
+    if idx is not None:
+        return _artist_space[idx]
+    lc = _lowconf_raw_mean(st, artist_id)
+    if lc is not None:
+        return _transform_raw_to_space(lc[0])
+    if not str(artist_id).startswith("session:"):
+        return None
+    raw = _artist_raw_profile_vector(st, artist_id)
+    if raw is None:
+        return None
+    return _transform_raw_to_space(raw)
 
 
 def _session_profile(st: "_SessionState", artist_id: str) -> dict | None:
@@ -2140,30 +2284,58 @@ def _session_profile(st: "_SessionState", artist_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def _with_low_confidence_flag(node: dict | None) -> dict | None:
+    """Flag an artist placed from fewer than 5 tracks as low-confidence.
+
+    Computed at read time from ``track_count`` — never persisted to the frozen
+    bundle (which is row-count-locked)."""
+    if node is not None:
+        node["low_confidence"] = int(node.get("track_count", 0)) < 5
+    return node
+
+
+def _cluster_id_for_raw(raw: np.ndarray) -> int:
+    """kNN-assign a raw MERT mean into the frozen artist clusters."""
+    cluster_id, _confidence = assign_cluster_knn(
+        raw, _artist_leiden["clustering_space"], _artist_labels,
+        scaler=_artist_leiden.get("scaler"), pca=_artist_leiden.get("pca"),
+        k=15, metric=_artist_leiden.get("metric", "cosine"),
+    )
+    return cluster_id
+
+
 def _artist_node_for_id(st: "_SessionState", artist_id: str) -> dict | None:
     idx = _parse_corpus_artist_id(artist_id)
     if idx is not None:
         meta = _artist_meta[idx]
         uploads = _artist_upload_count(st, artist_id)
-        return {"id": artist_id, "name": meta.get("artist", ""),
-                "track_count": int(meta.get("n_tracks", 0)), "upload_count": uploads,
-                "cluster_id": int(_artist_labels[idx]), "source": "corpus",
-                "kind": "artist"}
+        return _with_low_confidence_flag(
+            {"id": artist_id, "name": meta.get("artist", ""),
+             "track_count": int(meta.get("n_tracks", 0)), "upload_count": uploads,
+             "cluster_id": int(_artist_labels[idx]), "source": "corpus",
+             "kind": "artist"})
+    lc_idx = _parse_lowconf_artist_id(artist_id)
+    if lc_idx is not None:
+        combined = _lowconf_raw_mean(st, artist_id)
+        if combined is None:
+            return None
+        raw, track_count = combined
+        return _with_low_confidence_flag(
+            {"id": artist_id, "name": _artist_lowconf_rows[lc_idx]["artist"],
+             "track_count": track_count, "upload_count": _artist_upload_count(st, artist_id),
+             "cluster_id": _cluster_id_for_raw(raw), "source": "corpus",
+             "kind": "artist"})
     profile = _session_profile(st, artist_id)
     if profile is None:
         return None
     raw = _artist_raw_profile_vector(st, artist_id)
     if raw is None:
         return None
-    cluster_id, _confidence = assign_cluster_knn(
-        raw, _artist_leiden["clustering_space"], _artist_labels,
-        scaler=_artist_leiden.get("scaler"), pca=_artist_leiden.get("pca"),
-        k=15, metric=_artist_leiden.get("metric", "cosine"),
-    )
     uploads = _artist_upload_count(st, artist_id)
-    return {"id": artist_id, "name": profile["name"], "track_count": uploads,
-            "upload_count": uploads, "cluster_id": cluster_id,
-            "source": "session", "kind": "artist"}
+    return _with_low_confidence_flag(
+        {"id": artist_id, "name": profile["name"], "track_count": uploads,
+         "upload_count": uploads, "cluster_id": _cluster_id_for_raw(raw),
+         "source": "session", "kind": "artist"})
 
 
 def search_artists(query: str, limit: int = 20) -> dict:
@@ -2186,7 +2358,16 @@ def search_artists(query: str, limit: int = 20) -> dict:
                             "track_count": int(meta.get("n_tracks", 0)),
                             "upload_count": upload_counts.get(f"corpus:{i}", 0),
                             "cluster_id": int(_artist_labels[i]), "source": "corpus",
-                            "score": round(float(score), 1)})
+                            "low_confidence": False, "score": round(float(score), 1)})
+    for i, row in enumerate(_artist_lowconf_rows):
+        nn = _norm(row["artist"])
+        score = 100 if nn == qn else (96 if nn.startswith(qn) else _ratio(qn, nn) * 100)
+        if qn in nn:
+            score = max(score, 92)
+        if score >= 70:
+            node = _artist_node_for_id(st, f"lowconf:{i}")
+            if node:
+                results.append({**node, "score": round(float(score), 1)})
     for row in _session_artist_rows(st):
         nn = _norm(row["name"])
         score = 100 if nn == qn else (96 if nn.startswith(qn) else _ratio(qn, nn) * 100)
@@ -2255,6 +2436,18 @@ def place_artist(artist_id: str) -> dict:
     st = get_session()
     _ensure_artist_graph_loaded(st)
     artist_id = str(artist_id or "")
+    # Low-confidence corpus artists (1-4 tracks) are auto-strengthened on
+    # placement: pull a few strict-matched previews so the node lands with a
+    # ≥5-track position instead of a shaky one. It's cheap (a handful of 30s
+    # embeds) and the frontend surfaces the same "Placing…" wait a Deezer song
+    # placement shows. Best-effort and done outside the lock — a fetch/embed
+    # hiccup just leaves the artist low-confidence.
+    if (_parse_lowconf_artist_id(artist_id) is not None
+            and artist_id not in st.artist_graph["nodes"]):
+        try:
+            _supplement_lowconf_tracks(st, artist_id)
+        except Exception as exc:                         # noqa: BLE001 — place as-is
+            print(f"[atlas] lowconf auto-supplement failed for {artist_id}: {exc}")
     with st.lock:
         fragment = _place_artist_locked(st, artist_id)
         _save_artist_graph(st)
@@ -2285,27 +2478,107 @@ def _place_artist_locked(st: "_SessionState", artist_id: str) -> dict:
     return {"nodes": [node], "links": links, "existing": False, "id": artist_id}
 
 
+def _session_artist_from_songs(st: "_SessionState", artist_name: str,
+                               track_ids: list[str]) -> str | None:
+    """Create (or reuse) a session artist for a name that isn't in the frozen
+    corpus, assigning the given on-map song track ids that have cached
+    embeddings. Returns the ``session:`` id, or None if no song had a usable
+    embedding. Reuses an existing session profile of the same normalized name so
+    repeat builds don't mint duplicate identities.
+    """
+    normalized = _norm(artist_name)
+    if not normalized:
+        return None
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        usable = [tid for tid in track_ids
+                  if con.execute("SELECT 1 FROM embed_cache WHERE track_id = ?",
+                                 (tid,)).fetchone() is not None]
+        if not usable:
+            return None
+        row = con.execute("SELECT profile_id FROM artist_profiles WHERE name_norm = ?",
+                          (normalized,)).fetchone()
+        if row:
+            artist_id = str(row[0])
+        else:
+            artist_id = f"session:{uuid.uuid4().hex}"
+            con.execute("INSERT INTO artist_profiles VALUES (?, ?, ?, ?)",
+                        (artist_id, artist_name, normalized, time.time()))
+        for tid in usable:
+            con.execute(
+                "INSERT OR REPLACE INTO artist_track_assignments(track_id, artist_id, created) "
+                "VALUES (?, ?, ?)", (tid, artist_id, time.time()))
+        con.commit()
+    finally:
+        con.close()
+    return artist_id
+
+
 def build_artist_graph_from_song_graph(mode: str = "append") -> dict:
-    """Use only user-added song nodes to seed the persisted artist graph."""
+    """Seed the persisted artist graph from user-added song nodes.
+
+    Artists in the frozen corpus (≥5 tracks) place directly; low-confidence
+    corpus artists (1-4 tracks) and artists not in the corpus at all are placed
+    too — the latter as session artists built from their on-map songs. Any
+    artist landing with fewer than 5 tracks is auto-supplemented with extra
+    strict-matched Deezer previews up to 5 total (on-map songs count toward it),
+    so newly built artists match the confidence of the search-placed ones.
+    """
     _require_artist_ready()
     if mode not in {"append", "replace"}:
         raise ValueError("artist graph mode must be 'append' or 'replace'")
     st = get_session()
     _ensure_artist_graph_loaded(st)
+    _ensure_artist_tables(st)
+
+    # Group on-map songs by normalized artist name (node id kept for session
+    # artists built from those songs).
     with st.lock:
-        artist_names = {
-            _norm(node.get("artist", "")): str(node.get("artist", "")).strip()
-            for node in st.graph["nodes"].values()
-            if node.get("kind") == "query" and _norm(node.get("artist", ""))
-        }
-        artist_ids = [f"corpus:{_artist_id_map[name]}" for name in sorted(artist_names)
-                      if name in _artist_id_map]
-        skipped = [artist_names[name] for name in sorted(artist_names)
-                   if name not in _artist_id_map]
-        if not artist_ids:
-            return {"nodes": list(st.artist_graph["nodes"].values()),
-                    "links": list(st.artist_graph["links"]), "artist_count": 0,
-                    "skipped_count": len(skipped), "skipped_artists": skipped}
+        songs_by_artist: dict[str, dict] = {}
+        for node in st.graph["nodes"].values():
+            if node.get("kind") != "query":
+                continue
+            nn = _norm(node.get("artist", ""))
+            if not nn:
+                continue
+            entry = songs_by_artist.setdefault(
+                nn, {"name": str(node.get("artist", "")).strip(), "ids": []})
+            entry["ids"].append(str(node.get("id")))
+
+    # Resolve names → placeable ids and supplement anything under the 5-track
+    # target. Network/embed work stays OUTSIDE st.lock (same as place_artist).
+    artist_ids: list[str] = []
+    skipped: list[str] = []
+    for nn in sorted(songs_by_artist):
+        name, ids = songs_by_artist[nn]["name"], songs_by_artist[nn]["ids"]
+        if nn in _artist_id_map:                         # ≥5-track frozen corpus artist
+            artist_ids.append(f"corpus:{_artist_id_map[nn]}")
+            continue
+        if nn in _artist_lowconf_by_norm:                # 1-4 track frozen corpus artist
+            aid = f"lowconf:{_artist_lowconf_by_norm[nn]}"
+            try:
+                _supplement_lowconf_tracks(st, aid)
+            except Exception as exc:                     # noqa: BLE001 — place as-is
+                print(f"[atlas] lowconf auto-supplement failed for {aid}: {exc}")
+            artist_ids.append(aid)
+            continue
+        aid = _session_artist_from_songs(st, name, ids)  # not in corpus → build it
+        if aid is None:
+            skipped.append(name)                         # no on-map song had an embedding
+            continue
+        try:
+            _supplement_artist_tracks(st, aid, name, _artist_upload_count(st, aid))
+        except Exception as exc:                         # noqa: BLE001 — place as-is
+            print(f"[atlas] session artist supplement failed for {aid}: {exc}")
+        artist_ids.append(aid)
+
+    if not artist_ids:
+        return {"nodes": list(st.artist_graph["nodes"].values()),
+                "links": list(st.artist_graph["links"]), "artist_count": 0,
+                "skipped_count": len(skipped), "skipped_artists": skipped}
+
+    with st.lock:
         if mode == "replace":
             st.artist_graph = {"nodes": {}, "links": []}
             st.artist_vectors = {}
@@ -2342,6 +2615,123 @@ def _refresh_artist_node(st: "_SessionState", artist_id: str) -> dict:
     st.artist_graph["links"].extend(new_links)
     _save_artist_graph(st)
     return {"nodes": [node], "links": new_links, "replace": True, "id": artist_id}
+
+
+ARTIST_CONFIDENCE_TARGET = 5  # track count at/above which placement is "confident"
+
+
+def _lowconf_assigned_ids(st: "_SessionState", artist_id: str) -> set[str]:
+    """Track ids already supplemented for a lowconf artist."""
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        rows = con.execute(
+            "SELECT track_id FROM artist_track_assignments WHERE artist_id = ?",
+            (artist_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return {str(r[0]) for r in rows}
+
+
+def _assign_lowconf_track(st: "_SessionState", track_id: str, artist_id: str) -> None:
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO artist_track_assignments "
+            "(track_id, artist_id, created) VALUES (?, ?, ?)",
+            (track_id, artist_id, time.time()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _supplement_artist_tracks(st: "_SessionState", artist_id: str,
+                              artist_name: str, current: int,
+                              target: int = ARTIST_CONFIDENCE_TARGET) -> int:
+    """Pull strict artist-name-matched Deezer previews for ``artist_id`` until it
+    reaches ``target`` tracks (given it currently has ``current``), embedding
+    each and recording the assignment in this session. Returns tracks added.
+
+    Network + 30s-preview embed work happens here, so the caller must NOT hold
+    ``st.lock``. Session-only: the extra previews live in this session's
+    embed_cache / artist_track_assignments and never touch the frozen bundle.
+    Reuses the same embed path as placing a song in song view
+    (``resolve_and_embed``). Works for both ``lowconf:`` and ``session:`` ids.
+    """
+    needed = max(0, int(target) - int(current))
+    if needed <= 0:
+        return 0
+    _ensure_artist_tables(st)
+    added = 0
+    existing = _lowconf_assigned_ids(st, artist_id)
+    qn = _norm(artist_name)
+    # Over-fetch: the strict artist-name filter discards most text hits.
+    hits = _search_deezer(artist_name, limit=max(needed * 5, 20))
+    for hit in hits:
+        if added >= needed:
+            break
+        if _norm(hit.get("artist", "")) != qn:
+            continue                                    # strict artist-name match
+        track_id = hit.get("id")
+        if not track_id or track_id in existing:
+            continue
+        try:
+            resolve_and_embed({"id": track_id, "name": hit.get("title", ""),
+                               "artist": hit.get("artist", ""),
+                               "preview_url": hit.get("preview_url")})
+        except PlacementSkip:
+            continue                                    # dead preview → skip
+        _assign_lowconf_track(st, track_id, artist_id)
+        existing.add(track_id)
+        added += 1
+    return added
+
+
+def _supplement_lowconf_tracks(st: "_SessionState", artist_id: str,
+                               target: int = ARTIST_CONFIDENCE_TARGET) -> int:
+    """Supplement a frozen low-confidence corpus artist (``lowconf:`` id) up to
+    ``target`` tracks. Base count is the artist's frozen corpus tracks plus any
+    already-supplemented previews. See ``_supplement_artist_tracks``.
+    """
+    lc_idx = _parse_lowconf_artist_id(artist_id)
+    if lc_idx is None:
+        return 0
+    _ensure_artist_tables(st)
+    artist_name = _artist_lowconf_rows[lc_idx]["artist"]
+    combined = _lowconf_raw_mean(st, artist_id)
+    current = combined[1] if combined else _artist_lowconf_rows[lc_idx]["n_tracks"]
+    return _supplement_artist_tracks(st, artist_id, artist_name, current, target)
+
+
+def supplement_artist_placement(artist_id: str,
+                                target: int = ARTIST_CONFIDENCE_TARGET) -> dict:
+    """Pull extra strict-matched previews for a low-confidence artist until it
+    reaches ``target`` tracks, then re-place the node with higher confidence.
+
+    Backs both the manual "strengthen this placement" easter egg and the
+    automatic supplement run when a low-confidence artist is first placed (see
+    ``place_artist``). Mechanics live in ``_supplement_lowconf_tracks``.
+    """
+    _require_artist_ready()
+    lc_idx = _parse_lowconf_artist_id(artist_id)
+    if lc_idx is None:
+        raise ValueError("supplement is only available for low-confidence artists")
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    _ensure_artist_tables(st)
+    added = _supplement_lowconf_tracks(st, artist_id, target)
+
+    combined = _lowconf_raw_mean(st, artist_id)
+    current = combined[1] if combined else _artist_lowconf_rows[lc_idx]["n_tracks"]
+
+    with st.lock:
+        fragment = _refresh_artist_node(st, artist_id)
+    node = fragment["nodes"][0] if fragment.get("nodes") else None
+    return {**fragment, "supplemented": True, "added": added,
+            "track_count": node.get("track_count") if node else current,
+            "low_confidence": node.get("low_confidence", True) if node else True}
 
 
 def assign_upload_artist(track_id: str, artist_id: str = "",
@@ -2452,7 +2842,13 @@ def artist_detail(artist_id: str) -> dict | None:
     if node is None:
         return None
     idx = _parse_corpus_artist_id(artist_id)
-    meta = _artist_meta[idx] if idx is not None else {}
+    lc_idx = _parse_lowconf_artist_id(artist_id)
+    if idx is not None:
+        meta = _artist_meta[idx]
+    elif lc_idx is not None:
+        meta = _artist_lowconf_rows[lc_idx]
+    else:
+        meta = {}
     with st.lock:
         connected_ids = []
         for link in st.artist_graph["links"]:
@@ -2468,6 +2864,7 @@ def artist_detail(artist_id: str) -> dict | None:
                 node["cluster_id"], f"Cluster {node['cluster_id']}"),
             "sources": meta.get("sources", ["user_upload"]),
             "sample_track": meta.get("sample_track", ""),
+            "profile": _artist_profiles.get(_norm(node.get("name", ""))),
             "connected_artists": connected}
 
 

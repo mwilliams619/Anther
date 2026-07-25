@@ -11,7 +11,8 @@ precedent, because the data-engineering problem the corpus builder faces —
 embed once, freeze a coordinate system, map new items in cheaply — is the
 same one single-cell genomics solved when it went from per-dataset analysis to
 70-million-cell atlases. This plan is the **data-engineering** companion to the
-existing `SCRNA_METHODS_REVIEW.md`, which already covered the clustering
+existing historical review in `implemented_archive/SCRNA_METHODS_REVIEW.md`,
+which already covered the clustering
 *algorithm* (Leiden, cluster-the-embedding, standardize-before-cosine,
 production-as-batch-effect).
 
@@ -171,4 +172,5 @@ shape this wants.)
   billion-scale where IVF struggles; informs HNSW-over-IVF at high recall.
 
 _Clustering-algorithm precedents (Leiden, cluster-the-embedding, batch-effect
-correction) are in the existing `SCRNA_METHODS_REVIEW.md` and not repeated here._
+correction) are in the historical `implemented_archive/SCRNA_METHODS_REVIEW.md`
+and not repeated here._

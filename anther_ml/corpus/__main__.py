@@ -33,6 +33,9 @@ def _add_build_parser(sub):
     p.add_argument("--min-popularity", type=float, default=None,
                    help="drop tracks below this Spotify popularity before sampling "
                         "(--source sql; fewer candidates → faster sampling)")
+    p.add_argument("--max-popularity", type=float, default=None,
+                   help="drop tracks above this Spotify popularity before sampling "
+                        "(--source sql; useful for long-tail expansion)")
     p.add_argument("--no-membership", action="store_true",
                    help="skip playlist membership when building the SQLite DB "
                         "(--source sql; much faster, disables playlist-fit)")
@@ -135,6 +138,7 @@ def _make_source(args):
             tracks_per_artist_cap=args.artist_cap or 5,
             seed=args.seed,
             min_popularity=args.min_popularity,
+            max_popularity=args.max_popularity,
             with_membership=not args.no_membership,
             n_workers=args.n_workers,
         )
@@ -149,6 +153,7 @@ def _make_source(args):
             tracks_per_artist_cap=args.artist_cap or 5,
             seed=args.seed,
             min_popularity=args.min_popularity,
+            max_popularity=args.max_popularity,
             with_membership=not args.no_membership,
             n_workers=args.n_workers,
         )

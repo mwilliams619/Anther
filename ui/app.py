@@ -459,6 +459,14 @@ def artist_place():
         return _artist_error_response(exc)
 
 
+@app.route('/api/artist/<path:artist_id>/supplement', methods=['POST'])
+def artist_supplement(artist_id):
+    try:
+        return jsonify(atlas.supplement_artist_placement(artist_id))
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
 @app.route('/api/artist/from-song-graph', methods=['POST'])
 def artist_from_song_graph():
     body = request.get_json(force=True) or {}

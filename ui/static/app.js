@@ -13,7 +13,7 @@ const state = {
   searchMode: 'tracks',   // 'tracks' | 'playlists' | 'albums'
   playlistPolls: {},  // group id (pid / album:<id>) → interval id (active polls)
   removed: [],        // recently removed nodes (newest first, session-only)
-  activeFilter: null, // {label, kind, ids:Set} | null
+  activeFilters: [],  // [{label, kind, ids:Set}] — combined as a union
   recommendRows: [],  // rows backing the recommend-results list
   mentorBusy: false,
   detailType: 'song',
@@ -292,16 +292,20 @@ function renderArtistResults(results) {
         <div class="track-title">${esc(row.name)}</div>
         <div class="track-artist">${row.track_count || 0} tracks · cluster ${row.cluster_id}${row.source === 'session' ? ' · private' : ''}</div>
       </div>
-      <button class="btn-add" onclick='placeArtist(${JSON.stringify(row.id)}, this)'>${ArtistGraph.hasNode(row.id) ? 'On map ✓' : 'Add'}</button>
+      <button class="btn-add" onclick='placeArtist(${JSON.stringify(row.id)}, this, ${String(row.id).startsWith('lowconf:')})'>${ArtistGraph.hasNode(row.id) ? 'On map ✓' : 'Add'}</button>
     </div>`).join('');
 }
 
-async function placeArtist(artistId, btn) {
+async function placeArtist(artistId, btn, lowConfidence) {
   if (ArtistGraph.hasNode(artistId)) {
     ArtistGraph.selectNode(artistId);
     return;
   }
-  btn.disabled = true; btn.textContent = '…';
+  btn.disabled = true;
+  // Low-confidence artists auto-supplement with a few extra song previews on
+  // placement (fetch + embed), so surface the same "Placing…" wait a Deezer
+  // song placement shows — otherwise the longer pause looks like a hang.
+  btn.textContent = lowConfidence ? 'Placing…' : '…';
   try {
     const response = await fetch('/api/artist/place', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -574,7 +578,9 @@ async function buildArtistGraphFromSongMap() {
 
   const button = document.getElementById('build-artist-graph');
   button.disabled = true;
-  button.textContent = 'Building…';
+  // Artists with fewer than 5 on-map songs are auto-supplemented with extra
+  // previews (fetch + embed), so this can take a moment for new artists.
+  button.textContent = 'Placing…';
   try {
     const response = await fetch('/api/artist/from-song-graph', {
       method: 'POST',
@@ -584,14 +590,14 @@ async function buildArtistGraphFromSongMap() {
     const data = await response.json();
     if (!response.ok || data.error) throw new Error(data.error || 'Could not build artist graph');
     if (!data.artist_count) {
-      showError('None of the artists from your added songs are available in the artist graph.');
+      showError('None of your added songs could be turned into artists yet.');
       return;
     }
     ArtistGraph.replaceData(data);
     renderArtistMapPanel();
     setViewMode('artists');
     if (data.skipped_count) {
-      showError(`${data.skipped_count} artist${data.skipped_count === 1 ? '' : 's'} could not be added because no artist profile is available.`);
+      showError(`${data.skipped_count} artist${data.skipped_count === 1 ? '' : 's'} could not be added because none of their songs have a usable embedding yet.`);
     }
   } catch (err) {
     showError(err.message);
@@ -642,24 +648,46 @@ function renderFilterSuggest(q) {
   box.style.display = 'block';
 }
 
+/* Union of node ids across every active filter (null when none are active). */
+function activeFilterIds() {
+  if (!state.activeFilters.length) return null;
+  const ids = new Set();
+  state.activeFilters.forEach(f => f.ids.forEach(id => ids.add(id)));
+  return ids;
+}
+
+function renderActiveFilters() {
+  const box = document.getElementById('filter-active');
+  box.innerHTML = state.activeFilters.map((c, i) => `
+    <span class="filter-chip">${FILTER_KIND_ICON[c.kind] || ''} ${esc(c.label)}
+      <span class="suggest-kind">${c.count}</span>
+      <button onclick="removeFilter(${i})" title="Remove filter">×</button>
+    </span>`).join('');
+}
+
 function applyFilterCand(i) {
   const c = state.filterCands && state.filterCands[i];
   if (!c) return;
-  state.activeFilter = c;
-  AtlasGraph.setFilter(c.ids);
+  if (!state.activeFilters.some(f => f.kind === c.kind && f.label === c.label)) {
+    state.activeFilters.push(c);
+  }
+  AtlasGraph.setFilter(activeFilterIds());
   const input = document.getElementById('filter-input');
   input.value = '';
   document.getElementById('filter-suggest').style.display = 'none';
-  document.getElementById('filter-active').innerHTML = `
-    <span class="filter-chip">${FILTER_KIND_ICON[c.kind] || ''} ${esc(c.label)}
-      <span class="suggest-kind">${c.count}</span>
-      <button onclick="clearFilter()" title="Clear filter">×</button>
-    </span>`;
+  renderActiveFilters();
+  renderMapPanel();
+}
+
+function removeFilter(i) {
+  state.activeFilters.splice(i, 1);
+  AtlasGraph.setFilter(activeFilterIds());
+  renderActiveFilters();
   renderMapPanel();
 }
 
 function clearFilter() {
-  state.activeFilter = null;
+  state.activeFilters = [];
   AtlasGraph.setFilter(null);
   document.getElementById('filter-active').innerHTML = '';
   renderMapPanel();
@@ -667,11 +695,12 @@ function clearFilter() {
 
 function renderMapPanel() {
   const nodes = AtlasGraph.getNodes();
+  const filterIds = activeFilterIds();
   let queries = nodes.filter(n => n.kind === 'query');
-  if (state.activeFilter) queries = queries.filter(n => state.activeFilter.ids.has(n.id));
+  if (filterIds) queries = queries.filter(n => filterIds.has(n.id));
 
   document.getElementById('map-count').textContent =
-    state.activeFilter
+    filterIds
       ? `${queries.length} matching · ${nodes.length} nodes total`
       : `${queries.length} songs · ${nodes.length} nodes`;
 
@@ -926,8 +955,10 @@ async function openArtistDetail(id) {
     body.innerHTML = `
       <div class="detail-title">${esc(data.name)}</div>
       <div class="detail-artist">${esc(data.cluster_label || `Cluster ${data.cluster_id}`)}</div>
+      ${artistProfileHtml(data.profile)}
       <div class="detail-section">
         <div class="positioning-size">${data.track_count || 0} corpus/private track${data.track_count === 1 ? '' : 's'}${data.upload_count ? ` · ${data.upload_count} uploaded` : ''}</div>
+        ${data.low_confidence ? `<div class="low-confidence-note" id="lowconf-note" role="button" tabindex="0" title="Click to strengthen this placement with more song previews">Placed from fewer than 5 tracks, so this clustering is less confident.</div>` : ''}
         ${data.sample_track ? `<div class="positioning-pitch">Representative track: ${esc(data.sample_track)}</div>` : ''}
       </div>
       <div class="detail-section"><h3>Connected artists</h3>
@@ -939,10 +970,107 @@ async function openArtistDetail(id) {
             </div><span class="similar-score">${Math.round(row.score || 0)}</span></div>
           </div>`).join('') : '<div class="empty-hint">No threshold-clearing connections on this map yet.</div>'}
       </div>`;
+    if (data.low_confidence) {
+      const note = document.getElementById('lowconf-note');
+      if (note) {
+        const trigger = () => supplementArtist(id, note);
+        note.addEventListener('click', trigger);
+        note.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); trigger(); }
+        });
+      }
+    }
   } catch (err) {
     showError(err.message);
     ArtistGraph.clearSelection();
   }
+}
+
+// Easter egg: clicking the low-confidence note pulls extra strict-matched song
+// previews for the artist (up to 5 tracks) and re-places the node with higher
+// confidence. Session-only — the frozen bundle is never touched.
+async function supplementArtist(id, note) {
+  if (note.dataset.busy) return;
+  note.dataset.busy = '1';
+  note.classList.add('working');
+  note.textContent = 'Finding more previews to strengthen this placement…';
+  try {
+    const response = await fetch('/api/artist/' + encodeURIComponent(id) + '/supplement',
+      { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || data.error) throw new Error(data.error || 'Could not supplement artist');
+    ArtistGraph.mergeFragment(data);
+    if (!data.added) {
+      note.classList.remove('working');
+      note.textContent = 'No additional previews found for this artist.';
+      return;
+    }
+    // Re-open detail so the note/track count reflect the strengthened placement.
+    if (state.detailId === id && state.detailType === 'artist') openArtistDetail(id);
+  } catch (err) {
+    note.classList.remove('working');
+    delete note.dataset.busy;
+    note.textContent = 'Placed from fewer than 5 tracks, so this clustering is less confident.';
+    showError(err.message);
+  }
+}
+
+// Compact enrichment profile shown in the artist detail pane (see
+// ARTIST_ENRICHMENT_PLAN.md §7). Every field is optional; absent data is simply
+// omitted rather than faked. `profile` is null when the artist hasn't been
+// enriched yet — we show a quiet hint instead of a broken section.
+function fmtFollowers(n) {
+  if (n == null) return '';
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'K';
+  return String(n);
+}
+
+function artistProfileHtml(p) {
+  if (!p) {
+    return '<div class="artist-profile-empty">No enrichment profile yet — '
+         + 'run artist enrichment to add image, origin, genres &amp; labels.</div>';
+  }
+  const photo = p.image_url
+    ? `<img class="artist-photo" src="${esc(p.image_url)}" alt="" loading="lazy"
+         onerror="this.remove()">`
+    : '';
+  const fans = (p.following != null)
+    ? `<div class="artist-fans"><strong>${fmtFollowers(p.following)}</strong>
+         ${esc(p.following_source || 'Deezer')} fans${p.following_as_of
+           ? ` <span class="as-of">as of ${esc(p.following_as_of)}</span>` : ''}</div>`
+    : '';
+  const genres = (p.genres && p.genres.length)
+    ? `<div class="genre-chips">${p.genres.map(g =>
+         `<span class="genre-chip">${esc(g)}</span>`).join('')}</div>`
+    : '';
+  const origin = p.origin
+    ? `<div class="artist-field"><span class="field-label">Origin</span>${esc(p.origin)}</div>`
+    : '';
+  const labels = (p.labels && p.labels.length)
+    ? `<div class="artist-field"><span class="field-label">Associated labels</span>${p.labels.map(esc).join(', ')}</div>`
+    : '';
+  // Provenance disclosure — sources + freshness, so the data is auditable and
+  // never reads as an authoritative "current label" / cross-platform total.
+  const srcs = [];
+  if (p.image_source || p.following_source) srcs.push('Deezer');
+  if (p.origin_source === 'musicbrainz' || (p.genres && p.genres.length) || (p.labels && p.labels.length)) srcs.push('MusicBrainz');
+  const prov = `<details class="artist-prov"><summary>Sources &amp; freshness</summary>
+      <div>${srcs.length ? esc(srcs.join(' · ')) : 'no external sources'}${
+        p.match_confidence != null ? ` · match ${Math.round(p.match_confidence * 100)}%` : ''}${
+        p.updated_at ? ` · updated ${esc(p.updated_at)}` : ''}${
+        p.enrichment_status && p.enrichment_status !== 'complete'
+          ? ` · ${esc(p.enrichment_status)}` : ''}</div>
+    </details>`;
+  const hasBody = photo || fans || genres || origin || labels;
+  return `<div class="artist-profile">
+      ${photo}
+      <div class="artist-profile-body">
+        ${fans}${origin}${labels}${genres}
+        ${hasBody ? '' : '<div class="empty-hint">Matched, but no profile fields available.</div>'}
+        ${prov}
+      </div>
+    </div>`;
 }
 
 function closeDetail() {

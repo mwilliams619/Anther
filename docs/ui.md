@@ -30,7 +30,8 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `GET /api/search` | Song search (three-tier) |
 | `GET /api/playlists/search` | Full-MPD playlist search |
 | `POST /api/playlist/place` | Place a playlist's tracks onto the map |
-| `GET /api/playlist/status/<job_id>` | Poll async placement progress |
+| `GET /api/playlist/status/<job_id>` | Poll async placement progress, including stop availability |
+| `POST /api/playlist/stop/<job_id>` | Gracefully stop a running playlist/album embedding job after the current track |
 | `GET /api/albums/search` | Deezer album search |
 | `POST /api/album/place` | Place an album's tracks onto the map |
 | `POST /api/place` | Place a single song (cache-first: previously embedded ids skip download+MERT) |
@@ -42,13 +43,20 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `DELETE /api/node/<id>` | Remove one placed song + its now-orphaned corpus neighbors |
 | `GET /api/song/<id>` | Song detail (cluster, tags, similar songs — see "Similarity scoring" below for the aggregate/breakdown split) |
 | `POST /api/upload` | Upload a personal track for placement |
-| `GET /api/artist/search` | Search immutable corpus artists plus this session's private artist profiles |
+| `GET /api/artist/search` | Search immutable ≥5-track corpus artists, the 1-4 track low-confidence pool, plus this session's private artist profiles |
 | `GET /api/artist/graph` | Current session's incremental artist graph |
-| `POST /api/artist/place` | Add one explicitly-selected artist and threshold-clearing links |
-| `GET /api/artist/<id>` | Artist detail and currently connected artists |
+| `POST /api/artist/place` | Add one explicitly-selected artist and threshold-clearing links; a `lowconf:` artist is auto-supplemented to 5 tracks on placement (see below) |
+| `POST /api/artist/<id>/supplement` | Manual re-trigger of the same supplement pass for a `lowconf:` artist (pull extra strict-artist-matched Deezer previews up to 5 tracks, embed, re-place at higher confidence; session-only) — backs the "less confident" detail-panel note |
+| `GET /api/artist/<id>` | Artist detail and currently connected artists; includes `low_confidence` (placed from <5 tracks) plus an optional `profile` object (image/following/genres/origin/labels) when the artist has been enriched — see [artist-enrichment.md](artist-enrichment.md) |
 | `DELETE /api/artist/node/<id>` | Remove an artist from this session's artist graph |
 | `POST /api/artist/graph/clear` | Clear only the artist graph |
 | `POST /api/artist/demo` | Idempotently add the curated 20-artist demo |
+| `GET /api/artist/status` | Report whether Artist View artifacts are available |
+| `POST /api/artist/from-song-graph` | Build or append an artist graph from the current song map; artists not in the frozen corpus are built as session artists from their on-map songs, and any artist with <5 tracks is auto-supplemented to 5 total (see below) |
+| `POST /api/demo/load` | Load the curated demo playlist |
+| `GET /api/song/<id>/preview` | Resolve a playable preview URL when available |
+| `GET /api/song/<id>/spotify` | Resolve a Spotify track link when credentials/metadata permit |
+| `GET /api/upload-audio/<name>` | Serve an uploaded audio file for playback |
 
 ## Runtime facts worth knowing
 
@@ -64,18 +72,52 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
   mentor chat sessions), `ANTHER_MENTOR_HOST`/`ANTHER_MENTOR_PORT` (where
   `ui/app.py` reaches the mentor service, default `127.0.0.1:5100`),
   `ANTHER_MENTOR_TIMEOUT` (request timeout in seconds, default 30).
+- **Artist profiles**: `ANTHER_ARTIST_PROFILES` (default `data/artist_profiles.sqlite`)
+  points at the optional enrichment DB loaded read-only at warm-up into
+  `_artist_profiles`. Absent DB → no profile fields, no error. Built offline via
+  `python -m anther_ml.artist_enrichment` (see [artist-enrichment.md](artist-enrichment.md)).
+- **Popularity reranking**: `ANTHER_POPULARITY` optionally points to the
+  track-percentile sidecar used for Billboard-aware reranking. The UI's
+  popularity blend is currently 0.15; if the sidecar is absent, reranking is
+  disabled and normal similarity ordering is used.
 - **Artist mode**: `ANTHER_ARTIST_MODE=0` is an emergency kill switch. Artist
   corpus artifacts are immutable and must have identical row counts; invalid
   artifacts disable Artist View without affecting Song View. Artist graphs,
   uploaded-track associations, and newly-created artist profiles are private
   per browser session under `ui/session/<sid>/`.
+- **Low-confidence artist pool** (`lowconf:<idx>` ids): the frozen bundle only
+  aggregates artists with ≥5 corpus tracks (the clustering *reference frame*).
+  Artists with 1-4 tracks are indexed in memory at load (`_build_lowconf_pool`
+  in `atlas.py`, one pass over `corpus.metadata`) and kNN-assigned into that
+  frozen reference on demand — exactly how Song View places a non-corpus song,
+  and how private/session artists already work. They render with a dashed,
+  translucent node and a `low_confidence` flag; the frozen bundle and its Leiden
+  labels are never recomputed. Placing a `lowconf:` artist (via
+  `POST /api/artist/place`, or as part of a from-song-graph build) auto-runs the
+  supplement pass first: it pulls extra strict-artist-matched Deezer previews
+  (up to 5 tracks total, counting the artist's existing tracks) through the same
+  30s-preview embed path as a song placement, so the node usually lands at full
+  confidence. The supplement is best-effort — a fetch/embed failure just leaves
+  the artist low-confidence, and clicking the "less confident" detail-panel note
+  re-triggers it via `POST /api/artist/<id>/supplement`. All session-only, never
+  written back to the bundle. The frontend shows the same "Placing…" wait a
+  Deezer song placement does while this runs.
+- **Building artists from the song map** (`POST /api/artist/from-song-graph`):
+  each on-map song's artist is resolved to a ≥5-track corpus artist, a 1-4 track
+  `lowconf:` artist, or — when the name is absent from the corpus entirely — a
+  new **session artist** built from that artist's on-map songs (whichever of
+  them have cached embeddings; `_session_artist_from_songs` in `atlas.py`).
+  Session and low-confidence artists are auto-supplemented to 5 tracks the same
+  way as above (on-map songs count toward the target). An artist is only skipped
+  when none of its on-map songs have a usable embedding yet.
 - **Session state** lives under `ui/session/`: `embed_cache.sqlite` (raw
   MERT vectors, avoids re-embedding on repeat placement) and the saved graph
   JSON (persists the map across restarts).
 - **Clusters are display-only in the UI too**: computed and stored on every
   node, but only surfaced in the click-detail popover (`renderDetail`) —
   the map itself is not fill-colored by cluster. Full rationale:
-  [projects/UI_ATLAS_FIX_PLAN.md](projects/UI_ATLAS_FIX_PLAN.md).
+  The historical implementation rationale is retained in
+  [implemented_archive/UI_ATLAS_FIX_PLAN.md](../implemented_archive/UI_ATLAS_FIX_PLAN.md).
 - **Map panel** (left side, `renderMapPanel` in `app.js`): lists every placed
   song with click-to-zoom, per-node remove (`DELETE /api/node/<id>` — also
   prunes orphaned grey neighbors), a session-only recently-removed list with

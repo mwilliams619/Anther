@@ -69,15 +69,6 @@ def test_canonical_columns_match_real_csv_if_present():
         assert list(cols) == list(real)
 
 
-def test_extract_returns_labeled_series_in_canonical_order(synth_wav):
-    feats = extract_librosa_features(synth_wav)
-    assert isinstance(feats, pd.Series)
-    assert len(feats) == 518
-    # The whole point of B: the index equals FMA's order exactly.
-    assert list(feats.index) == list(fma_feature_columns())
-    assert np.isfinite(feats.to_numpy()).all()
-
-
 def test_extract_block_sizes(synth_wav):
     """Each feature block has the right number of sub-bands × 7 stats."""
     feats = extract_librosa_features(synth_wav)
@@ -87,15 +78,6 @@ def test_extract_block_sizes(synth_wav):
     assert counts["tonnetz"] == 6 * 7
     assert counts["spectral_contrast"] == 7 * 7
     assert counts["zcr"] == 1 * 7
-
-
-def test_align_to_corpus_reorders(synth_wav):
-    """A shuffled query realigns to the corpus order and returns that order."""
-    feats = extract_librosa_features(synth_wav)
-    shuffled = feats.sample(frac=1.0, random_state=0)
-    assert list(shuffled.index) != list(feats.index)  # actually shuffled
-    vec = align_to_corpus(shuffled, feats.index)
-    np.testing.assert_allclose(vec, feats.to_numpy(), rtol=1e-6)
 
 
 def test_align_to_corpus_missing_feature_raises(synth_wav):

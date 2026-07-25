@@ -208,6 +208,7 @@ def sql_source(
     tracks_per_artist_cap: int | None = 5,
     seed: int = 42,
     min_popularity: float | None = None,
+    max_popularity: float | None = None,
     with_membership: bool = True,
     prefer_spotify_preview: bool = True,
     deezer_fallback: bool = True,
@@ -228,6 +229,8 @@ def sql_source(
 
     Sampling is deterministic per ``seed``, artist-capped before embedding, and
     carries playlist membership — the same contract the JSON path provides.
+    ``max_popularity`` is useful for a long-tail expansion: it excludes tracks
+    above the bound before the artist cap and sampling are applied.
 
     Previews are fetched with a bounded ``n_workers``-thread pool (Tier 1B): the
     fetch/decode is I/O-bound, so overlapping it keeps the downstream GPU fed.
@@ -249,6 +252,7 @@ def sql_source(
         artist_cap=tracks_per_artist_cap,
         seed=seed,
         min_popularity=min_popularity,
+        max_popularity=max_popularity,
     )
     log.info(
         "sql_source: fetching audio for %d sampled tracks (%d workers)…",
@@ -292,6 +296,7 @@ def sql_source(
             "source": "mpd_sql",
             "genre": None,
             "playlists": membership.get(track_id, []),
+            "popularity": row.get("popularity"),
             "audio": wav,
             "sr": SR,
         }
@@ -324,6 +329,7 @@ def sql_source_oversampled(
     tracks_per_artist_cap: int | None = 5,
     seed: int = 42,
     min_popularity: float | None = None,
+    max_popularity: float | None = None,
     with_membership: bool = True,
     prefer_spotify_preview: bool = True,
     deezer_fallback: bool = True,
@@ -366,6 +372,7 @@ def sql_source_oversampled(
         artist_cap=tracks_per_artist_cap,
         seed=seed,
         min_popularity=min_popularity,
+        max_popularity=max_popularity,
     )
     log.info(
         "sql_source_oversampled: target=%d, pool=%d candidates (%d workers)…",
@@ -409,6 +416,7 @@ def sql_source_oversampled(
             "source": "mpd_sql",
             "genre": None,
             "playlists": membership.get(track_id, []),
+            "popularity": row.get("popularity"),
             "audio": wav,
             "sr": SR,
         }

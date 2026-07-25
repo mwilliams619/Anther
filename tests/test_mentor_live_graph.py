@@ -165,6 +165,14 @@ def _real_sessions_with_nodes():
     return out
 
 
+# STALE (marked at the user's request): unlike the pre-multi-session atlas
+# tests, this one exercises current production code — it is machine-data
+# dependent, not architecture-stale. It only runs where real
+# ui/session/<sid>/graph.json files exist, and asserts every populated session
+# has a node with a cached vector; it fails when a local session's embed_cache
+# was cleared/pruned while its graph.json was kept. Excluded from the default
+# run; revisit by loosening the vec assertion or cleaning stray local sessions.
+@pytest.mark.stale
 @pytest.mark.skipif(not _real_sessions_with_nodes(),
                     reason="no populated ui/session/<sid>/graph.json on this machine")
 def test_real_sessions_load_and_summarize():

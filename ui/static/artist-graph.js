@@ -88,7 +88,8 @@ const ArtistGraph = (() => {
     entered.append('text').attr('class', 'artist-label').attr('x', 14).attr('dy', '0.32em');
     nodeSel = entered.merge(nodeSel);
     nodeSel.select('circle').attr('class', d =>
-      `artist-node artist-cluster-${d.cluster_id}${d.source === 'session' ? ' session-artist' : ''}`);
+      `artist-node artist-cluster-${d.cluster_id}${d.source === 'session' ? ' session-artist' : ''}`
+      + (d.low_confidence ? ' low-confidence' : ''));
     nodeSel.select('text').text(d => d.name);
     nodeSel.classed('selected', d => d.id === selectedId);
 

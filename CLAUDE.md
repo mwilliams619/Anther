@@ -42,8 +42,9 @@ left). Run the test suite with `pytest` from the repo root.
 | Phase 2 embeddings | touching `embedding.py` / `audio.py` / MERT | [docs/phase2-embeddings.md](docs/phase2-embeddings.md) |
 | Reference corpus | touching `anther_ml/corpus/` (build/place/sources/bundle) or MPD ingest | [docs/projects/REFERENCE_CORPUS_DESIGN.md](docs/projects/REFERENCE_CORPUS_DESIGN.md), perf: [docs/projects/CORPUS_BUILD_EFFICIENCY_PLAN.md](docs/projects/CORPUS_BUILD_EFFICIENCY_PLAN.md) |
 | MPD playlist DB pruning | touching `anther_ml/mpd_sql.py` or shrinking the 27GB MPD DB for hosting | [docs/projects/MPD_PLAYLIST_PRUNING_NOTES.md](docs/projects/MPD_PLAYLIST_PRUNING_NOTES.md) (not implemented — reference only) |
-| Cluster labels | touching `anther_ml/corpus/labels.py` or the `corpus label` CLI | [docs/projects/PLAYLIST_LABELS_BUILD_PLAN.md](docs/projects/PLAYLIST_LABELS_BUILD_PLAN.md) |
+| Cluster labels | touching `anther_ml/corpus/labels.py` or the `corpus label` CLI | [docs/architecture.md](docs/architecture.md) and [docs/Jul_24_summary.md](docs/Jul_24_summary.md) |
 | Micro-genre tagging | touching `anther_ml/corpus/tagging/` (per-track genre tags) | [docs/tagging.md](docs/tagging.md); build plan: [docs/projects/MICROGENRE_TAGGING_BUILD_PLAN.md](docs/projects/MICROGENRE_TAGGING_BUILD_PLAN.md), status: [docs/projects/MICROGENRE_TAGGING_NEXT_STEPS.md](docs/projects/MICROGENRE_TAGGING_NEXT_STEPS.md) |
+| Artist enrichment | touching `anther_ml/artist_enrichment/` (artist profiles: image/following/genres/origin/labels) | [docs/artist-enrichment.md](docs/artist-enrichment.md); historical plan: [implemented_archive/ARTIST_ENRICHMENT_PLAN.md](implemented_archive/ARTIST_ENRICHMENT_PLAN.md) |
 | Web UI | touching `ui/` (Flask app, corpus atlas, force-graph frontend) | [docs/ui.md](docs/ui.md) |
 | Evaluation | measuring a change or picking a hyperparameter | [docs/evaluation.md](docs/evaluation.md) |
 | Notebooks, viz & Jupyter | running the pipeline notebooks or `export_viz.py` | [docs/notebooks.md](docs/notebooks.md) |
