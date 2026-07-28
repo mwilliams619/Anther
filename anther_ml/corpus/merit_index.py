@@ -2,7 +2,7 @@
 MERIT-aggregate SongIndex: the driving similarity signal for edges, corpus
 search, and ranking (replacing the plain MERT-1024 SongIndex — see
 docs/similarity.md and the historical
-implemented_archive/MERIT_INTEGRATION_REPORT.md).
+private/implemented_archive/MERIT_INTEGRATION_REPORT.md).
 
 Built as an ADDITIVE sidecar inside an existing corpus bundle
 (``models/corpus_<name>/``) that was built with ``--capture-merit-backbone``

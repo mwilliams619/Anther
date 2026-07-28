@@ -6,7 +6,7 @@ Kept entirely separate from the immutable clustering artifacts — it never feed
 clustering, training, or the map (docs/invariants.md); it is display-only, joined
 at API-read time.
 
-Historical design source: [implemented_archive/ARTIST_ENRICHMENT_PLAN.md](../implemented_archive/ARTIST_ENRICHMENT_PLAN.md).
+Historical design source: `private/implemented_archive/ARTIST_ENRICHMENT_PLAN.md` (local-only).
 
 ## Why a separate layer
 

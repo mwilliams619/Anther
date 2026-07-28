@@ -119,7 +119,7 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
   node, but only surfaced in the click-detail popover (`renderDetail`) —
   the map itself is not fill-colored by cluster. Full rationale:
   The historical implementation rationale is retained in
-  [implemented_archive/UI_ATLAS_FIX_PLAN.md](../implemented_archive/UI_ATLAS_FIX_PLAN.md).
+  `private/implemented_archive/UI_ATLAS_FIX_PLAN.md` (local-only).
 - **Map panel** (left side, `renderMapPanel` in `app.js`): lists every placed
   song with click-to-zoom, per-node remove (`DELETE /api/node/<id>` — also
   prunes orphaned grey neighbors), a session-only recently-removed list with

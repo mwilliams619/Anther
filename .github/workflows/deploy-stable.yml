@@ -2,7 +2,7 @@ name: Deploy stable (ml-dev)
 
 # Runs on the self-hosted runner registered on the same box that serves
 # production, since GitHub-hosted runners can't reach it (it's only exposed
-# via a Cloudflare Tunnel, no public inbound port). See CI_CD_SETUP.md for
+# via a Cloudflare Tunnel, no public inbound port). See private/CI_CD_SETUP.md for
 # runner registration and the sudoers scoping this depends on.
 on:
   push:

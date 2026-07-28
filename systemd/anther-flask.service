@@ -6,7 +6,7 @@
 # auto-deploy triggered by a push to ml-dev can never collide with — or
 # hard-reset away — whatever you're working on in your main checkout.
 #
-# One-time install (see CI_CD_SETUP.md for the full sequence):
+# One-time install (see private/CI_CD_SETUP.md for the full sequence):
 #   sudo cp systemd/anther-flask.service /etc/systemd/system/anther-flask.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now anther-flask
