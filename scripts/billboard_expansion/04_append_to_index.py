@@ -20,7 +20,6 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -29,20 +28,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from anther_ml.corpus.extend import extend_corpus
-
-
-def load_ok_rows(path: Path) -> list[dict]:
-    rows = []
-    with path.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            if row.get("status") == "ok":
-                rows.append(row)
-    return rows
+from anther_ml.corpus.checkpoint_append import append_jsonl_in_batches
 
 
 def make_track_id(row: dict) -> str:
@@ -56,17 +42,13 @@ def main():
     ap.add_argument("--out-dir", default="models/corpus_mpd_100k_merit_ext_billboard")
     ap.add_argument("--dedupe-threshold", type=float, default=0.98)
     ap.add_argument("--knn-k", type=int, default=15)
+    ap.add_argument("--batch-size", type=int, default=500)
     args = ap.parse_args()
 
     embedded_path = REPO_ROOT / args.embedded_jsonl
-    rows = load_ok_rows(embedded_path)
-    print(f"Loaded {len(rows)} successfully-embedded tracks from {embedded_path}")
-    if not rows:
-        print("Nothing to append.")
-        return
-
-    new_items = []
-    for row in rows:
+    def row_to_item(row: dict) -> dict | None:
+        if row.get("status") != "ok":
+            return None
         meta = {
             "id": make_track_id(row),
             "name": row["title"],
@@ -80,22 +62,21 @@ def main():
             "deezer_match_method": row["match_method"],
             "deezer_match_score": row["match_score"],
         }
-        new_items.append({
+        return {
             "meta": meta,
             "raw_vector": np.asarray(row["embedding"], dtype=np.float32),
             "merit_backbone": np.asarray(row["merit_backbone"], dtype=np.float32)
             if row.get("merit_backbone") is not None else None,
-        })
+        }
 
-    print(f"Extending bundle {args.bundle} -> {args.out_dir} "
-          f"({len(new_items)} candidate new tracks)...")
-    report = extend_corpus(
-        REPO_ROOT / args.bundle,
-        new_items,
-        out_dir=REPO_ROOT / args.out_dir,
-        dedupe_threshold=args.dedupe_threshold,
-        knn_k=args.knn_k,
+    print(f"Streaming append {embedded_path} in batches of {args.batch_size} …")
+    report = append_jsonl_in_batches(
+        REPO_ROOT / args.bundle, embedded_path, REPO_ROOT / args.out_dir,
+        row_to_item=row_to_item, batch_size=args.batch_size,
+        dedupe_threshold=args.dedupe_threshold, knn_k=args.knn_k,
+        state_name=".billboard_append_state.json",
     )
+    import json
     print(json.dumps(report, indent=2, default=str))
 
 

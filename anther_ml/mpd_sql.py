@@ -467,6 +467,107 @@ def _chunks(seq: list, size: int) -> Iterator[list]:
         yield seq[i : i + size]
 
 
+def _candidate_sql(
+    con: sqlite3.Connection,
+    *,
+    min_popularity: float | None,
+    max_popularity: float | None,
+    require_preview: bool,
+    exclude_track_ids: set[str] | None,
+) -> tuple[str, str, dict[str, object]]:
+    """
+    Build the ``cand`` CTE body (one row per eligible track, plus a
+    deterministic representative artist) shared by :func:`sample_tracks` and
+    :func:`count_candidates`, so an availability pre-flight can never disagree
+    with what the sampler will actually find. Creates the ``excluded_track_ids``
+    temp table on ``con`` when exclusions are given.
+
+    Returns ``(candidate_sql, where_sql, params)``; ``where_sql`` is exposed for
+    the uncapped no-window-function fallback path.
+    """
+    where = ["1=1"]
+    params: dict[str, object] = {}
+    if exclude_track_ids:
+        con.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS excluded_track_ids "
+            "(track_id TEXT PRIMARY KEY)"
+        )
+        con.executemany(
+            "INSERT OR IGNORE INTO excluded_track_ids(track_id) VALUES (?)",
+            ((str(track_id),) for track_id in exclude_track_ids),
+        )
+        where.append("t.id NOT IN (SELECT track_id FROM excluded_track_ids)")
+    if require_preview:
+        where.append("t.preview_url IS NOT NULL AND t.preview_url <> ''")
+    if min_popularity is not None:
+        where.append("t.popularity >= :minpop")
+        params["minpop"] = min_popularity
+    if max_popularity is not None:
+        where.append("t.popularity <= :maxpop")
+        params["maxpop"] = max_popularity
+
+    where_sql = " AND ".join(where)
+    # One representative artist per track (MIN is arbitrary but deterministic).
+    candidate = f"""
+        SELECT t.id AS track_id, t.name AS name, t.preview_url AS preview_url,
+               t.popularity AS popularity,
+               MIN(ta.artist_id) AS artist_id
+        FROM track t
+        JOIN track_artist1 ta ON ta.track_id = t.id
+        WHERE {where_sql}
+        GROUP BY t.id
+    """
+    return candidate, where_sql, params
+
+
+def count_candidates(
+    db_path: str | Path,
+    *,
+    artist_cap: int | None = 5,
+    min_popularity: float | None = None,
+    max_popularity: float | None = None,
+    require_preview: bool = True,
+    exclude_track_ids: set[str] | None = None,
+) -> int:
+    """
+    How many tracks :func:`sample_tracks` *could* return under these filters —
+    i.e. the hard ceiling on any ``sample_n``, independent of seed.
+
+    Exists because the popularity bands in this dump are wildly uneven (the
+    31-70 band tops out near 200k tracks under a cap of 5, and 71-100 holds
+    barely a thousand), so a stratified request can be arithmetically
+    impossible. Callers should pre-flight with this rather than discover it
+    hours into a fetch. Counting scans the ``track`` table, so budget seconds
+    to a minute per call, not milliseconds.
+    """
+    con = sqlite3.connect(str(db_path))
+    try:
+        candidate, _where_sql, params = _candidate_sql(
+            con,
+            min_popularity=min_popularity,
+            max_popularity=max_popularity,
+            require_preview=require_preview,
+            exclude_track_ids=exclude_track_ids,
+        )
+        params["cap"] = artist_cap if artist_cap is not None else 1_000_000_000
+        return con.execute(
+            f"""
+            WITH cand AS ({candidate}),
+                 ranked AS (
+                     SELECT cand.*,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY artist_id ORDER BY track_id
+                            ) AS rn
+                     FROM cand
+                 )
+            SELECT COUNT(*) FROM ranked WHERE rn <= :cap
+            """,
+            params,
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
 def sample_tracks(
     db_path: str | Path,
     *,
@@ -476,6 +577,7 @@ def sample_tracks(
     min_popularity: float | None = None,
     max_popularity: float | None = None,
     require_preview: bool = True,
+    exclude_track_ids: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, list[dict]]]:
     """
     Deterministic, artist-capped random sample of tracks, plus playlist membership.
@@ -494,28 +596,13 @@ def sample_tracks(
     try:
         con.create_function("seeded_rand", 1, _seeded_rand_fn(seed), deterministic=True)
 
-        where = ["1=1"]
-        params: dict[str, object] = {}
-        if require_preview:
-            where.append("t.preview_url IS NOT NULL AND t.preview_url <> ''")
-        if min_popularity is not None:
-            where.append("t.popularity >= :minpop")
-            params["minpop"] = min_popularity
-        if max_popularity is not None:
-            where.append("t.popularity <= :maxpop")
-            params["maxpop"] = max_popularity
-        where_sql = " AND ".join(where)
-
-        # One representative artist per track (MIN is arbitrary but deterministic).
-        candidate = f"""
-            SELECT t.id AS track_id, t.name AS name, t.preview_url AS preview_url,
-                   t.popularity AS popularity,
-                   MIN(ta.artist_id) AS artist_id
-            FROM track t
-            JOIN track_artist1 ta ON ta.track_id = t.id
-            WHERE {where_sql}
-            GROUP BY t.id
-        """
+        candidate, where_sql, params = _candidate_sql(
+            con,
+            min_popularity=min_popularity,
+            max_popularity=max_popularity,
+            require_preview=require_preview,
+            exclude_track_ids=exclude_track_ids,
+        )
         cap = artist_cap if artist_cap is not None else 1_000_000_000
         params["cap"] = cap
         limit_sql = ""
