@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Anther — Song Atlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=12" />
+  <link rel="icon" type="image/x-icon" href="anther_logo.png" />
+</head>
+<body>
+
+  <div id="loader">
+  <img src="/static/images/anther.webp" alt="Loading">
+</div>
+<div class="app">
+
+  <!-- Mobile sidebar toggle -->
+  <button class="sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <!-- ── Left panel: Search + Upload ──────────────────────────────────────── -->
+  <div class="panel panel-left">
+    <div class="header">
+      <h1>Anther</h1>
+      <span class="subtitle">song atlas</span>
+      <div id="view-mode" class="view-mode" role="tablist" aria-label="Atlas view">
+        <button id="view-songs" class="view-toggle-btn active" role="tab" aria-selected="true"
+                title="Song atlas" aria-label="Show song atlas">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 12h2m1.5-5v10m3-14v18m3-12v6m3-10v14m3-8v2" />
+          </svg>
+        </button>
+        <button id="view-artists" class="view-toggle-btn" role="tab" aria-selected="false"
+                title="Artist atlas" aria-label="Show artist atlas">
+          <img src="/static/images/artist_icon_white_2.png" alt="" aria-hidden="true" />
+        </button>
+      </div>
+      <button id="settings-toggle" class="btn-icon" title="Settings"
+              style="margin-left:auto" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+      <button id="help-toggle" class="btn-icon" title="Open help">?</button>
+
+      <!-- Settings popover: how a single song plays, and whether a graph tour
+           advances by itself. Persisted in localStorage. -->
+      <div id="settings-popover" class="settings-popover" hidden role="dialog"
+           aria-label="Playback settings">
+        <h3>Song player</h3>
+        <label class="settings-row">
+          <input type="radio" name="player" value="deezer">
+          <span><strong>Deezer preview</strong><em>30s clip, plays inline, no login</em></span>
+        </label>
+        <label class="settings-row">
+          <input type="radio" name="player" value="spotify">
+          <span><strong>Spotify embed</strong><em>Full track if you're logged into Spotify in this browser, else 30s</em></span>
+        </label>
+
+        <h3>Graph tours</h3>
+        <label class="settings-row">
+          <input type="checkbox" id="setting-autoadvance">
+          <span><strong>Auto-advance</strong><em>Move to the next song automatically; off means stop after each and wait for ⏭</em></span>
+        </label>
+        <p class="settings-note">Tours always use the Spotify embed, so they can
+          play full tracks. The player above applies to the ▶ button.</p>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <section id="song-search-section">
+      <h2>Search &amp; add</h2>
+      <div class="search-mode" role="tablist">
+        <button id="mode-tracks" class="mode-btn active" role="tab">Tracks</button>
+        <button id="mode-playlists" class="mode-btn" role="tab">Playlists</button>
+        <button id="mode-albums" class="mode-btn" role="tab">Albums</button>
+      </div>
+      <p class="hint-text" id="search-hint">Corpus → Deezer → Spotify. Click a result to place it on the graph.</p>
+      <div class="search-bar">
+        <input id="search-input" type="text" placeholder="Artist, track…" autocomplete="off" />
+      </div>
+      <div id="search-results" style="margin-top:10px">
+        <div class="empty">Search for a song to add it to the atlas</div>
+      </div>
+      <div id="playlist-progress" class="place-status"></div>
+    </section>
+
+    <section id="artist-search-section" hidden>
+      <h2>Search &amp; add artists</h2>
+      <p class="hint-text">Only artists you add appear on this private graph.</p>
+      <div class="search-bar">
+        <input id="artist-search-input" type="text" placeholder="Artist name…" autocomplete="off" />
+      </div>
+      <div id="artist-search-results" style="margin-top:10px">
+        <div class="empty">Search for an artist to begin</div>
+      </div>
+    </section>
+
+    <!-- Map management -->
+    <section id="song-map-section">
+      <h2>Map</h2>
+      <div class="filter-box">
+        <div class="search-bar">
+          <input id="filter-input" type="text"
+                 placeholder="Filter by artist, playlist, album…" autocomplete="off" />
+        </div>
+        <div id="filter-suggest"></div>
+      </div>
+      <div id="filter-active"></div>
+      <div id="map-list" class="map-list"></div>
+      <div class="map-actions">
+        <span id="map-count" class="hint-text"></span>
+        <div class="map-action-buttons">
+          <button id="build-artist-graph" title="Build an artist graph from songs you added">Artist graph</button>
+          <button id="clear-map" title="Remove every node from the map">Clear map</button>
+        </div>
+      </div>
+      <div id="removed-header" class="removed-header" hidden>Recently removed</div>
+      <div id="removed-list" class="map-list"></div>
+      <button id="recommend-btn" class="btn btn-primary" style="margin-top:10px"
+              title="Get corpus tracks similar to everything currently on your map">
+        Recommend similar
+      </button>
+      <div id="recommend-results" class="map-list"></div>
+    </section>
+
+    <section id="artist-map-section" hidden>
+      <h2>Artist map</h2>
+      <div id="artist-map-list" class="map-list"></div>
+      <div class="map-actions">
+        <span id="artist-map-count" class="hint-text"></span>
+        <button id="clear-artist-map" title="Remove every artist from this map">Clear map</button>
+      </div>
+    </section>
+
+    <!-- Upload -->
+    <section>
+      <h2>Upload a track</h2>
+      <div id="upload-zone">
+        <p style="margin-bottom:8px">Drag &amp; drop audio here</p>
+        <label>or <span>browse files</span>
+          <input type="file" id="upload-input" multiple accept=".mp3,.wav,.flac,.m4a" />
+        </label>
+        <p style="margin-top:6px;font-size:11px">MP3, WAV, FLAC, M4A · max 25 MB each</p>
+      </div>
+      <div id="place-status" class="place-status"></div>
+    </section>
+  </div>
+
+  <!-- ── Graph ────────────────────────────────────────────────────────────── -->
+  <div class="graph-wrap">
+    <svg id="graph"></svg>
+    <svg id="artist-graph" hidden></svg>
+    <div id="artist-graph-empty" class="graph-empty" hidden>
+      Search for artists and add them to build your artist graph.
+    </div>
+    <div id="graph-loading">loading corpus… the map will appear shortly</div>
+    <aside id="detail-panel" hidden>
+      <button id="detail-close" class="btn-icon" title="Close">×</button>
+      <div id="detail-body"></div>
+    </aside>
+    <button id="mentor-toggle" class="mentor-toggle-btn" title="Open mentor">💬</button>
+
+    <!-- ── Graph autoplay transport ─────────────────────────────────────────
+         Walks the map as a playlist. Hidden until a tour starts. The embed
+         host is replaced in place by createController, so #autoplay-embed
+         must never be queried after the controller exists. -->
+    <div id="autoplay-bar" class="autoplay-bar" hidden>
+      <div class="autoplay-controls">
+        <button id="autoplay-toggle" class="btn-icon" title="Pause">⏸</button>
+        <button id="autoplay-next" class="btn-icon" title="Next song">⏭</button>
+        <button id="autoplay-stop" class="btn-icon" title="Stop the tour">■</button>
+      </div>
+      <div class="autoplay-meta">
+        <div id="autoplay-title" class="autoplay-title">—</div>
+        <div id="autoplay-sub" class="autoplay-sub"></div>
+      </div>
+      <label class="autoplay-follow" title="Keep the camera on the playing song">
+        <input type="checkbox" id="autoplay-follow" checked> follow
+      </label>
+      <div id="autoplay-embed-wrap" class="autoplay-embed-wrap">
+        <div id="autoplay-embed"></div>
+      </div>
+    </div>
+    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs</div>
+  </div>
+
+  <!-- ── Mentor chat ──────────────────────────────────────────────────────── -->
+  <div class="panel panel-right mentor-panel" hidden>
+    <div class="header">
+      <h1>Mentor</h1>
+      <span class="subtitle">ask about your sound</span>
+      <button id="mentor-close" class="btn-icon" title="Close mentor">×</button>
+    </div>
+    <section id="mentor-panel">
+      <div id="mentor-messages" class="mentor-messages">
+        <div class="empty">Ask what you sound like, who you're close to, or for music advice.</div>
+      </div>
+      <div id="mentor-status" class="hint-text mentor-status" hidden></div>
+      <div class="search-bar">
+        <input id="mentor-input" type="text" placeholder="Ask the mentor…" autocomplete="off" />
+        <button id="mentor-send" class="btn-add">Send</button>
+      </div>
+      <button id="mentor-reset" class="btn-tiny" style="margin-top:6px">Reset conversation</button>
+    </section>
+  </div>
+
+</div><!-- .app -->
+
+<!-- ── Help Modal ────────────────────────────────────────────────────────────── -->
+<div id="help-modal" class="modal" hidden>
+  <div class="modal-overlay"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>How to use Anther</h2>
+      <button id="help-close" class="btn-icon" title="Close">×</button>
+    </div>
+    
+    <div class="modal-tabs">
+      <button class="modal-tab active" data-tab="getting-started">Getting Started</button>
+      <button class="modal-tab" data-tab="examples">Example Analyses</button>
+      <button class="modal-tab" data-tab="tips">Tips &amp; Tricks</button>
+    </div>
+
+    <div class="modal-body">
+      <!-- Getting Started -->
+      <div class="modal-tab-content active" data-tab="getting-started">
+        <h3>Add songs to the map</h3>
+        <p>Build your own custom sound map by adding songs:</p>
+        <ul>
+          <li><strong>Search tracks:</strong> Find any song in the dataset or Spotify. Click a result to place it on the graph.</li>
+          <li><strong>Load a playlist:</strong> Search for a playlist from the Million Playlist Dataset. All top tracks load as one cluster.</li>
+          <li><strong>Upload audio:</strong> Drag &amp; drop your own MP3, WAV, or FLAC files to analyze your unreleased music.</li>
+        </ul>
+        
+        <h3>Explore the graph</h3>
+        <ul>
+          <li><strong>Hover:</strong> See song details and similarity scores when hovering.</li>
+          <li><strong>Click:</strong> Open the detail panel to see track metadata, related songs, and play the track.</li>
+          <li><strong>Play a tour (⇉):</strong> Start playing the map like a playlist from that song, walking edges to similar tracks and jumping between disconnected islands.</li>
+          <li><strong>Shift-click:</strong> Steer a tour that's already playing to that song, keeping everything played so far.</li>
+          <li><strong>Drag:</strong> Reposition nodes to untangle crowded clusters.</li>
+          <li><strong>Scroll:</strong> Zoom in and out to explore at different scales.</li>
+        </ul>
+        
+        <h3>Filter and manage</h3>
+        <p>The <strong>Map</strong> section lets you filter by artist, playlist, or album. Clear the map at any time to start fresh.</p>
+        
+        <div style="margin-top:20px;padding:12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border)">
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 10px 0"><strong>Want to see it in action?</strong></p>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 12px 0">Load the <strong>2025 Year-End Top 20</strong> — a chart-spanning mix of pop, hip-hop, and R&B hits to explore how music clusters by genre, vibe, and similarity.</p>
+          <button id="try-demo-btn" class="btn btn-primary" style="width:100%">Load Top 20 demo →</button>
+          <button id="try-artist-demo-btn" class="btn" style="width:100%;margin-top:8px">Load 20-artist demo →</button>
+        </div>
+      </div>
+
+      <!-- Examples -->
+      <div class="modal-tab-content" data-tab="examples">
+        <h3>Artist &amp; genre discovery</h3>
+        <p>Add a few songs from an artist or genre you like. Then use the <strong>Recommend similar</strong> button to show similar music you might not know. Hover edges to see similarity scores and find hidden gems.</p>
+        
+        <h3>Curation by similarity</h3>
+        <p>Build a smooth musical journey through the map for DJing or sequencing. Identify outliers and remove them.</p>
+        
+        <h3>Music taste fingerprinting</h3>
+        <p>Upload your favorite playlist or unreleased tracks. The emerging clusters and neighborhoods reveal patterns in your sound—what makes it <em>you</em>.</p>
+      </div>
+
+      <!-- Tips -->
+      <div class="modal-tab-content" data-tab="tips">
+        <h3>Get the most out of Anther</h3>
+        <ul>
+          <li><strong>Start small:</strong> Add 5–20 songs first. Larger maps are harder to read but reveal richer neighborhoods.</li>
+          <li><strong>Use filters:</strong> Filter by playlist or artist to zoom in on a specific subset of your map.</li>
+          <li><strong>Recommend similar:</strong> When you're done exploring, get fresh corpus tracks that fit your sound.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload artist assignment is session-private; profiles are created only after upload succeeds. -->
+<div id="artist-assignment-modal" class="modal" hidden>
+  <div class="modal-overlay"></div>
+  <div class="modal-content artist-assignment-content">
+    <div class="modal-header">
+      <h2>Assign artist</h2>
+      <button id="artist-assignment-close" class="btn-icon" title="Cancel">×</button>
+    </div>
+    <div class="modal-body">
+      <p id="artist-assignment-file" class="hint-text"></p>
+      <div class="search-bar">
+        <input id="artist-assignment-input" type="text" placeholder="Search or enter a new artist…" autocomplete="off" />
+      </div>
+      <div id="artist-assignment-results" class="artist-assignment-results"></div>
+      <div class="artist-assignment-actions">
+        <button id="artist-assignment-personal" class="btn">No artist</button>
+        <button id="artist-assignment-create" class="btn btn-primary" disabled>Create private artist</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Choosing replacement is explicit so an existing artist map is never discarded by accident. -->
+<div id="artist-graph-choice-modal" class="modal" hidden role="dialog" aria-modal="true"
+     aria-labelledby="artist-graph-choice-title">
+  <div class="modal-overlay"></div>
+  <div class="modal-content artist-graph-choice-content">
+    <div class="modal-header">
+      <h2 id="artist-graph-choice-title">Build artist graph</h2>
+      <button id="artist-graph-choice-close" class="btn-icon" title="Cancel" aria-label="Cancel">×</button>
+    </div>
+    <div class="modal-body">
+      <p>Your artist graph already has artists. Add artists from the songs on this map, or replace it with a new graph?</p>
+      <div class="artist-graph-choice-actions">
+        <button id="artist-graph-choice-cancel" class="btn">Cancel</button>
+        <button id="artist-graph-choice-replace" class="btn">Start new graph</button>
+        <button id="artist-graph-choice-append" class="btn btn-primary">Add to existing</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="graph-tooltip"></div>
+<div id="error-toast"></div>
+
+<script src="https://d3js.org/d3.v4.js"></script>
+<script src="/static/graph.js?v=6"></script>
+<script src="/static/artist-graph.js?v=2"></script>
+<script src="/static/autoplay-traversal.js?v=1"></script>
+<script src="/static/autoplay.js?v=1"></script>
+<script src="/static/app.js?v=11"></script>
+</body>
+</html>

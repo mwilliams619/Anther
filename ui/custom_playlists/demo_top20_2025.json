@@ -1,0 +1,107 @@
+{
+  "pid": "demo_top20_2025",
+  "name": "2025 Year-End Top 20 (Demo)",
+  "description": "A chart-spanning mix of 2025's biggest pop, hip-hop, and R&B hits.",
+  "tracks": [
+    {
+      "id": "deezer:2947516331",
+      "name": "Die With A Smile",
+      "artist": "Lady Gaga"
+    },
+    {
+      "id": "deezer:3106586641",
+      "name": "Luther",
+      "artist": "Kendrick Lamar"
+    },
+    {
+      "id": "deezer:2729273551",
+      "name": "A Bar Song (Tipsy)",
+      "artist": "Shaboozey"
+    },
+    {
+      "id": "deezer:2319265555",
+      "name": "Lose Control",
+      "artist": "Teddy Swims"
+    },
+    {
+      "id": "deezer:2801558052",
+      "name": "BIRDS OF A FEATHER",
+      "artist": "Billie Eilish"
+    },
+    {
+      "id": "deezer:2704682202",
+      "name": "Beautiful Things",
+      "artist": "Benson Boone"
+    },
+    {
+      "id": "deezer:3210709941",
+      "name": "Ordinary",
+      "artist": "Alex Warren"
+    },
+    {
+      "id": "deezer:2780753191",
+      "name": "I Had Some Help",
+      "artist": "Post Malone"
+    },
+    {
+      "id": "deezer:3050380851",
+      "name": "APT.",
+      "artist": "ROSÉ"
+    },
+    {
+      "id": "deezer:2454854845",
+      "name": "Pink Pony Club",
+      "artist": "Chappell Roan"
+    },
+    {
+      "id": "deezer:3040572191",
+      "name": "Love Somebody",
+      "artist": "Morgan Wallen"
+    },
+    {
+      "id": "deezer:2743578151",
+      "name": "Espresso",
+      "artist": "Sabrina Carpenter"
+    },
+    {
+      "id": "deezer:3206261161",
+      "name": "I'm The Problem",
+      "artist": "Morgan Wallen"
+    },
+    {
+      "id": "deezer:3047560351",
+      "name": "That’s So True",
+      "artist": "Gracie Abrams"
+    },
+    {
+      "id": "deezer:3106586681",
+      "name": "TV Off",
+      "artist": "Kendrick Lamar"
+    },
+    {
+      "id": "deezer:3210598501",
+      "name": "Timeless",
+      "artist": "The Weeknd"
+    },
+    {
+      "id": "deezer:2783963122",
+      "name": "Not Like Us",
+      "artist": "Kendrick Lamar"
+    },
+    {
+      "id": "deezer:3278152451",
+      "name": "Just In Case",
+      "artist": "Morgan Wallen"
+    },
+    {
+      "id": "deezer:2954912511",
+      "name": "Taste",
+      "artist": "Sabrina Carpenter"
+    },
+    {
+      "id": "deezer:3106586631",
+      "name": "Squabble Up",
+      "artist": "Kendrick Lamar"
+    }
+  ]
+}

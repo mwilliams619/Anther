@@ -1,0 +1,339 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Autoplay Phase 0 spike — Spotify IFrame API</title>
+<style>
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 860px; margin: 32px auto; padding: 0 20px; color: #e8e8ea; background: #16161a; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 28px; }
+  .verdict { padding: 12px 14px; border-radius: 8px; margin: 12px 0; font-weight: 600; }
+  .pass { background: #123d24; color: #7ee2a8; } .fail { background: #4a1717; color: #ff9d9d; }
+  .pending { background: #2a2a30; color: #b9b9c2; }
+  button { background: #2f6df6; color: #fff; border: 0; padding: 9px 16px;
+           border-radius: 6px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #log { background: #0e0e11; border: 1px solid #2a2a30; border-radius: 8px; padding: 10px;
+         height: 260px; overflow: auto; font: 11px/1.45 ui-monospace, Menlo, monospace;
+         white-space: pre-wrap; }
+  .muted { color: #8b8b96; } code { background: #26262c; padding: 1px 5px; border-radius: 4px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Graph autoplay — Phase 0 spike</h1>
+<p class="muted">Gate for <code>docs/projects/GRAPH_AUTOPLAY_PLAN.md</code>. Answers the two
+questions that can each kill the feature. Open at
+<code>http://127.0.0.1:5000/static/autoplay-spike.html</code> so the origin matches the real app.</p>
+
+<h2>Spike A — does chained autoplay work without a gesture per track?</h2>
+<p><code>createController</code> builds its own iframe, so we can't guarantee
+<code>allow="autoplay"</code> is delegated. Press play <strong>once</strong>. If tracks 2 and 3
+start on their own, A passes. If either needs a click, autoplay chaining is unavailable and the
+feature degrades to a manual "next" button.</p>
+
+<h2>Spike B — can end-of-track be detected?</h2>
+<p>There is no <code>ended</code> event, and for a logged-out visitor <code>duration</code>
+reports the <em>full</em> track length while audio stops at ~30s — so <code>position &gt;= duration</code>
+never fires. This page runs the plan's stall detector and reports which rule fired.
+<strong>Run it twice: once logged into Spotify in this browser, once in a private window.</strong></p>
+
+<p><button id="go" disabled>Loading Spotify API…</button>
+   <button id="stop" disabled>Stop</button>
+   <label class="muted" style="margin-left:10px">
+     <input type="checkbox" id="skip-ahead"> skip to near the end of each track</label></p>
+<p class="muted" id="auth"></p>
+
+<div id="verdict-a" class="verdict pending">Spike A: not run</div>
+<div id="verdict-b" class="verdict pending">Spike B: not run</div>
+
+<!-- createController REPLACES #embed with the iframe it builds, so #embed no
+     longer exists once the controller is ready. Everything must therefore be
+     queried from this stable wrapper, never from #embed itself. -->
+<div id="embed-wrap"><div id="embed"></div></div>
+<h2>Raw <code>playback_update</code> log</h2>
+<div id="log"></div>
+
+<!-- NOTE: this inline script MUST come before the iframe-api script tag below.
+     Spotify's loader calls window.onSpotifyIframeApiReady exactly once, the
+     moment it finishes loading, and never retries. With the API tag first (and
+     async), it can win the race, find the callback undefined, and silently
+     never call it — leaving every button disabled with an empty log. -->
+<script>
+/* Three well-known tracks. Swap in ids from your own corpus if these are
+ * region-blocked for you — any three playable ids work. */
+const TRACKS = [
+  { uri: 'spotify:track:0eGsygTp906u18L0Oimnem', label: 'Mr. Brightside' },
+  { uri: 'spotify:track:1301WleyT98MSxVHPZCA6M', label: 'Blue Monday' },
+  { uri: 'spotify:track:0ct6r3EGTcMLPtrXHDvVjc', label: 'The Chain' },
+];
+const STALL_MS = 1500;
+
+/* The playback_update payload field names are NOT determined by the API
+ * bundle — it forwards event.data straight through from the embed iframe's
+ * postMessage, and the documented names (playingURI/isPaused/position/
+ * duration) appear nowhere in its source. So assume nothing: log every event
+ * verbatim and read fields through these candidate lists. An earlier version
+ * of this page hard-coded `position` and silently logged nothing at all when
+ * the field was named otherwise — which defeats the entire point of a spike. */
+const POS_KEYS    = ['position', 'positionMs', 'position_ms', 'progress', 'progressMs'];
+const DUR_KEYS    = ['duration', 'durationMs', 'duration_ms', 'totalDuration'];
+const PAUSED_KEYS = ['isPaused', 'paused', 'is_paused'];
+const URI_KEYS    = ['playingURI', 'playingUri', 'playing_uri', 'uri'];
+const BUF_KEYS    = ['isBuffering', 'buffering', 'is_buffering'];
+
+function pick(obj, keys) {
+  for (const k of keys) if (obj && obj[k] !== undefined) return obj[k];
+  return undefined;
+}
+
+let controller = null, idx = 0, running = false;
+let lastPosition = 0, lastAdvanceAt = 0, hasAdvanced = false;
+let currentUri = null, advanced = false, seeked = false, trackStarted = false;
+let gestures = 0, endRules = [], rawLogged = 0, fieldsReported = false;
+let bootstrapped = false;   // guards against 'ready' firing more than once
+
+const $ = id => document.getElementById(id);
+function log(msg) {
+  const el = $('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function verdict(which, cls, text) {
+  const el = $('verdict-' + which);
+  el.className = 'verdict ' + cls;
+  el.textContent = text;
+}
+
+let apiReady = false;
+window.onSpotifyIframeApiReady = (IFrameAPI) => {
+  apiReady = true;
+  $('go').disabled = false;
+  $('go').textContent = 'Start spike';
+  log('IFrame API ready.');
+
+  $('go').onclick = () => {
+    if (running) return;
+    running = true; idx = 0; endRules = []; rawLogged = 0; fieldsReported = false;
+    gestures++;
+    $('go').disabled = true; $('stop').disabled = false;
+    log('\n--- spike start (user gesture #' + gestures + ') ---');
+    if (gestures > 1) {
+      log('    NOTE: restarting counts as a fresh gesture; Spike A is only ' +
+          'meaningful for tracks 2+ within a single run.');
+    }
+    // Restart path: the controller outlives a run, so just load track 1 again.
+    if (controller) { bootstrapped = true; loadTrack(0); return; }
+    bootstrapped = false;
+
+    log('creating controller...');
+    let cbFired = false;
+    IFrameAPI.createController(
+      $('embed'),
+      { uri: TRACKS[0].uri, width: '100%', height: 152 },
+      c => {
+        cbFired = true;
+        controller = c;
+
+        // Listeners FIRST. Anything above them that throws silently unregisters
+        // the entire spike — which is exactly what happened when this line read
+        // $('embed').querySelector(): createController had already replaced
+        // #embed with the iframe, so $('embed') was null and the throw killed
+        // listener registration before a single event could be observed.
+        c.addListener('ready', () => {
+          log('event ready');
+          // Start on 'ready', NOT immediately after createController — a play()
+          // issued before the iframe is ready is dropped on the floor, which is
+          // why an earlier version of this page never started track 1. Go
+          // through loadTrack rather than a bare resume() so a URI is
+          // definitely queued: resuming a controller with nothing loaded throws
+          // Spotify's "Cannot perform operation; no list was loaded".
+          if (running && !bootstrapped) { bootstrapped = true; loadTrack(0); }
+        });
+        c.addListener('playback_started', e => {
+          const d = (e && e.data) || e || {};
+          log('event playback_started ' + JSON.stringify(d));
+          currentUri = pick(d, URI_KEYS) || currentUri;
+        });
+        c.addListener('error', e => {
+          log('!!! event error ' + JSON.stringify((e && e.data) || e || {}));
+        });
+        c.addListener('playback_update', onUpdate);
+
+        // Diagnostics last, and defensively — a broken log line must never be
+        // able to take the listeners down with it again.
+        try {
+          const f = $('embed-wrap').querySelector('iframe');
+          log('controller ready. iframe allow="' +
+              (f ? (f.getAttribute('allow') || '(empty)') : '(no iframe found)') + '"');
+        } catch (err) {
+          log('(diagnostic failed, harmless: ' + err.message + ')');
+        }
+      }
+    );
+    setTimeout(() => {
+      if (!cbFired) {
+        log('!!! createController callback never fired after 6s.');
+        verdict('a', 'fail', 'Spike A: could not run — createController never ' +
+                'returned a controller. Check the console for a Spotify-side error.');
+        running = false; $('go').disabled = false; $('stop').disabled = true;
+      }
+    }, 6000);
+  };
+};
+
+$('stop').onclick = () => {
+  running = false;
+  if (controller) { try { controller.pause(); } catch (e) {} }
+  $('go').disabled = false; $('stop').disabled = true;
+  log('--- stopped ---');
+};
+
+function armTrack(i) {
+  idx = i;
+  advanced = false; seeked = false; trackStarted = false;
+  hasAdvanced = false; lastPosition = 0; lastAdvanceAt = Date.now();
+  currentUri = TRACKS[i].uri;
+  log('\n=== track ' + (i + 1) + '/' + TRACKS.length + ': ' + TRACKS[i].label + ' ===');
+}
+
+function playCurrent() {
+  trackStarted = true;
+  lastAdvanceAt = Date.now();
+  try { controller.resume(); } catch (e) { try { controller.play(); } catch (e2) {} }
+}
+
+function loadTrack(i) {
+  armTrack(i);
+  controller.loadUri(TRACKS[i].uri);
+  // Chained autoplay: deliberately NO user gesture here. If this needs a
+  // click, Spike A fails.
+  setTimeout(() => { if (running) playCurrent(); }, 400);
+  // Track 1 has no advance-watchdog upstream of it, so give it its own: a
+  // silent failure here must report itself rather than look like a hung page.
+  if (i === 0) {
+    setTimeout(() => {
+      if (running && idx === 0 && !hasAdvanced) {
+        log('!!! track 1 produced no position updates within 12s.');
+        verdict('b', 'fail', 'Spike B: could not run — the first track never ' +
+          'reported playback. Check the raw log and the browser console.');
+      }
+    }, 12000);
+  }
+}
+
+function onUpdate(e) {
+  if (!running) return;
+  const d = (e && e.data) || e || {};
+
+  // First few events per run go to the log verbatim — this is the ground truth
+  // for what the payload actually looks like, and the reason this page exists.
+  if (rawLogged < 4) { rawLogged++; log('raw playback_update: ' + JSON.stringify(d)); }
+
+  const pos = pick(d, POS_KEYS);
+  const dur = pick(d, DUR_KEYS);
+  const paused = pick(d, PAUSED_KEYS);
+  const buffering = pick(d, BUF_KEYS);
+  const uri = pick(d, URI_KEYS);
+
+  if (!fieldsReported) {
+    fieldsReported = true;
+    log('resolved fields -> position:' + (pos === undefined ? 'MISSING' : 'ok') +
+        ' duration:' + (dur === undefined ? 'MISSING' : 'ok') +
+        ' paused:'   + (paused === undefined ? 'MISSING' : 'ok') +
+        ' uri:'      + (uri === undefined ? 'MISSING' : 'ok'));
+    if (pos === undefined || paused === undefined) {
+      verdict('b', 'fail', 'Spike B: FAIL — playback_update lacks a usable ' +
+        'position/paused field. Read the raw lines above; the stall detector ' +
+        'needs renaming to match, or end-of-track is undetectable.');
+    }
+  }
+  if (pos === undefined) return;
+
+  // Latch on the playing URI: loadUri emits frames for BOTH the old and the new
+  // track across a swap, the likeliest source of a double-advance.
+  if (uri && currentUri && uri !== currentUri) return;
+
+  if (pos > lastPosition) { lastAdvanceAt = Date.now(); hasAdvanced = true; }
+  const stalledFor = Date.now() - lastAdvanceAt;
+  log('pos=' + pos + ' dur=' + dur + ' paused=' + paused +
+      ' buffering=' + buffering + ' stall=' + stalledFor + 'ms');
+
+  // Optional shortcut for logged-in/full-track runs. OFF by default: `duration`
+  // reports the FULL length even when a logged-out visitor only gets 30s of
+  // audio, so seeking past the preview cutoff would land outside what actually
+  // plays and muddy the very rule Spike B measures. A logged-out run needs no
+  // shortcut — it ends itself at ~30s per track.
+  if ($('skip-ahead').checked && !seeked && hasAdvanced && !paused && dur > 45000) {
+    seeked = true;
+    const target = Math.max(0, dur / 1000 - 10);
+    log('  seek -> ' + target.toFixed(1) + 's (skip-ahead enabled)');
+    controller.seek(target);
+    return;
+  }
+
+  if (advanced || !hasAdvanced) { lastPosition = pos; return; }
+
+  let rule = null;
+  if (paused && pos === 0 && lastPosition > 0)  rule = 'reset-to-zero';
+  else if (paused && stalledFor > STALL_MS)     rule = 'stall';
+  const prevPosition = lastPosition;
+  lastPosition = pos;
+  if (!rule) return;
+
+  advanced = true;
+  const wasPreview = dur > 40000 && prevPosition < 40000;
+  endRules.push(rule);
+  log('>>> END DETECTED via "' + rule + '"' +
+      (wasPreview ? '  [30s preview cutoff — duration claimed ' + dur + 'ms]'
+                  : '  [full track]'));
+  verdict('b', 'pass', 'Spike B: PASS — end detected via "' + rule + '" on ' +
+          endRules.length + '/' + TRACKS.length + ' track(s). ' +
+          (wasPreview ? 'Logged-out/preview regime confirmed.' : 'Full-track regime.'));
+
+  if (idx + 1 >= TRACKS.length) {
+    running = false;
+    $('go').disabled = false; $('stop').disabled = true;
+    log('\n--- spike complete ---');
+    verdict('a', 'pass', 'Spike A: PASS — ' + TRACKS.length +
+            ' tracks chained from ONE user gesture.');
+    return;
+  }
+
+  const nextIdx = idx + 1;
+  log('  advancing to track ' + (nextIdx + 1) + ' with no gesture...');
+  loadTrack(nextIdx);
+  // If nothing plays within 12s, chained autoplay was blocked.
+  setTimeout(() => {
+    if (running && idx === nextIdx && !hasAdvanced) {
+      verdict('a', 'fail', 'Spike A: FAIL — track ' + (nextIdx + 1) +
+        ' never started without a gesture. Chained autoplay is blocked; the ' +
+        'feature degrades to a manual "next" button.');
+      log('!!! SPIKE A FAILED: no playback within 12s of loadUri+resume');
+      running = false; $('go').disabled = false; $('stop').disabled = true;
+    }
+  }, 12000);
+}
+
+$('auth').textContent = 'Tip: run once normally, then once in a private window. ' +
+  'A logged-out run takes ~30s per track and needs no skip-ahead.';
+
+/* If the API never calls back, say so. Otherwise a blocked request (ad
+ * blocker, offline, DNS) is indistinguishable from a dead button. */
+setTimeout(() => {
+  if (apiReady) return;
+  $('go').textContent = 'Spotify API failed to load';
+  verdict('a', 'fail', 'Spike A: could not run — the iframe API script never ' +
+    'loaded. Check an ad blocker, the network, or the browser console.');
+  log('!!! onSpotifyIframeApiReady never fired after 8s.');
+}, 8000);
+</script>
+<!-- Loaded AFTER the callback above is defined. See the note further up.
+     NOTE: no `.js` extension — `/embed/iframe-api/v1.js` 404s. This URL serves a
+     small loader stub that injects the real bundle from embed-cdn.spotifycdn.com,
+     so anything enforcing a CSP has to allow that host too. -->
+<script src="https://open.spotify.com/embed/iframe-api/v1" async
+        onerror="document.getElementById('log').textContent +=
+                 '!!! iframe-api script failed to load (blocked or offline)\n';"></script>
+</body>
+</html>

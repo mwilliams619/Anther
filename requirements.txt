@@ -1,8 +1,0 @@
-django==4.2.3
-psycopg2-binary==2.9.6
-spotipy==2.22.1
-pandas
-plotly
-statistics
-scikit-learn
-flask

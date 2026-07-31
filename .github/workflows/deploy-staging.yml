@@ -1,0 +1,36 @@
+name: Deploy staging (feature branches)
+
+# Deploys any pushed branch other than the stable/master pointers to the
+# second worktree + port (5001), reachable via the staging subdomain once
+# the cloudflared ingress rule from private/CI_CD_SETUP.md is added. Runs on the
+# same self-hosted runner as deploy-stable.yml since it's the only place
+# that can reach the box behind the tunnel.
+on:
+  push:
+    branches-ignore:
+      - ml-dev
+      - master
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy to staging"
+        required: true
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true   # a newer push should win — the previous
+                             # in-progress staging deploy is superseded, not
+                             # queued behind (unlike stable, staging has no
+                             # "don't interrupt a live deploy" requirement)
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, anther]
+    steps:
+      - name: Checkout (for the deploy script + workflow itself only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+
+      - name: Deploy to staging
+        run: scripts/deploy/deploy_staging.sh "${{ github.event.inputs.branch || github.ref_name }}"
