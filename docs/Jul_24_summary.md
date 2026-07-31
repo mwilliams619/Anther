@@ -1,7 +1,7 @@
 # Anther status summary — July 24, 2026
 
 This is the current high-level status entry point. Historical implementation
-plans and reports are in [`implemented_archive/`](../implemented_archive/),
+plans and reports are in `private/implemented_archive/` (local-only),
 with an explicit note that they describe implemented or superseded work.
 
 ## Implemented features now documented in the live docs
@@ -33,8 +33,8 @@ See [`docs/ui.md`](ui.md) for UI/API behavior and runtime configuration,
   archived mentor reports as current implementation instructions.
 - MPD playlist database pruning remains a reference-only, unimplemented idea
   in [`projects/MPD_PLAYLIST_PRUNING_NOTES.md`](projects/MPD_PLAYLIST_PRUNING_NOTES.md).
-- CI/CD and rollout guidance remains active in `CI_CD_SETUP.md` and
-  `ROLLOUT_CHECKLIST.md`.
+- CI/CD and rollout guidance remains active in `private/CI_CD_SETUP.md` and
+  `private/ROLLOUT_CHECKLIST.md`.
 - The code-cleanup backlog remains active in
   [`projects/audit_trim_bloat_plan.md`](projects/audit_trim_bloat_plan.md).
 

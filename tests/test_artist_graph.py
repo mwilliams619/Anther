@@ -147,6 +147,66 @@ def test_build_from_songs_creates_and_supplements_noncorpus_artist(
         assert node["low_confidence"] is False
 
 
+def test_build_from_songs_uses_corpus_song_embeddings(
+        isolated_artist_sessions, monkeypatch):
+    # A corpus song by an artist absent from the artist bundle: its vector lives
+    # in the frozen corpus (not embed_cache), yet the session artist must still
+    # be built from it. No Deezer supplement available → stays low-confidence.
+    atlas = isolated_artist_sessions
+    monkeypatch.setattr(atlas, "_search_deezer", lambda q, limit: [])
+    emb = np.stack([atlas._artist_embeddings[42]])
+    meta = [{"artist": "Corpus-Only Artist", "name": "Deep Cut",
+             "source": "corpus", "id": "song-x"}]
+    monkeypatch.setattr(atlas, "_corpus", _FakeCorpus(meta, emb))
+    monkeypatch.setattr(atlas, "_id_to_idx", {"song-x": 0})
+
+    with atlas.use_session("build-corpus-song"):
+        st = atlas.get_session()
+        st.graph["nodes"] = {
+            "song-x": {"id": "song-x", "artist": "Corpus-Only Artist",
+                       "kind": "query", "source": "corpus"},
+        }
+        result = atlas.build_artist_graph_from_song_graph("append")
+        assert result["artist_count"] == 1
+        assert result["skipped_artists"] == []
+        node = result["nodes"][0]
+        assert node["id"].startswith("session:")
+        assert node["track_count"] == 1
+        assert node["low_confidence"] is True
+
+
+def test_build_from_songs_survives_placement_error(
+        isolated_artist_sessions, monkeypatch):
+    # A single artist that fails to place (e.g. a transient DB lock) must not
+    # turn the whole build into an unhandled 500 — it's skipped, others survive.
+    atlas = isolated_artist_sessions
+    monkeypatch.setattr(atlas, "_search_deezer", lambda q, limit: [])
+    emb = np.stack([atlas._artist_embeddings[42]])
+    meta = [{"artist": "Corpus-Only Artist", "name": "Deep Cut",
+             "source": "corpus", "id": "song-x"}]
+    monkeypatch.setattr(atlas, "_corpus", _FakeCorpus(meta, emb))
+    monkeypatch.setattr(atlas, "_id_to_idx", {"song-x": 0})
+
+    real_place = atlas._place_artist_locked
+
+    def boom(st, artist_id):
+        if str(artist_id).startswith("session:"):
+            raise Exception("simulated placement failure")
+        return real_place(st, artist_id)
+
+    monkeypatch.setattr(atlas, "_place_artist_locked", boom)
+
+    with atlas.use_session("build-place-error"):
+        st = atlas.get_session()
+        st.graph["nodes"] = {
+            "song-x": {"id": "song-x", "artist": "Corpus-Only Artist",
+                       "kind": "query", "source": "corpus"},
+        }
+        result = atlas.build_artist_graph_from_song_graph("append")
+        assert result["artist_count"] == 0        # nothing landed, but no crash
+        assert result["added"] == 0
+
+
 def test_build_from_songs_skips_noncorpus_artist_without_embedding(
         isolated_artist_sessions, monkeypatch):
     atlas = isolated_artist_sessions

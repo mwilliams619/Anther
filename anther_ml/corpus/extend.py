@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +54,35 @@ def _standardize_new(mean_, scale_, X: np.ndarray) -> np.ndarray:
 def _l2norm(X: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(X, axis=-1, keepdims=True)
     return X / np.where(n == 0, 1.0, n)
+
+
+def _append_npy_streaming(
+    old_path: Path, out_path: Path, new_rows: np.ndarray, chunk_rows: int = 8192
+) -> None:
+    """Append rows to an npy file without holding old+new copies in RAM."""
+    from numpy.lib.format import open_memmap
+
+    old = np.load(old_path, mmap_mode="r")
+    new_rows = np.asarray(new_rows, dtype=old.dtype)
+    if old.ndim != new_rows.ndim or old.shape[1:] != new_rows.shape[1:]:
+        raise ValueError(
+            f"cannot append {new_rows.shape} to {old.shape} in {old_path}"
+        )
+    tmp = out_path.with_name(out_path.name + ".tmp.npy")
+    result = open_memmap(
+        tmp, mode="w+", dtype=old.dtype,
+        shape=(old.shape[0] + new_rows.shape[0], *old.shape[1:]),
+    )
+    # NOTE: clamp the destination slice to old.shape[0] -- `result` is longer
+    # than `old`, so an unclamped final chunk would run into the not-yet-written
+    # new-row region and fail to broadcast whenever old.shape[0] % chunk_rows.
+    for start in range(0, old.shape[0], chunk_rows):
+        stop = min(start + chunk_rows, old.shape[0])
+        result[start:stop] = old[start:stop]
+    result[old.shape[0] :] = new_rows
+    result.flush()
+    del result, old
+    os.replace(tmp, out_path)
 
 
 def extend_corpus(
@@ -93,6 +123,7 @@ def extend_corpus(
     keep_mask = dedupe_near_identical(combined, threshold=dedupe_threshold, method="auto")
     keep_new_mask = keep_mask[n_before:]
     n_dropped = int((~keep_new_mask).sum())
+    del combined, keep_mask
 
     kept_items = [it for it, keep in zip(new_items, keep_new_mask) if keep]
     kept_raw = raw_new[keep_new_mask]
@@ -178,13 +209,15 @@ def extend_corpus(
         for f in FACTORS:
             path = factors_dir / f"factor_{f}.npy"
             if path.exists():
-                old_f = np.load(path)
-                np.save(out_dir / f"factor_{f}.npy", np.concatenate([old_f, proj[f]], axis=0))
+                _append_npy_streaming(
+                    path, out_dir / f"factor_{f}.npy", proj[f]
+                )
 
         backbone_path = bundle_dir / "merit_backbone.npy"
         if backbone_path.exists():
-            old_bb = np.load(backbone_path)
-            np.save(out_dir / "merit_backbone.npy", np.concatenate([old_bb, backbones], axis=0))
+            _append_npy_streaming(
+                backbone_path, out_dir / "merit_backbone.npy", backbones
+            )
         merit_report = {"n_extended": len(kept_items)}
     elif corpus.merit_index is not None and not have_backbones:
         merit_report = {

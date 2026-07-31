@@ -336,6 +336,8 @@ def sql_source_oversampled(
     clip_seconds: float | None = 30.0,
     min_ratio: float = 0.82,
     n_workers: int = 12,
+    exclude_ids: set[str] | None = None,
+    allow_short: bool = False,
 ):
     """
     Like :func:`sql_source`, but guarantees ``target_n`` *successfully fetched*
@@ -349,7 +351,15 @@ def sql_source_oversampled(
     in sampled order, whenever a fetch fails — so the *set* of tracks shifts
     slightly at the margin but the *count* is exact and no per-track fallback
     logic is needed by callers. Raises if the oversampled pool itself runs out
-    before reaching ``target_n`` (i.e. the dead-URL rate exceeds the buffer).
+    before reaching ``target_n``, distinguishing the two ways that happens:
+
+    * **buffer too small** — the DB had ``target_n * oversample_ratio``
+      candidates to offer but too many previews were dead; raise the ratio.
+    * **DB exhausted** — the filters (popularity band, artist cap, exclusions)
+      simply do not match ``target_n`` tracks, so *no* ratio can help. Widen
+      the band, raise the cap, or lower ``target_n``. Pass ``allow_short=True``
+      to log a warning and yield what exists instead of raising — useful for
+      stratified callers that would rather rebalance than abort.
 
     Fetches run with the same bounded ``n_workers``-thread pool as
     ``sql_source``, processed in deterministic sample order so a resumed
@@ -373,6 +383,10 @@ def sql_source_oversampled(
         seed=seed,
         min_popularity=min_popularity,
         max_popularity=max_popularity,
+        exclude_track_ids={
+            x.split(":", 1)[1] if x.startswith("spotify:") else x
+            for x in (exclude_ids or set())
+        },
     )
     log.info(
         "sql_source_oversampled: target=%d, pool=%d candidates (%d workers)…",
@@ -443,12 +457,36 @@ def sql_source_oversampled(
                 yield item
 
     if n_yielded < target_n:
-        raise RuntimeError(
+        # A pool smaller than requested means SQLite ran out of *matching rows*,
+        # not that previews died — oversampling harder cannot conjure tracks
+        # that the popularity band / artist cap / exclusion set do not contain.
+        db_exhausted = len(rows) < pool_n
+        detail = (
             f"sql_source_oversampled: only {n_yielded}/{target_n} tracks "
-            f"fetched from a pool of {len(rows)} candidates ({n_missed} "
-            f"failed). Raise oversample_ratio (currently {oversample_ratio}) "
-            f"and retry."
+            f"fetched from a pool of {len(rows)} candidates ({n_missed} failed)."
         )
+        if db_exhausted:
+            band = (
+                f"popularity {min_popularity if min_popularity is not None else '-inf'}"
+                f"-{max_popularity if max_popularity is not None else 'inf'}"
+            )
+            detail += (
+                f" The DB is exhausted for this query, not the oversample buffer:"
+                f" it offered {len(rows)} of the {pool_n} candidates requested"
+                f" ({band}, artist_cap={tracks_per_artist_cap},"
+                f" {len(exclude_ids or ())} ids excluded). Raising"
+                f" oversample_ratio will not help — widen the popularity band,"
+                f" raise tracks_per_artist_cap, or lower target_n."
+                f" mpd_sql.count_candidates() gives the exact ceiling."
+            )
+        else:
+            detail += (
+                f" Raise oversample_ratio (currently {oversample_ratio}) and retry."
+            )
+        if db_exhausted and allow_short:
+            log.warning("%s Continuing short (allow_short=True).", detail)
+            return
+        raise RuntimeError(detail)
     log.info(
         "sql_source_oversampled: reached target_n=%d (%d candidates skipped/failed, "
         "%d unused pool remainder)",

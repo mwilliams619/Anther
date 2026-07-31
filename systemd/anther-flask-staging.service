@@ -4,7 +4,7 @@
 # ~/Dev/Anther-staging worktree (see scripts/deploy/setup_staging_worktree.sh)
 # on a second port, so it can be reached through a staging subdomain
 # (e.g. dev.<your-domain>) via a second cloudflared ingress rule — see
-# CI_CD_SETUP.md for the ingress + DNS route commands.
+# private/CI_CD_SETUP.md for the ingress + DNS route commands.
 #
 # ANTHER_UI_PORT=5001 relies on ui/app.py's existing env var read
 # (`os.environ.get('ANTHER_UI_PORT', '5000')` — no code change needed).
@@ -12,7 +12,7 @@
 # defaults since staging shares the same models/ and data/ (symlinked) as
 # stable — override here only if a feature branch needs a different corpus.
 #
-# One-time install (see CI_CD_SETUP.md for the full sequence):
+# One-time install (see private/CI_CD_SETUP.md for the full sequence):
 #   sudo cp systemd/anther-flask-staging.service /etc/systemd/system/anther-flask-staging.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now anther-flask-staging

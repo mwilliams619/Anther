@@ -1424,6 +1424,11 @@ def _merge_fragment(node: dict, qvec=None, merit_qvec=None) -> dict:
             for other_id, ovec in space_vecs.items():
                 if other_id == node["id"]:
                     continue
+                # never link to an id that isn't a live node — the vec space can
+                # briefly outlive a removed node; a link to it would be dangling
+                # (endpoint absent) and freeze the frontend force sim.
+                if other_id not in st.graph["nodes"]:
+                    continue
                 score = float(np.dot(this_vec, ovec))
                 if score < threshold:
                     continue
@@ -2490,7 +2495,20 @@ def _session_artist_from_songs(st: "_SessionState", artist_name: str,
     if not normalized:
         return None
     _ensure_artist_tables(st)
-    con = sqlite3.connect(str(st.embed_cache_path))
+    # Corpus songs keep their raw vector in the frozen corpus, not embed_cache —
+    # copy it in (idempotently) so the session artist's vector machinery, which
+    # reads embed_cache, can use it just like a Deezer-placed song. Deezer/upload
+    # songs are already cached, so they have no _id_to_idx entry and are skipped.
+    if _corpus is not None:
+        for tid in track_ids:
+            idx = _id_to_idx.get(tid)
+            if idx is not None:
+                meta = _corpus.metadata[idx]
+                cache_vec(tid, _corpus.embeddings[idx],
+                          meta.get("name", ""), meta.get("artist", ""))
+    # Longer busy timeout: a background embed job (e.g. from the demo import)
+    # may be writing embed_cache concurrently — wait for the lock, don't fail.
+    con = sqlite3.connect(str(st.embed_cache_path), timeout=30.0)
     try:
         usable = [tid for tid in track_ids
                   if con.execute("SELECT 1 FROM embed_cache WHERE track_id = ?",
@@ -2563,13 +2581,17 @@ def build_artist_graph_from_song_graph(mode: str = "append") -> dict:
                 print(f"[atlas] lowconf auto-supplement failed for {aid}: {exc}")
             artist_ids.append(aid)
             continue
-        aid = _session_artist_from_songs(st, name, ids)  # not in corpus → build it
+        try:                                             # not in corpus → build it
+            aid = _session_artist_from_songs(st, name, ids)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"[atlas] could not build session artist for {name!r}: {exc}")
+            aid = None
         if aid is None:
-            skipped.append(name)                         # no on-map song had an embedding
+            skipped.append(name)                          # no usable embedding / build failed
             continue
         try:
             _supplement_artist_tracks(st, aid, name, _artist_upload_count(st, aid))
-        except Exception as exc:                         # noqa: BLE001 — place as-is
+        except Exception as exc:                          # noqa: BLE001 — place as-is
             print(f"[atlas] session artist supplement failed for {aid}: {exc}")
         artist_ids.append(aid)
 
@@ -2582,12 +2604,23 @@ def build_artist_graph_from_song_graph(mode: str = "append") -> dict:
         if mode == "replace":
             st.artist_graph = {"nodes": {}, "links": []}
             st.artist_vectors = {}
-        fragments = [_place_artist_locked(st, artist_id) for artist_id in artist_ids]
+        # Place each resolved artist independently — a single failure (e.g. a
+        # transient DB lock while a background embed job runs) must not turn the
+        # whole build into a 500.
+        added = 0
+        for artist_id in artist_ids:
+            try:
+                fragment = _place_artist_locked(st, artist_id)
+            except Exception as exc:                      # noqa: BLE001
+                print(f"[atlas] could not place artist {artist_id}: {exc}")
+                continue
+            if not fragment.get("existing"):
+                added += 1
         _save_artist_graph(st)
         return {"nodes": list(st.artist_graph["nodes"].values()),
                 "links": list(st.artist_graph["links"]),
-                "artist_count": len(artist_ids),
-                "added": sum(not fragment["existing"] for fragment in fragments),
+                "artist_count": len(st.artist_graph["nodes"]),
+                "added": added,
                 "skipped_count": len(skipped), "skipped_artists": skipped}
 
 
@@ -2934,6 +2967,7 @@ def clear_graph() -> None:
         st.graph["links"].clear()
         st.link_keys.clear()
         st.query_vecs.clear()
+        st.merit_vecs.clear()
         st.groups.clear()
         _save_graph(st)
     import playlist_jobs
@@ -2951,6 +2985,10 @@ def remove_node(node_id: str) -> dict | None:
         if node is None:
             return None
         st.query_vecs.pop(node_id, None)
+        # merit_vecs is the MERIT-space edge-building space; leaving a removed
+        # node's vec here makes a later placement draw a qq edge to a node that
+        # no longer exists (a dangling link that then freezes the frontend sim).
+        st.merit_vecs.pop(node_id, None)
 
         kept = []
         for l in st.graph["links"]:

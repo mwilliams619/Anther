@@ -43,3 +43,22 @@ vendor/
 *.dmg
 docs/*.pdf
 scripts/deploy/dryrun_tmp/
+
+# runtime logs & ad-hoc debug scratch — never committed
+logs/
+*.log
+
+# scratch working dirs — throwaway bundle copies / stale exports
+_scratch_test/
+_workspace_export/
+scratch.txt
+*.diff
+
+# private working material — strategy docs, completed plan archive,
+# eval results kept locally (see private/README.md)
+private/
+
+# exploratory analysis output at repo root — notebooks, CSVs, figures
+/*.ipynb
+/*.csv
+/*.png

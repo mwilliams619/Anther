@@ -105,11 +105,13 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 - **Building artists from the song map** (`POST /api/artist/from-song-graph`):
   each on-map song's artist is resolved to a ≥5-track corpus artist, a 1-4 track
   `lowconf:` artist, or — when the name is absent from the corpus entirely — a
-  new **session artist** built from that artist's on-map songs (whichever of
-  them have cached embeddings; `_session_artist_from_songs` in `atlas.py`).
-  Session and low-confidence artists are auto-supplemented to 5 tracks the same
-  way as above (on-map songs count toward the target). An artist is only skipped
-  when none of its on-map songs have a usable embedding yet.
+  new **session artist** built from that artist's on-map songs
+  (`_session_artist_from_songs` in `atlas.py`). Both corpus-placed songs (whose
+  raw vector is copied out of the frozen corpus into embed_cache) and
+  Deezer/upload/MPD songs (already cached) contribute. Session and low-confidence
+  artists are auto-supplemented to 5 tracks the same way as above (on-map songs
+  count toward the target). An artist is only skipped when none of its on-map
+  songs have a usable embedding yet.
 - **Session state** lives under `ui/session/`: `embed_cache.sqlite` (raw
   MERT vectors, avoids re-embedding on repeat placement) and the saved graph
   JSON (persists the map across restarts).
@@ -117,7 +119,7 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
   node, but only surfaced in the click-detail popover (`renderDetail`) —
   the map itself is not fill-colored by cluster. Full rationale:
   The historical implementation rationale is retained in
-  [implemented_archive/UI_ATLAS_FIX_PLAN.md](../implemented_archive/UI_ATLAS_FIX_PLAN.md).
+  `private/implemented_archive/UI_ATLAS_FIX_PLAN.md` (local-only).
 - **Map panel** (left side, `renderMapPanel` in `app.js`): lists every placed
   song with click-to-zoom, per-node remove (`DELETE /api/node/<id>` — also
   prunes orphaned grey neighbors), a session-only recently-removed list with
