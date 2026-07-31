@@ -114,6 +114,43 @@ def test_oversampled_raises_if_pool_exhausted(monkeypatch):
         )
 
 
+def test_oversampled_pool_exhaustion_blames_the_db_not_the_ratio(monkeypatch):
+    # Pool smaller than target_n * oversample_ratio → SQLite ran out of rows.
+    _patch_common(monkeypatch, _pool(4))
+    with pytest.raises(RuntimeError, match="DB is exhausted") as exc:
+        list(
+            sources.sql_source_oversampled(
+                target_n=10, oversample_ratio=2.0, n_workers=4,
+                min_popularity=31, max_popularity=70,
+            )
+        )
+    assert "will not help" in str(exc.value)
+    assert "popularity 31-70" in str(exc.value)
+
+
+def test_oversampled_allow_short_yields_what_exists(monkeypatch):
+    _patch_common(monkeypatch, _pool(4))
+    items = list(
+        sources.sql_source_oversampled(
+            target_n=10, oversample_ratio=2.0, n_workers=4, allow_short=True,
+        )
+    )
+    assert len(items) == 4
+
+
+def test_oversampled_allow_short_still_raises_on_dead_urls(monkeypatch):
+    # Full pool available, but every preview is dead → the buffer is the problem,
+    # so allow_short must not paper over it.
+    pool = _pool(20)
+    _patch_common(monkeypatch, pool, fail_ids=frozenset(r["track_id"] for r in pool))
+    with pytest.raises(RuntimeError, match="Raise oversample_ratio"):
+        list(
+            sources.sql_source_oversampled(
+                target_n=10, oversample_ratio=2.0, n_workers=4, allow_short=True,
+            )
+        )
+
+
 def test_oversampled_items_match_source_contract(monkeypatch):
     pool = _pool(5)
     _patch_common(monkeypatch, pool)

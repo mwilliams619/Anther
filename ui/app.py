@@ -192,6 +192,37 @@ def album_place():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/itunes/artists/search')
+def itunes_artists_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': []})
+    try:
+        limit = int(request.args.get('limit', 10))
+        return jsonify(atlas.search_itunes_artists(q, limit=limit))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/itunes/artist/place', methods=['POST'])
+def itunes_artist_place():
+    """Bulk-import an artist's whole iTunes discography. `cap` defaults to
+    IMPORT_CAP, which is sized for playlists and truncates a real catalog, so
+    the caller can raise it for a full import."""
+    body = request.get_json(force=True) or {}
+    cap = body.get('cap')
+    try:
+        return jsonify(atlas.place_itunes_artist(
+            body.get('artist_id'),
+            include_features=bool(body.get('include_features')),
+            cap=int(cap) if cap is not None else None,
+        ))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/place', methods=['POST'])
 def atlas_place():
     result = request.get_json(force=True) or {}

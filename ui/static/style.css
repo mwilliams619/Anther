@@ -1538,9 +1538,14 @@ circle.corpus-node {
   color: var(--success); 
 }
 
-.src-spotify { 
-  background: rgba(107,204,143,0.15); 
-  color: var(--success); 
+.src-spotify {
+  background: rgba(107,204,143,0.15);
+  color: var(--success);
+}
+
+.src-itunes {
+  background: rgba(149,117,69,0.15);
+  color: var(--warning);
 }
 
 .place-status { 

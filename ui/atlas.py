@@ -35,10 +35,11 @@ from anther_ml.corpus.bundle import ReferenceCorpus
 from anther_ml.corpus.place import embed_query, embed_query_dual, place, recommend_from_seeds
 from anther_ml.corpus.popularity import load_popularity_by_track_id, popularity_percentiles
 from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ratio
+from anther_ml import itunes as itunes_src
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
-CORPUS_DIR      = os.environ.get("ANTHER_CORPUS", "models/corpus_mpd_100k_merit_ext_billboard")
+CORPUS_DIR      = os.environ.get("ANTHER_CORPUS", "models/corpus_mpd_100k_merit_ext_500k")
 MPD_DB          = os.environ.get(
     "ANTHER_MPD_DB",
     str(Path(__file__).parent.parent / "data" / "mpd_dump" / "spotifydbdumpshare.sqlite"),
@@ -64,6 +65,10 @@ QQ_MAX_PER_NODE = 6       # cap on query↔query edges added per placed song
 IMPORT_CAP      = int(os.environ.get("ANTHER_IMPORT_CAP", "100"))  # max songs per playlist/album add
 CORPUS_MIN_HITS = 5       # < this many strong corpus hits → fall through to Deezer
 STRONG_SCORE    = 0.6     # _ratio threshold for a "strong" corpus match
+# < this many relevant remote hits → run the next remote tier and top up. Not a
+# stop-at-first-hit chain: coverage gaps are per-track, so one Spotify-findable
+# Matt Brade track must not hide the 14 only iTunes carries.
+REMOTE_MIN_HITS = int(os.environ.get("ANTHER_REMOTE_MIN_HITS", "10"))
 
 # MERT vectors sit in a narrow cone: two *random* corpus songs are ~0.96 cosine
 # apart, so a raw cosine floor means nothing (a low one links everything into one
@@ -882,11 +887,72 @@ def spotify_configured() -> bool:
     return bool(os.environ.get("SPOTIFY_CLIENT_ID") and os.environ.get("SPOTIFY_CLIENT_SECRET"))
 
 
+def _relevant(q: str, hits: list) -> list:
+    """Drop remote hits that don't actually match the query.
+
+    Deezer and Spotify both rank by their own fuzzy logic and, on a catalog
+    miss, return confident-looking noise rather than nothing: "Rob Knack"
+    yields 300 Deezer hits led by "Rob & Jack" and "Rob Black". Unfiltered,
+    that noise is both what the user sees *and* what keeps the next tier from
+    ever running (the fallthrough is gated on the tier being empty).
+
+    The predicate is the corpus tier's — every query token must appear — but
+    matched whole-word, not as a substring: substring matching passes
+    "rob knack" on "The Knackered Ramblers … My Robe". A similarity threshold
+    is not a substitute; _ratio("Rob Knack", "Rob & Jack") is high enough on
+    character overlap that a 0.72 cutoff keeps most of the noise.
+    """
+    tokens = _norm(q).split()
+    if not tokens:
+        return list(hits)
+    out = []
+    for h in hits:
+        words = set(_norm(f"{h.get('artist', '')} {h.get('title', '')}").split())
+        if all(t in words for t in tokens):
+            out.append(h)
+    return out
+
+
+def _dedupe_across_tiers(existing: list, new: list) -> list:
+    """Drop hits already covered by an earlier (better-linked) tier.
+
+    Keyed on normalized artist+title, since the tiers share no id space — an
+    iTunes row carries no ISRC at all, so there is nothing exact to join on.
+    """
+    seen = {(_norm(h.get("artist", "")), _norm(h.get("title", ""))) for h in existing}
+    out = []
+    for h in new:
+        key = (_norm(h.get("artist", "")), _norm(h.get("title", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(h)
+    return out
+
+
 def search(q: str, limit: int = 25) -> dict:
     """
-    Three-tier search. Corpus first; fall through to Deezer only if the corpus
-    yields fewer than CORPUS_MIN_HITS strong matches; fall through to Spotify
-    only if Deezer is also empty. Returns {results, tiers, spotify_configured}.
+    Four-tier search: corpus → Deezer → Spotify → iTunes.
+
+    Each remote tier runs when the ones before it produced fewer than
+    REMOTE_MIN_HITS *relevant* results (see ``_relevant``), and tops up rather
+    than replacing. Two things about that are deliberate:
+
+    - Gating on relevance, not emptiness. Deezer answers a catalog miss with
+      300 confident-looking wrong rows ("Rob Knack" → "Rob & Jack"), so an
+      is-it-empty gate never opened and the later tiers were dead code.
+    - Topping up, not stopping at the first tier that returns anything. The
+      coverage gap is per *track*, not per *query*: Spotify surfaces exactly
+      one Matt Brade track that Deezer can resolve, and stopping there would
+      hide the other 14 that only iTunes has.
+
+    The last two tiers cover different failure modes. Spotify covers Deezer
+    *search-index* gaps — the track is in Deezer's catalog but unfindable by
+    name, so the hit is resolved back through ISRC for audio (151/152 Rob Knack
+    tracks resolve this way). iTunes covers genuine Deezer *catalog* gaps,
+    where no ISRC lookup can help (14 of Matt Brade's 17 tracks).
+
+    Returns {results, tiers, spotify_configured}.
     """
     load()
     q = (q or "").strip()
@@ -899,13 +965,24 @@ def search(q: str, limit: int = 25) -> dict:
     tiers = {"corpus": len(corpus_hits)}
 
     if len(strong) < CORPUS_MIN_HITS:
-        deezer_hits = _search_deezer(q, limit)
-        results += deezer_hits
+        remote: list = []
+
+        deezer_hits = _relevant(q, _search_deezer(q, limit))
+        remote += deezer_hits
         tiers["deezer"] = len(deezer_hits)
-        if not deezer_hits:
+
+        if len(remote) < REMOTE_MIN_HITS:
             sp = _search_spotify(q, limit)
-            results += sp["results"]
-            tiers["spotify"] = len(sp["results"])
+            sp_hits = _dedupe_across_tiers(remote, _relevant(q, sp["results"]))
+            remote += sp_hits
+            tiers["spotify"] = len(sp_hits)
+
+        if len(remote) < REMOTE_MIN_HITS:
+            itunes_hits = _dedupe_across_tiers(remote, _relevant(q, _search_itunes(q, limit)))
+            remote += itunes_hits
+            tiers["itunes"] = len(itunes_hits)
+
+        results += remote[:limit]
 
     return {"results": results, "tiers": tiers, "spotify_configured": spotify_configured()}
 
@@ -990,6 +1067,18 @@ def search_playlists(q: str, limit: int = 20) -> dict:
         "score":       round(float(score), 3),
     } for score, e in scored[:limit]]
     return {"results": custom_hits + results, "notice": MPD_PREP_HINT}
+
+
+def _search_itunes(q: str, limit: int) -> list:
+    """Final tier: the iTunes catalog, for tracks genuinely absent from Deezer
+    (where the Spotify→ISRC path has nothing to resolve *to*). No auth needed.
+    Preview URLs are static CDN assets, so they're safe to hand to the
+    background placer without a refresh step."""
+    try:
+        return itunes_src.search_tracks(q, limit)
+    except Exception as exc:                                    # network / API shape
+        print(f"[atlas] iTunes search failed for {q!r}: {exc}")
+        return []
 
 
 def _search_deezer(q: str, limit: int) -> list:
@@ -1202,30 +1291,46 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, np.ndarray | None, str]:
     deprecated previews in late 2024), then a Deezer name/artist match.
     Returns (raw_vec, backbone_or_None, method); raises PlacementSkip when no
     audio resolves.
+
+    ``itunes:`` tracks take a separate path: their previews are AAC (which
+    needs the PyAV transcode) and, more importantly, they reached this tier
+    *because* Deezer has no such track — so the usual Deezer fallback could
+    only fuzzy-match some other artist's song and silently embed the wrong
+    audio. They fail closed instead.
     """
     corpus = load()
     path = cleanup = None
     method = None
 
     url = track.get("preview_url")
-    if url:
-        try:
-            path, cleanup = _download_url(url)
-            method = "spotify_preview"
-        except Exception:
-            path = None                                     # dead link → Deezer
 
-    if path is None:
-        m = match_deezer_track({"title": track.get("name", ""),
-                                "artist": track.get("artist", "")})
-        if "error" in m or not m.get("preview"):
-            raise PlacementSkip("deezer_no_match" if url else "no_preview")
+    if str(track.get("id", "")).startswith("itunes:"):
+        if not url:
+            raise PlacementSkip("no_preview")
         try:
-            path, cleanup = _download_preview(
-                {"preview_url": m["preview"], "deezer_id": m.get("deezer_id")})
-            method = "deezer"
+            path, cleanup = itunes_src.download_preview(url)
+            method = "itunes"
         except Exception as e:
             raise PlacementSkip(f"download_failed:{e}")
+    else:
+        if url:
+            try:
+                path, cleanup = _download_url(url)
+                method = "spotify_preview"
+            except Exception:
+                path = None                                 # dead link → Deezer
+
+        if path is None:
+            m = match_deezer_track({"title": track.get("name", ""),
+                                    "artist": track.get("artist", "")})
+            if "error" in m or not m.get("preview"):
+                raise PlacementSkip("deezer_no_match" if url else "no_preview")
+            try:
+                path, cleanup = _download_preview(
+                    {"preview_url": m["preview"], "deezer_id": m.get("deezer_id")})
+                method = "deezer"
+            except Exception as e:
+                raise PlacementSkip(f"download_failed:{e}")
 
     backbone = None
     try:
@@ -1245,10 +1350,20 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, np.ndarray | None, str]:
     return vec, backbone, method
 
 
+def _source_for_id(node_id) -> str:
+    """Node-id prefix → the ``source`` label stored on the graph node. Anything
+    unprefixed is an MPD/corpus-native track id."""
+    nid = str(node_id or "")
+    for prefix in ("deezer", "itunes", "spotify", "upload"):
+        if nid.startswith(f"{prefix}:"):
+            return prefix
+    return "mpd"
+
+
 def place_external_track(track: dict, raw_vec, playlist_pid=None, backbone=None) -> dict:
     """Merge one embedded out-of-corpus track into the graph (worker entry)."""
     extra = {"playlist_pid": playlist_pid} if playlist_pid is not None else None
-    source = "deezer" if str(track["id"]).startswith("deezer:") else "mpd"
+    source = _source_for_id(track["id"])
     merit_vec = _merit_query_vec(backbone)
     return _place_query_vec(track["id"], track.get("name", ""),
                             track.get("artist", ""), raw_vec, source, extra=extra,
@@ -1512,12 +1627,21 @@ def _place_collection_rows(rows: list, gid, source: str):
     return fragment, n_immediate, pending
 
 
+def _group_kind(gid) -> str:
+    """Group-id prefix → the display kind the filter UI groups on."""
+    sgid = str(gid)
+    if sgid.startswith("album:"):
+        return "album"
+    if sgid.startswith("itunes-artist:"):
+        return "discography"
+    return "playlist"
+
+
 def _collection_response(gid, name, rows, n_total, fragment, n_immediate,
                          pending, notice=None) -> dict:
     st = get_session()
     with st.lock:                                         # remember the group's display name
-        st.groups[str(gid)] = {"name": name,
-                               "kind": "album" if str(gid).startswith("album:") else "playlist"}
+        st.groups[str(gid)] = {"name": name, "kind": _group_kind(gid)}
         _save_graph(st)
     job_id = None
     if pending:
@@ -1685,6 +1809,61 @@ def place_album(album_id) -> dict:
                                 fragment, n_immediate, pending)
 
 
+def search_itunes_artists(q: str, limit: int = 10) -> dict:
+    """Artist-name search against the iTunes catalog, for the discography
+    importer. Returns {"results": [{artist_id, name, genre}]}."""
+    q = (q or "").strip()
+    if not q:
+        return {"results": []}
+    data = itunes_src._get("search", params={"term": q, "entity": "musicArtist",
+                                             "limit": max(1, min(limit, 25))})
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "iTunes error"))
+    return {"results": [{
+        "artist_id": r.get("artistId"),
+        "name":      r.get("artistName", ""),
+        "genre":     r.get("primaryGenreName"),   # DISPLAY ONLY — never a model input
+    } for r in (data.get("results") or []) if r.get("artistId")]}
+
+
+def place_itunes_artist(artist_id, include_features: bool = False,
+                        cap: int | None = None) -> dict:
+    """
+    Place an artist's whole iTunes discography — the bulk path behind "add
+    everything by X", for artists Deezer's catalog is missing.
+
+    Same flow as ``place_album`` (cached tracks land instantly, the rest go to
+    the background embed worker), grouped under
+    ``playlist_pid = "itunes-artist:<id>"``.
+
+    ``cap`` defaults to IMPORT_CAP, which is sized for playlists/albums and
+    will truncate a real discography (Rob Knack lists 146 tracks after dedup),
+    so callers importing a full catalog should pass their own.
+    """
+    load()
+    if artist_id in (None, ""):
+        raise ValueError("missing artist id")
+
+    tracks = itunes_src.artist_tracks(artist_id, include_features=include_features)
+    if not tracks:
+        raise ValueError(f"no iTunes tracks for artist: {artist_id!r}")
+
+    artist_name = tracks[0].get("artist", "")
+    all_rows = [{
+        "id":          t["id"],
+        "name":        t["title"],
+        "artist":      t["artist"],
+        "preview_url": t["preview_url"],
+    } for t in tracks]
+
+    n_total = len(all_rows)
+    rows = all_rows[:(cap if cap is not None else IMPORT_CAP)]
+    gid = f"itunes-artist:{artist_id}"
+    fragment, n_immediate, pending = _place_collection_rows(rows, gid, "itunes")
+    return _collection_response(gid, f"{artist_name} — discography", rows, n_total,
+                                fragment, n_immediate, pending)
+
+
 # ── Song detail (click panel) ────────────────────────────────────────────────
 
 def _nearest_artists(qvec, n: int = 5, exclude_artist: str = "") -> list:
@@ -1775,6 +1954,27 @@ def _inherit_tags(corpus, qvec=None, neighbor_ids=None, top_k: int = 3, knn: int
 _preview_cache: dict[str, str | None] = {}   # song_id → Deezer preview url | None (no match)
 
 
+def track_name_artist(song_id: str) -> tuple[str, str] | None:
+    """(name, artist) for a song id, from the corpus if it's a corpus row else
+    from this session's graph. None if the id is unknown to both.
+
+    Every resolver (Deezer preview, Spotify id, YouTube video id) needs the
+    same title/artist pair to search on; this is the one place that lookup
+    lives.
+    """
+    idx = _id_to_idx.get(song_id)
+    if idx is not None:
+        corpus = load()
+        meta = corpus.metadata[idx]
+        return (meta.get("name", ""), meta.get("artist", ""))
+    st = get_session()
+    with st.lock:
+        gnode = st.graph["nodes"].get(song_id)
+    if gnode is None:
+        return None
+    return (gnode.get("name", ""), gnode.get("artist", ""))
+
+
 def get_preview_url(song_id: str) -> str | None:
     """Resolve a 30s preview URL for the detail popover's play button.
 
@@ -1782,24 +1982,35 @@ def get_preview_url(song_id: str) -> str | None:
     search results do), so this matches by title/artist against Deezer on
     demand and caches the result in-process — None means "no match found",
     cached too so a repeat click doesn't re-hit Deezer.
+
+    ``itunes:`` nodes are looked up by exact track id instead. They are on the
+    map precisely because Deezer lacks the track, so a title/artist match there
+    would resolve to a *different* song and play the wrong audio. Browsers play
+    the AAC preview natively, so no transcode is needed for playback (unlike
+    embedding, which goes through ``itunes.download_preview``).
     """
     if song_id in _preview_cache:
         return _preview_cache[song_id]
 
-    idx = _id_to_idx.get(song_id)
-    if idx is not None:
-        corpus = load()
-        name = corpus.metadata[idx].get("name", "")
-        artist = corpus.metadata[idx].get("artist", "")
-    else:
-        st = get_session()
-        with st.lock:
-            gnode = st.graph["nodes"].get(song_id)
-        if gnode is None:
-            return None
-        name, artist = gnode.get("name", ""), gnode.get("artist", "")
-
     url = None
+
+    if str(song_id).startswith("itunes:"):
+        try:
+            data = itunes_src._get("lookup", params={"id": song_id.split(":", 1)[1]})
+            for r in data.get("results", []) if "error" not in data else []:
+                if r.get("previewUrl"):
+                    url = r["previewUrl"]
+                    break
+        except Exception as exc:
+            print(f"[atlas] iTunes preview lookup failed for {song_id}: {exc}")
+        _preview_cache[song_id] = url
+        return url
+
+    meta = track_name_artist(song_id)
+    if meta is None:
+        return None
+    name, artist = meta
+
     if name and artist:
         m = match_deezer_track({"title": name, "artist": artist})
         if "error" not in m:
@@ -1837,19 +2048,11 @@ def get_spotify_track_id(song_id: str) -> str | None:
         _spotify_id_cache[song_id] = None
         return None
 
-    idx = _id_to_idx.get(song_id)
-    if idx is not None:
-        corpus = load()
-        name = corpus.metadata[idx].get("name", "")
-        artist = corpus.metadata[idx].get("artist", "")
-    else:
-        st = get_session()
-        with st.lock:
-            gnode = st.graph["nodes"].get(song_id)
-        if gnode is None:
-            _spotify_id_cache[song_id] = None
-            return None
-        name, artist = gnode.get("name", ""), gnode.get("artist", "")
+    meta = track_name_artist(song_id)
+    if meta is None:
+        _spotify_id_cache[song_id] = None
+        return None
+    name, artist = meta
 
     tid = None
     if name and artist:
@@ -3151,6 +3354,15 @@ def _load_graph(st: "_SessionState") -> None:
             except Exception:  # noqa: BLE001 — offline load must not fail
                 pass
             st.groups[gid] = {"name": name or gid, "kind": "album"}
+        elif gid.startswith("itunes-artist:"):
+            name = None
+            try:
+                tracks = itunes_src.artist_tracks(gid[len("itunes-artist:"):])
+                if tracks:
+                    name = f"{tracks[0].get('artist', '')} — discography".strip(" —")
+            except Exception:  # noqa: BLE001 — offline load must not fail
+                pass
+            st.groups[gid] = {"name": name or gid, "kind": "discography"}
         else:
             name = mpd_sql.playlist_name(MPD_DB, gid) if mpd_ready() else None
             st.groups[gid] = {"name": name or gid, "kind": "playlist"}

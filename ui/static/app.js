@@ -201,7 +201,8 @@ async function doSearch(q) {
   }
 }
 
-const SOURCE_LABEL = { corpus: 'corpus', deezer: 'deezer', spotify: 'spotify' };
+const SOURCE_LABEL = { corpus: 'corpus', deezer: 'deezer', spotify: 'spotify',
+                       itunes: 'itunes' };
 
 function renderSearchResults(data) {
   const el = document.getElementById('search-results');
