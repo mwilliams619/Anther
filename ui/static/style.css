@@ -548,6 +548,7 @@ input[type="text"]::placeholder {
   padding-bottom: calc(var(--spacing) * 2);
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--spacing);
+  position: relative;   /* anchors #settings-popover */
 }
 
 .header .view-mode {
@@ -1537,9 +1538,14 @@ circle.corpus-node {
   color: var(--success); 
 }
 
-.src-spotify { 
-  background: rgba(107,204,143,0.15); 
-  color: var(--success); 
+.src-spotify {
+  background: rgba(107,204,143,0.15);
+  color: var(--success);
+}
+
+.src-itunes {
+  background: rgba(149,117,69,0.15);
+  color: var(--warning);
 }
 
 .place-status { 
@@ -1825,4 +1831,170 @@ circle.corpus-node {
 .modal-tab-content em {
   color: var(--text-mid);
   font-style: italic;
+}
+
+/* ── Graph autoplay ───────────────────────────────────────────────────────
+ * The map played as a playlist (see ui/static/autoplay.js). Two node states
+ * layer on top of the existing highlight system rather than replacing it: a
+ * node can be both .selected and .playing, so .playing only owns the pulse
+ * and its own ring colour, and never touches scale/opacity that .selected
+ * and the dimming classes already manage. */
+.gnode.playing circle {
+  stroke: var(--primary-hi);
+  stroke-width: 2.5px;
+  animation: autoplay-pulse 1.6s ease-in-out infinite;
+}
+@keyframes autoplay-pulse {
+  0%, 100% { filter: drop-shadow(0 0 3px var(--primary)); }
+  50%      { filter: drop-shadow(0 0 9px var(--primary-hi)); }
+}
+/* Already toured. Muted rather than hidden, so the map doubles as progress. */
+.gnode.played circle { opacity: 0.4; }
+.gnode.played .glabel { opacity: 0.45; }
+
+.autoplay-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--spacing) * 2);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  /* Wide and short on purpose: the Spotify embed's scrub bar is only as long
+   * as the iframe is wide, so a narrow bar makes seeking fiddly. Vertical
+   * padding stays tight so the extra width doesn't cost the graph height. */
+  padding: 5px calc(var(--spacing) * 1.5);
+  width: min(1100px, calc(100% - var(--spacing) * 4));
+  max-width: calc(100% - var(--spacing) * 4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+.autoplay-bar[hidden] { display: none; }
+
+.autoplay-controls { display: flex; gap: 4px; flex: 0 0 auto; }
+
+/* Capped rather than greedy: the title/progress line is secondary to the
+ * scrub bar, so surplus width goes to the embed instead of to ellipsised text. */
+.autoplay-meta { min-width: 0; flex: 0 1 220px; }
+.autoplay-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.autoplay-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.autoplay-sub.autoplay-warn { color: var(--warning); }
+
+.autoplay-follow {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* Spotify's embed cannot be hidden — a hidden player is against their terms —
+ * so it takes the bar's surplus width instead, which is also what makes the
+ * scrub bar long enough to hit. 80px is Spotify's compact track layout; below
+ * that the player clips rather than shrinking, so height is fixed and only
+ * width flexes. */
+.autoplay-embed-wrap { flex: 1 1 480px; min-width: 260px; }
+.autoplay-embed-wrap iframe {
+  display: block;
+  width: 100%;
+  height: 80px;
+  border-radius: var(--radius);
+}
+
+/* The detail panel is 320px wide, absolutely positioned top-right at z-index
+ * 50 — a centred 1100px bar would slide under it, and the embed is the bar's
+ * rightmost element, so the scrub bar would be the first thing occluded.
+ * #autoplay-bar is a following sibling of #detail-panel, so the bar can reflow
+ * out of the way with no JS: span from the left margin to just clear of the
+ * panel instead of centring. */
+#detail-panel:not([hidden]) ~ .autoplay-bar {
+  left: calc(var(--spacing) * 2);
+  right: calc(320px + var(--spacing) * 4);
+  transform: none;
+  width: auto;
+}
+
+@media (max-width: 900px) {
+  .autoplay-bar { flex-wrap: wrap; bottom: var(--spacing); }
+  .autoplay-meta { flex: 1 1 140px; }
+  .autoplay-embed-wrap { flex: 1 1 100%; order: 5; }
+  /* Narrow screens overlay the detail panel entirely, so dodging it would
+     leave the bar squeezed to nothing — go back to using the full width. */
+  #detail-panel:not([hidden]) ~ .autoplay-bar {
+    left: var(--spacing);
+    right: var(--spacing);
+    width: auto;
+  }
+}
+
+/* ── Settings popover ─────────────────────────────────────────────────────
+ * Anchored under the ⚙ in the left panel header. Chooses what the detail
+ * panel's single ▶ does, and whether a graph tour advances by itself. */
+.settings-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 60;
+  width: 268px;
+  margin-top: 6px;
+  padding: calc(var(--spacing) * 1.5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  text-align: left;
+}
+.settings-popover[hidden] { display: none; }
+
+.settings-popover h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 var(--spacing);
+}
+.settings-popover h3:not(:first-child) { margin-top: calc(var(--spacing) * 2); }
+
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing);
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.settings-row input { margin-top: 3px; flex: 0 0 auto; }
+.settings-row span { display: block; min-width: 0; }
+.settings-row strong { display: block; font-weight: 500; }
+.settings-row em {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.settings-note {
+  margin: calc(var(--spacing) * 1.5) 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
 }

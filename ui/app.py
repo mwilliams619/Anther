@@ -55,6 +55,10 @@ MENTOR_PORT    = os.environ.get('ANTHER_MENTOR_PORT', '5100')
 MENTOR_URL     = f'http://{MENTOR_HOST}:{MENTOR_PORT}'
 MENTOR_TIMEOUT = float(os.environ.get('ANTHER_MENTOR_TIMEOUT', '30'))
 
+# Graph autoplay resolves the next few hops' Spotify ids ahead of playback. A
+# cache miss costs a Spotify Search call each, so cap one request's fan-out.
+AUTOPLAY_RESOLVE_CAP = int(os.environ.get('ANTHER_AUTOPLAY_RESOLVE_CAP', '25'))
+
 SESSION_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
@@ -188,6 +192,37 @@ def album_place():
         return jsonify({'error': str(exc)}), 500
 
 
+@app.route('/api/itunes/artists/search')
+def itunes_artists_search():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify({'results': []})
+    try:
+        limit = int(request.args.get('limit', 10))
+        return jsonify(atlas.search_itunes_artists(q, limit=limit))
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 502
+
+
+@app.route('/api/itunes/artist/place', methods=['POST'])
+def itunes_artist_place():
+    """Bulk-import an artist's whole iTunes discography. `cap` defaults to
+    IMPORT_CAP, which is sized for playlists and truncates a real catalog, so
+    the caller can raise it for a full import."""
+    body = request.get_json(force=True) or {}
+    cap = body.get('cap')
+    try:
+        return jsonify(atlas.place_itunes_artist(
+            body.get('artist_id'),
+            include_features=bool(body.get('include_features')),
+            cap=int(cap) if cap is not None else None,
+        ))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
 @app.route('/api/place', methods=['POST'])
 def atlas_place():
     result = request.get_json(force=True) or {}
@@ -296,6 +331,41 @@ def atlas_song_spotify(song_id):
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500
     return jsonify({'track_id': track_id})
+
+
+@app.route('/api/autoplay/resolve', methods=['POST'])
+def atlas_autoplay_resolve():
+    """Batch Spotify-id lookup for autoplay's resolve-ahead: {ids: [...]} →
+    {tracks: {song_id: track_id|null}}. Capped so a huge map can't turn one
+    request into hundreds of Spotify Search calls."""
+    body = request.get_json(force=True) or {}
+    ids = body.get('ids') or []
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be a list'}), 400
+    try:
+        tracks = atlas.resolve_spotify_batch([str(i) for i in ids[:AUTOPLAY_RESOLVE_CAP]])
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    return jsonify({'tracks': tracks})
+
+
+@app.route('/api/autoplay/jump', methods=['POST'])
+def atlas_autoplay_jump():
+    """Nearest unplayed query node to `from` — autoplay's island jump.
+    Body {from, exclude: [...]} → {id, score} or {id: null} when the tour has
+    covered the whole map."""
+    body = request.get_json(force=True) or {}
+    from_id = body.get('from') or None
+    exclude = body.get('exclude') or []
+    if not isinstance(exclude, list):
+        return jsonify({'error': 'exclude must be a list'}), 400
+    try:
+        hit = atlas.nearest_unplayed(from_id, [str(i) for i in exclude])
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+    if hit is None:
+        return jsonify({'id': None})
+    return jsonify(hit)
 
 
 
