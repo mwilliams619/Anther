@@ -19,7 +19,9 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `ui/playlist_jobs.py` | Single background worker thread (one GPU consumer) that embeds and places queued tracks asynchronously, polled via `/api/playlist/status/<job_id>` |
 | `ui/static/graph.js` | Isolated song force graph — hover highlight/tooltip, click-to-pin, warm-up polling |
 | `ui/static/artist-graph.js` | Isolated, incremental artist force graph; only explicitly-added artists are rendered |
-| `ui/static/app.js` | Song/artist view switching, search, detail popovers, uploads, recommend-from-map, mentor chat panel |
+| `ui/static/autoplay-traversal.js` | Pure DFS-with-backtracking planner over the query-node subgraph — no DOM, no audio, unit-tested in `tests/js/` |
+| `ui/static/autoplay.js` | Graph autoplay player: one persistent Spotify IFrame controller, end-of-track detection, resolve-ahead, camera follow |
+| `ui/static/app.js` | Song/artist view switching, search, detail popovers, uploads, recommend-from-map, mentor chat panel, autoplay transport bar |
 | `mentor/service.py` | Separate warm process hosting `MusicMentor` (chat/ReAct) over HTTP; `ui/app.py` forwards `/api/mentor/*` to it (see "Mentor chat" below) |
 
 ## Routes (`ui/app.py`)
@@ -57,6 +59,8 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `GET /api/song/<id>/preview` | Resolve a playable preview URL when available |
 | `GET /api/song/<id>/spotify` | Resolve a Spotify track link when credentials/metadata permit |
 | `GET /api/upload-audio/<name>` | Serve an uploaded audio file for playback |
+| `POST /api/autoplay/resolve` | Batch Spotify-id lookup for autoplay's resolve-ahead: `{ids}` → `{tracks: {id: track_id\|null}}`, capped by `ANTHER_AUTOPLAY_RESOLVE_CAP` |
+| `POST /api/autoplay/jump` | Nearest unplayed query node to `from`, excluding played ids — autoplay's island jump |
 
 ## Runtime facts worth knowing
 
@@ -137,6 +141,83 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
   are spliced into the shared graph as `kind: 'corpus'` context nodes, and the
   frontend mirrors that same kind, so recommendations never become future seeds
   merely because the graph reloads.
+
+## Graph autoplay — the map as a playlist
+
+"▶ Play map" walks the map like a playlist: play a song, follow the
+highest-scoring edge to an unplayed neighbour, and keep going until every
+reachable song has played, then jump to the nearest unplayed island. Full
+design and the Phase 0 measurements are in
+[GRAPH_AUTOPLAY_PLAN.md](projects/GRAPH_AUTOPLAY_PLAN.md).
+
+- **Query nodes only.** Grey `kind: 'corpus'` context nodes are never played and
+  never routed through, so two query nodes joined only via a corpus node count
+  as separate islands.
+- **DFS with backtracking**, greedy on each edge's calibrated `score`. Dead ends
+  unwind the spine silently (backtracking plays nothing). The planner is a pure
+  module — `AutoplayTraversal.createTour(getGraph)` — so it is unit-tested
+  against fixture graphs in `tests/js/autoplay-traversal.test.js`
+  (`node tests/js/autoplay-traversal.test.js`, no JS tooling required).
+- **Islands are normal, not exceptional.** Query↔query edges only exist above
+  the `QUERY_LINK_PCTL` (default 95th percentile) cutoff, capped at
+  `QQ_MAX_PER_NODE = 6`, so isolated songs are common. The frontend cannot rank
+  non-adjacent pairs itself — that is what `POST /api/autoplay/jump` is for. If
+  the call fails, the planner falls back to map order rather than ending the
+  tour.
+- **The graph is re-read on every hop**, never snapshotted, so songs streamed in
+  by a playlist import mid-tour are picked up and removed ones fall out.
+- **Audio is the existing Spotify embed** — full tracks for a visitor already
+  logged into Spotify in that browser, a 30s preview for everyone else, same as
+  the 🎵 button. One persistent controller is reused via `loadUri` for the whole
+  session; re-creating it risks losing the user activation that makes chained
+  autoplay work.
+- **End-of-track detection is measured, not assumed.** There is no `ended`
+  event. The real signal is `position: 0, isPaused: true` immediately after
+  `position === duration` ("reset-to-zero"); a stall rule is only a backstop.
+  Critically, nothing may be judged an ending before the track has advanced at
+  least once — initial buffering holds `position` at 0 for ~2.6–3.4s, longer
+  than the stall threshold. See the plan's Phase 0 results before touching this.
+- **Songs with no Spotify id** (uploads never resolve) are marked silent and
+  skipped, but the tour still routes *through* them to their neighbours. After
+  15 consecutive unresolvable songs it gives up with a message.
+- **Camera follow** is on by default and stands down automatically when the user
+  pans or zooms the map, so auto-zoom never fights a deliberate look-around.
+  `AtlasGraph.onManualPan` distinguishes a user gesture from `zoomTo`'s
+  programmatic transition via d3's `sourceEvent`.
+- **Only one thing sounds at a time**: starting a tour stops the preview
+  `<audio>` and closes the detail panel's Spotify embed; using either of those
+  pauses the tour.
+- **Starting and steering**: the detail panel's `⇉` button (`playFromHere`)
+  starts a tour seeded on that song, **replacing** any running tour so the
+  played history always matches what the map shows. **Shift-clicking a node**
+  steers a *running* tour there instead, **keeping** the history
+  (`AtlasAutoplay.steerTo` → `tour.steerTo`); with nothing playing it just
+  starts one. Both only accept `kind: 'query'` nodes, since the traversal walks
+  the query subgraph and a corpus node would silently seed elsewhere. Steering
+  pushes onto the DFS spine rather than resetting it, so if the steered-to song
+  is a dead end the walk unwinds and still reaches what the old branch could.
+- **Auto-advance** (Settings) decides whether a tour steps on by itself. Off, a
+  finished song parks the tour in a `waiting` state and the transport shows
+  "⏭ for the next song"; turning it back on while parked advances immediately.
+
+## Settings popover
+
+The ⚙ in the left-panel header. Two preferences, persisted in `localStorage`
+under `anther-settings` (falling back to defaults on corrupt or unavailable
+storage — private mode never errors, it just doesn't persist).
+
+- **Song player** — `deezer` (default) or `spotify`. Decides what the detail
+  panel's single ▶ does: an inline 30s Deezer preview, or the Spotify embed
+  (full track when the visitor is logged into Spotify in that browser). This
+  replaced the old pair of ▶/🎵 buttons. Similar-song rows inside the detail
+  panel follow the same setting, since they share its `#spotify-embed-wrap`.
+  **Search-result rows in the left panel deliberately do not** — no embed
+  container exists there, so they stay quick Deezer auditions.
+- **Auto-advance** — see above.
+
+**Graph tours ignore the player setting and always use the Spotify embed**,
+because it is the only source that can play a full track. Changing the player
+stops whatever is currently sounding, so the two sources can't overlap.
 
 ## Similarity scoring — aggregate score + expandable breakdown
 

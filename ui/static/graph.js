@@ -45,6 +45,11 @@ const AtlasGraph = (() => {
   let filterIds = null;                 // active filter: Set of node ids to keep lit
   let groups = {};                      // gid → {name, kind} for imported playlists/albums
   let selectCb = null, deselectCb = null;
+  // ── graph autoplay (see ui/static/autoplay.js) ──
+  let playingId = null;                 // node whose track is sounding right now
+  let playedIds = new Set();            // tour history, rendered as muted nodes
+  let panCb = null;                     // fires on a USER pan/zoom, not zoomTo()
+  let shiftSelectCb = null;             // shift-click: steer a running tour
 
   // ── ambient idle motion ──────────────────────────────────────────────────
   // After IDLE_MS of no pointer activity, the node layer gets .idle-breathing
@@ -106,7 +111,12 @@ const AtlasGraph = (() => {
     tooltip = d3.select('#graph-tooltip');
 
     zoom = d3.zoom().scaleExtent([0.1, 8])
-      .on('zoom', () => g.attr('transform', d3.event.transform));
+      .on('zoom', () => g.attr('transform', d3.event.transform))
+      // A user grabbing the map should stop autoplay's camera from yanking it
+      // back. zoomTo() drives the same zoom behaviour through a programmatic
+      // transition, which carries no sourceEvent — that's what separates
+      // "the user panned" from "we panned".
+      .on('start', () => { if (d3.event.sourceEvent && panCb) panCb(); });
     svg.call(zoom);
     svg.on('click', () => {             // background click unpins (pans don't: d3
       if (d3.event.defaultPrevented) return;   // suppresses the click after a drag)
@@ -237,6 +247,36 @@ const AtlasGraph = (() => {
     } else if (filterIds !== null) {
       applyFilterClasses();
     }
+    applyPlaybackClasses();   // .playing/.played must survive a re-render too
+  }
+
+  // ── graph autoplay rendering ──
+  // Applied here (not only at call time) because a playlist streaming in mid-
+  // tour re-enters nodes, and a freshly-entered <g> would otherwise lose the
+  // playing/played styling of a tour already in progress.
+  function applyPlaybackClasses() {
+    if (!nodeSel) return;
+    nodeSel.classed('playing', n => n.id === playingId)
+           .classed('played',  n => playedIds.has(n.id) && n.id !== playingId);
+  }
+
+  function setPlayingNode(id) {
+    playingId = id;
+    if (id !== null && id !== undefined) playedIds.add(id);
+    applyPlaybackClasses();
+    // raise so the pulsing node isn't buried in a dense cluster
+    if (nodeSel && id) nodeSel.filter(n => n.id === id).raise();
+  }
+
+  function setPlayed(ids) {
+    playedIds = new Set(ids || []);
+    applyPlaybackClasses();
+  }
+
+  function clearPlayback() {
+    playingId = null;
+    playedIds = new Set();
+    applyPlaybackClasses();
   }
 
   // deterministic per-node stagger for the breathing keyframe: hashes the
@@ -448,6 +488,8 @@ const AtlasGraph = (() => {
     byId.clear();
     filterIds = null;
     groups = {};
+    playingId = null;
+    playedIds = new Set();
     restart();
   }
 
@@ -504,7 +546,11 @@ const AtlasGraph = (() => {
   function onClick(d) {
     if (d3.event.defaultPrevented) return;   // drag gesture, not a click
     d3.event.stopPropagation();
+    // Shift-click steers a running autoplay tour here (see app.js). It still
+    // selects, so the detail panel follows along and the gesture reads as a
+    // richer click rather than a different one.
     select(d.id);
+    if (d3.event.shiftKey && shiftSelectCb) shiftSelectCb(d.id);
   }
 
   function onHover(d) {
@@ -573,6 +619,13 @@ const AtlasGraph = (() => {
     zoomTo,
     hasNode: id => byId.has(id),
     getNodes: () => nodes.slice(),
+    getLinks: () => links.slice(),
+    neighborsOf: id => Array.from(adjacency.get(id) || []),
+    setPlayingNode,
+    setPlayed,
+    clearPlayback,
+    onManualPan: cb => { panCb = cb; },
+    onShiftSelect: cb => { shiftSelectCb = cb; },
     getGroups: () => ({ ...groups }),
     registerGroup: (gid, info) => { groups[String(gid)] = info; },
     groupColor: pid => playlistColor(pid),

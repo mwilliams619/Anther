@@ -1872,6 +1872,88 @@ def get_spotify_track_id(song_id: str) -> str | None:
     return tid
 
 
+def resolve_spotify_batch(ids: list[str]) -> dict[str, str | None]:
+    """Batch form of ``get_spotify_track_id`` for graph autoplay's resolve-ahead.
+
+    Same per-id semantics and same ``_spotify_id_cache`` — this only saves the
+    round trips, so a tour can pre-check the next few hops in one request
+    instead of N. ``spotify:``-prefixed ids (every MPD-sourced corpus row) cost
+    nothing; the rest may each hit the Spotify Search API on a cache miss,
+    which is why the caller keeps the lookahead small. A failed lookup maps to
+    None rather than raising: one unresolvable track must not fail the batch.
+    """
+    out: dict[str, str | None] = {}
+    for song_id in ids:
+        if not song_id or song_id in out:
+            continue
+        try:
+            out[song_id] = get_spotify_track_id(song_id)
+        except Exception:
+            out[song_id] = None
+    return out
+
+
+def nearest_unplayed(from_id: str | None, exclude: list[str] | None = None,
+                     st: "_SessionState | None" = None) -> dict | None:
+    """Nearest not-yet-played query node to ``from_id`` — graph autoplay's
+    island jump.
+
+    The frontend can't do this itself: it only knows edges that cleared the
+    QUERY_LINK_PCTL threshold, and a jump is by definition to something that
+    did *not* clear it. So this is an unthresholded cosine over the session's
+    cached vectors, restricted to live query nodes (corpus context nodes are
+    never played) minus ``exclude``.
+
+    Uses MERIT-aggregate space when the bundle has one and both endpoints have
+    a vector, mirroring the ``use_merit`` branch in ``_place_node_locked`` so a
+    jump is ranked in the same space the drawn edges were. Returns None only
+    when nothing unplayed is left; when the anchor has no usable vector it
+    still returns a candidate (score None) so a tour can never stall on a
+    missing embedding.
+    """
+    st = st if st is not None else get_session()
+    skip = set(exclude or ())
+    if from_id:
+        skip.add(from_id)
+
+    with st.lock:
+        candidates = [n["id"] for n in st.graph["nodes"].values()
+                      if n.get("kind") == "query" and n["id"] not in skip]
+        if not candidates:
+            return None
+        use_merit = _merit_link_thresholds is not None and bool(st.merit_vecs)
+        space = st.merit_vecs if use_merit else st.query_vecs
+        from_vec = space.get(from_id) if from_id else None
+        if from_vec is None:
+            # No anchor vector (first jump of a tour, or a node cached before
+            # MERIT support): map order is the honest answer, not a silent stop.
+            return {"id": candidates[0], "score": None}
+
+        best_id, best_raw = None, -2.0
+        for cid in candidates:
+            ovec = space.get(cid)
+            if ovec is None:
+                continue
+            raw = float(np.dot(from_vec, ovec))
+            if raw > best_raw:
+                best_id, best_raw = cid, raw
+
+    if best_id is None:
+        return {"id": candidates[0], "score": None}
+
+    # clip_low=False: a jump legitimately sits below the link floor, so let the
+    # number read honestly rather than flattening every jump to the floor.
+    if use_merit:
+        display = _merit_aggregate_score(space[from_id], space[best_id])
+        if display is None:
+            display = _display_score(best_raw, clip_low=False,
+                                     thresholds=_merit_link_thresholds)
+    else:
+        display = _display_score(best_raw, clip_low=False)
+    return {"id": best_id, "score": round(float(display), 1),
+            "value": round(best_raw, 3)}
+
+
 def _merit_vec_for(song_id: str, corpus=None) -> np.ndarray | None:
     """The 384-d MERIT-aggregate index-space vector for a placed song — a
     corpus track's own row (``corpus.merit_index.embeddings[idx]``) or a

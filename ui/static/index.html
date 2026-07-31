@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=10" />
+  <link rel="stylesheet" href="/static/style.css?v=12" />
   <link rel="icon" type="image/x-icon" href="anther_logo.png" />
 </head>
 <body>
@@ -37,7 +37,32 @@
           <img src="/static/images/artist_icon_white_2.png" alt="" aria-hidden="true" />
         </button>
       </div>
-      <button id="help-toggle" class="btn-icon" title="Open help" style="margin-left:auto">?</button>
+      <button id="settings-toggle" class="btn-icon" title="Settings"
+              style="margin-left:auto" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+      <button id="help-toggle" class="btn-icon" title="Open help">?</button>
+
+      <!-- Settings popover: how a single song plays, and whether a graph tour
+           advances by itself. Persisted in localStorage. -->
+      <div id="settings-popover" class="settings-popover" hidden role="dialog"
+           aria-label="Playback settings">
+        <h3>Song player</h3>
+        <label class="settings-row">
+          <input type="radio" name="player" value="deezer">
+          <span><strong>Deezer preview</strong><em>30s clip, plays inline, no login</em></span>
+        </label>
+        <label class="settings-row">
+          <input type="radio" name="player" value="spotify">
+          <span><strong>Spotify embed</strong><em>Full track if you're logged into Spotify in this browser, else 30s</em></span>
+        </label>
+
+        <h3>Graph tours</h3>
+        <label class="settings-row">
+          <input type="checkbox" id="setting-autoadvance">
+          <span><strong>Auto-advance</strong><em>Move to the next song automatically; off means stop after each and wait for ⏭</em></span>
+        </label>
+        <p class="settings-note">Tours always use the Spotify embed, so they can
+          play full tracks. The player above applies to the ▶ button.</p>
+      </div>
     </div>
 
     <!-- Search -->
@@ -133,6 +158,28 @@
       <div id="detail-body"></div>
     </aside>
     <button id="mentor-toggle" class="mentor-toggle-btn" title="Open mentor">💬</button>
+
+    <!-- ── Graph autoplay transport ─────────────────────────────────────────
+         Walks the map as a playlist. Hidden until a tour starts. The embed
+         host is replaced in place by createController, so #autoplay-embed
+         must never be queried after the controller exists. -->
+    <div id="autoplay-bar" class="autoplay-bar" hidden>
+      <div class="autoplay-controls">
+        <button id="autoplay-toggle" class="btn-icon" title="Pause">⏸</button>
+        <button id="autoplay-next" class="btn-icon" title="Next song">⏭</button>
+        <button id="autoplay-stop" class="btn-icon" title="Stop the tour">■</button>
+      </div>
+      <div class="autoplay-meta">
+        <div id="autoplay-title" class="autoplay-title">—</div>
+        <div id="autoplay-sub" class="autoplay-sub"></div>
+      </div>
+      <label class="autoplay-follow" title="Keep the camera on the playing song">
+        <input type="checkbox" id="autoplay-follow" checked> follow
+      </label>
+      <div id="autoplay-embed-wrap" class="autoplay-embed-wrap">
+        <div id="autoplay-embed"></div>
+      </div>
+    </div>
     <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details · ♦ = your songs</div>
   </div>
 
@@ -187,7 +234,9 @@
         <h3>Explore the graph</h3>
         <ul>
           <li><strong>Hover:</strong> See song details and similarity scores when hovering.</li>
-          <li><strong>Click:</strong> Open the detail panel to see track metadata, related songs, and listen on Spotify.</li>
+          <li><strong>Click:</strong> Open the detail panel to see track metadata, related songs, and play the track.</li>
+          <li><strong>Play a tour (⇉):</strong> Start playing the map like a playlist from that song, walking edges to similar tracks and jumping between disconnected islands.</li>
+          <li><strong>Shift-click:</strong> Steer a tour that's already playing to that song, keeping everything played so far.</li>
           <li><strong>Drag:</strong> Reposition nodes to untangle crowded clusters.</li>
           <li><strong>Scroll:</strong> Zoom in and out to explore at different scales.</li>
         </ul>
@@ -274,8 +323,10 @@
 <div id="error-toast"></div>
 
 <script src="https://d3js.org/d3.v4.js"></script>
-<script src="/static/graph.js?v=5"></script>
+<script src="/static/graph.js?v=6"></script>
 <script src="/static/artist-graph.js?v=2"></script>
-<script src="/static/app.js?v=10"></script>
+<script src="/static/autoplay-traversal.js?v=1"></script>
+<script src="/static/autoplay.js?v=1"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>

@@ -21,6 +21,28 @@ const state = {
 
 const REMOVED_MAX = 20;
 
+/* ── Settings ─────────────────────────────────────────────────────────────
+ * User playback preferences, persisted across reloads. `player` chooses what
+ * the detail panel's single ▶ button does for ONE song; graph tours always use
+ * the Spotify embed regardless, since that's the only source that can play a
+ * full track. `autoAdvance` decides whether a tour steps on by itself. */
+const SETTINGS_KEY = 'anther-settings';
+const SETTINGS_DEFAULTS = { player: 'deezer', autoAdvance: true };
+const settings = { ...SETTINGS_DEFAULTS };
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    if (saved.player === 'deezer' || saved.player === 'spotify') settings.player = saved.player;
+    if (typeof saved.autoAdvance === 'boolean') settings.autoAdvance = saved.autoAdvance;
+  } catch (err) { /* corrupt or unavailable storage → defaults */ }
+}
+
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
+  catch (err) { /* private mode / quota — settings just won't persist */ }
+}
+
 const SEARCH_MODES = {
   tracks: {
     placeholder: 'Artist, track…',
@@ -51,6 +73,8 @@ async function init() {
   initUpload();
   initDetail();
   initMapPanel();
+  initSettings();
+  initAutoplay();
   initRecommend();
   initMentor();
   initMobileSidebar();
@@ -521,12 +545,154 @@ function initMapPanel() {
     try {
       await fetch('/api/graph/clear', { method: 'POST' });
     } catch (err) { showError('Clear failed: ' + err.message); return; }
+    AtlasAutoplay.stop();          // a tour over a map that no longer exists
     AtlasGraph.reset();
     clearFilter();
     renderMapPanel();
   });
 
   document.getElementById('build-artist-graph').addEventListener('click', buildArtistGraphFromSongMap);
+}
+
+/* ── Graph autoplay ───────────────────────────────────────────────────────
+ * Walks the map as a playlist. See ui/static/autoplay.js for the player and
+ * autoplay-traversal.js for the DFS/backtrack/jump policy. */
+function initSettings() {
+  loadSettings();
+  const btn = document.getElementById('settings-toggle');
+  const pop = document.getElementById('settings-popover');
+  const auto = document.getElementById('setting-autoadvance');
+
+  document.querySelectorAll('input[name="player"]').forEach(r => {
+    r.checked = (r.value === settings.player);
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      settings.player = r.value;
+      saveSettings();
+      stopOtherPlayers();          // the old player shouldn't keep sounding
+      if (state.detailId) refreshDetailButtons();
+    });
+  });
+
+  auto.checked = settings.autoAdvance;
+  auto.addEventListener('change', () => {
+    settings.autoAdvance = auto.checked;
+    saveSettings();
+    AtlasAutoplay.setAutoAdvance(auto.checked);
+    renderAutoplayBar();
+  });
+  AtlasAutoplay.setAutoAdvance(settings.autoAdvance);
+
+  const close = () => { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = pop.hidden;
+    pop.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  pop.addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', close);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+}
+
+/* The single ▶ swaps behaviour with the player setting, so a panel that's
+ * already open has to be re-rendered when the setting changes under it. */
+function refreshDetailButtons() {
+  const wrap = document.getElementById('spotify-embed-wrap');
+  if (wrap) { wrap.hidden = true; wrap.innerHTML = ''; wrap.dataset.forId = ''; }
+  const btn = document.querySelector('.detail-btn-group .btn-play');
+  if (btn) { btn.textContent = '▶'; btn.classList.remove('playing'); delete btn.dataset.url; }
+}
+
+function initAutoplay() {
+  const toggle = document.getElementById('autoplay-toggle');
+  const follow = document.getElementById('autoplay-follow');
+
+  toggle.addEventListener('click', () => {
+    if (AtlasAutoplay.isPaused()) AtlasAutoplay.resume(); else AtlasAutoplay.pause();
+  });
+  document.getElementById('autoplay-next').addEventListener('click', () => AtlasAutoplay.next());
+  document.getElementById('autoplay-stop').addEventListener('click', () => AtlasAutoplay.stop());
+  follow.addEventListener('change', () => AtlasAutoplay.setFollowCamera(follow.checked));
+
+  // Grabbing the map means "I want to look at something" — stop the camera
+  // fighting the user. The tour keeps playing; only the auto-zoom stands down.
+  AtlasGraph.onManualPan(() => {
+    if (!AtlasAutoplay.isRunning() || !AtlasAutoplay.followsCamera()) return;
+    AtlasAutoplay.setFollowCamera(false);
+    follow.checked = false;
+  });
+
+  // Shift-click a node to steer a running tour there, keeping the played
+  // history. With nothing playing it just starts a tour from that node, which
+  // is the same thing ⇉ does — no reason for the gesture to be inert.
+  AtlasGraph.onShiftSelect(id => {
+    const n = AtlasGraph.getNodes().find(x => x.id === id);
+    if (!n || n.kind !== 'query') {
+      showError('Only songs you placed can start a tour.');
+      return;
+    }
+    if (AtlasAutoplay.isRunning()) AtlasAutoplay.steerTo(id);
+    else playFromHere(id);
+  });
+
+  AtlasAutoplay.onChange(message => renderAutoplayBar(message));
+}
+
+function renderAutoplayBar(message) {
+  const bar    = document.getElementById('autoplay-bar');
+  const toggle = document.getElementById('autoplay-toggle');
+  const title  = document.getElementById('autoplay-title');
+  const sub    = document.getElementById('autoplay-sub');
+
+  const running = AtlasAutoplay.isRunning();
+  if (!running) {
+    bar.hidden = true;
+    AtlasGraph.setPlayingNode(null);
+    if (message) showError(message);
+    renderMapPanel();
+    return;
+  }
+
+  bar.hidden = false;
+  toggle.textContent = AtlasAutoplay.isPaused() ? '▶' : '⏸';
+  toggle.title = AtlasAutoplay.isPaused() ? 'Resume' : 'Pause';
+
+  const id = AtlasAutoplay.currentNodeId();
+  const n  = AtlasGraph.getNodes().find(x => x.id === id);
+  title.textContent = n ? (n.name || id) : '…';
+
+  const played  = AtlasAutoplay.played().length;
+  const left    = AtlasAutoplay.remaining();
+  const silent  = AtlasAutoplay.unplayable(id);
+  const waiting = AtlasAutoplay.isWaiting();
+  sub.className = 'autoplay-sub' + (silent || waiting ? ' autoplay-warn' : '');
+  if (waiting)     sub.textContent = `finished · ⏭ for the next song · ${left} left`;
+  else if (silent) sub.textContent = 'not on Spotify — skipping';
+  else sub.textContent =
+    `${(n && n.artist) || ''}${n && n.artist ? ' · ' : ''}${played} played · ${left} left`;
+}
+
+/* Start a tour seeded on one song. Any running tour is replaced rather than
+ * redirected: "play from here" reads as a fresh start, and keeping the old
+ * history would silently skip songs the user can see are unplayed. */
+function playFromHere(id) {
+  if (AtlasAutoplay.isRunning()) AtlasAutoplay.stop();
+  stopOtherPlayers();
+  document.getElementById('autoplay-bar').hidden = false;
+  AtlasAutoplay.start(id);
+}
+
+/* Only one thing may sound at a time: the preview <audio>, the detail panel's
+ * Spotify embed, and the tour's own controller. */
+function stopOtherPlayers() {
+  if (state.audio) {
+    state.audio.pause();
+    if (state.audioBtn) { state.audioBtn.textContent = '▶'; state.audioBtn.classList.remove('playing'); }
+    state.audio = null; state.audioUrl = null; state.audioBtn = null;
+  }
+  const wrap = document.getElementById('spotify-embed-wrap');
+  if (wrap && !wrap.hidden) { wrap.hidden = true; wrap.innerHTML = ''; wrap.dataset.forId = ''; }
 }
 
 function chooseArtistGraphMode() {
@@ -1129,8 +1295,10 @@ function similarRowHtml(s, i) {
     : '';
   const onGraph = s.on_graph || AtlasGraph.hasNode(s.id);
   const add = onGraph ? '' : `<button class="btn-add" onclick="event.stopPropagation(); addSimilar(${i}, this)">Add</button>`;
-  const preview = `<button class="btn-icon" title="Preview"
-       onclick='event.stopPropagation(); playPreview(${JSON.stringify(s.id)}, this)'>▶</button>`;
+  // Same player setting as the panel's own ▶ — these rows live inside the
+  // detail panel and share its #spotify-embed-wrap, so both sources work here.
+  const preview = `<button class="btn-icon" title="Play"
+       onclick='event.stopPropagation(); playSong(${JSON.stringify(s.id)}, this)'>▶</button>`;
   return `
   <div class="similar-row${onGraph ? ' on-graph' : ''}">
     <div class="similar-row-main" ${onGraph ? `onclick="gotoSimilar(${i})"` : ''}>
@@ -1146,6 +1314,13 @@ function similarRowHtml(s, i) {
 }
 
 function renderDetail(d) {
+  // Only query nodes can seed a tour — the traversal walks the query subgraph,
+  // so offering this on a grey corpus node would silently start somewhere else.
+  const gnode = AtlasGraph.getNodes().find(n => n.id === d.id);
+  const tourBtn = (gnode && gnode.kind === 'query')
+    ? `<button class="btn-icon" title="Play the map starting here — walks edges to similar songs"
+               onclick='playFromHere(${JSON.stringify(d.id)})'>⇉</button>`
+    : '';
   let html = `
     <div class="detail-title-row">
       <div>
@@ -1153,9 +1328,10 @@ function renderDetail(d) {
         <div class="detail-artist">${esc(d.artist)}</div>
       </div>
       <div class="detail-btn-group">
-        <button class="btn-icon" title="Preview" onclick='playPreview(${JSON.stringify(d.id)}, this)'>▶</button>
-        <button class="btn-icon" title="Play on Spotify (full track if you're logged in)"
-                onclick='toggleSpotifyEmbed(${JSON.stringify(d.id)}, this)'>🎵</button>
+        <button class="btn-icon btn-play" title="Play this song (${settings.player === 'spotify'
+          ? 'Spotify — full track if you\'re logged in' : 'Deezer 30s preview'}) — change in Settings"
+                onclick='playSong(${JSON.stringify(d.id)}, this)'>▶</button>
+        ${tourBtn}
       </div>
     </div>
     <div id="spotify-embed-wrap" class="spotify-embed-wrap" hidden></div>
@@ -1259,6 +1435,14 @@ async function addSimilar(i, btn) {
   }
 }
 
+/* The detail panel's single ▶. Which source it uses is a user setting, not a
+ * second button — see initSettings. Tours are unaffected: they always use the
+ * Spotify embed, the only source that can play a full track. */
+function playSong(id, btn) {
+  if (settings.player === 'spotify') return toggleSpotifyEmbed(id, btn);
+  return playPreview(id, btn);
+}
+
 /* ── Preview audio ──────────────────────────────────────────────────────── */
 async function playPreview(id, btn) {
   if (btn.dataset.url) { togglePreview(btn.dataset.url, btn); return; }
@@ -1284,6 +1468,8 @@ async function playPreview(id, btn) {
 }
 
 function togglePreview(url, btn) {
+  // A preview and a running tour must not sound together.
+  if (AtlasAutoplay.isRunning() && !AtlasAutoplay.isPaused()) AtlasAutoplay.pause();
   if (state.audio && state.audioUrl === url) {
     state.audio.pause();
     state.audio = null; state.audioUrl = null;
@@ -1323,6 +1509,7 @@ async function toggleSpotifyEmbed(id, btn) {
   }
 
   if (state.audio) { state.audio.pause(); }   // don't double up with preview audio
+  if (AtlasAutoplay.isRunning() && !AtlasAutoplay.isPaused()) AtlasAutoplay.pause();
 
   if (btn.dataset.trackId) {
     renderSpotifyEmbed(wrap, id, btn.dataset.trackId);
