@@ -1,15 +1,12 @@
+<p align="center">
+<img width="356" height="276" alt="anther logo" src="https://github.com/user-attachments/assets/da1eb132-c0a8-4e61-bde4-b3aafed60ce1" />
+</p>
+
 # anther-ml
 
 A music similarity engine and interactive map of songs. Anther listens to audio
 directly — no genre labels, no tags, no play counts — and places every track on
 a shared map where "close together" means "actually sounds alike."
-
-- **Phase 1** — pre-computed librosa features (fast, no GPU), matching FMA's 518-dim schema.
-- **Phase 2** — MERT neural embeddings + MERIT factor heads (the signal that drives the map today).
-
-Both phases share the same clustering and similarity API in `anther_ml`; only the
-input embeddings differ. See `CLAUDE.md` for the full architecture and notebook
-pipeline order.
 
 ## Install
 
@@ -20,15 +17,15 @@ won't deserialize on 3.12).
 git clone <this-repo> && cd Anther
 python3.11 -m venv .venv && source .venv/bin/activate
 
-pip install -e .            # editable install — no sys.path hacks needed
-pip install -e '.[dev]'     # + pytest for the test suite
+pip install -e .               # editable install — no sys.path hacks needed
+pip install -e '.[dev]'        # + pytest for the test suite
 pip install -e '.[notebooks]'  # + jupyter, if you want to run the pipeline notebooks
 
-pytest                      # confirm the install
+pytest                         # confirm the install
 ```
 
-That gets you the code. To actually see a map you also need a **corpus bundle**
-and the **MERIT heads**:
+That gets you the code. To actually see a map you also need the **MERIT heads**
+and a **corpus bundle**:
 
 ```bash
 # MERIT projection heads (~11 MB each, pretrained — no training required)
@@ -37,34 +34,30 @@ hf download amaai-lab/merit head_rhy/best_head.pt --local-dir models/merit_heads
 hf download amaai-lab/merit head_tim/best_head.pt --local-dir models/merit_heads
 ```
 
-`data/` and `models/` are gitignored and large (tens of GB once populated — raw
-audio, FMA metadata, reference-corpus bundles). Cloning this repo gets you code
-only, not a working corpus. The primary bundle is the frozen 100k-track MPD
-corpus at `models/corpus_corpus_mpd_100k/`; see
-[docs/projects/REFERENCE_CORPUS_DESIGN.md](docs/projects/REFERENCE_CORPUS_DESIGN.md)
-for how one is built. There is currently no shortcut path to a pre-built bundle
-for a new collaborator — ask the repo owner.
-
-Then run the web UI:
+The corpus bundle — the frozen reference map of tracks everything is placed
+against — is large (tens of GB with raw audio and metadata) and is **not** part
+of the clone. There's no pre-built download yet, so ask the repo owner for a
+bundle. Then run the web UI:
 
 ```bash
 python ui/app.py   # http://localhost:5000
 ```
 
-Configure with `ANTHER_CORPUS` (default `models/corpus_corpus_mpd_100k`) and,
-for full-MPD playlist/album search, `ANTHER_MPD_DB`. See
+Point `ANTHER_CORPUS` at your corpus bundle directory, and (for full-MPD
+playlist/album search) `ANTHER_MPD_DB` at the MPD SQLite DB. See
 [docs/ui.md](docs/ui.md) for routes, env vars, and session-state details.
 
 ## What MERT and MERIT are
 
-**MERT** (`m-a-p/MERT-v1-330M`) is a large neural network that was trained on a
-huge pile of music to *understand* audio. Feed it 30 seconds of a song and it
-returns a list of 1024 numbers — a "fingerprint" that captures what the music is
-like. Songs that sound alike get similar fingerprints. Nobody told it what genres
-are; it learned the structure of music on its own.
+**MERT** is a large neural network trained on a huge pile of music to
+*understand* audio. Feed it 30 seconds of a song and it returns a list of 1024
+numbers — a "fingerprint" that captures what the music is like. Songs that sound
+alike get similar fingerprints. Nobody told it what genres are; it learned the
+structure of music on its own. Anther uses the released `m-a-p/MERT-v1-330M`
+model.
 
-**MERIT** ([arXiv:2605.27346](https://arxiv.org/abs/2605.27346)) sits on top of
-the same MERT model and splits that one fingerprint into **three** separate ones:
+**MERIT** sits on top of the same MERT model and splits that one fingerprint
+into **three** separate ones:
 
 | Factor | Roughly captures |
 |---|---|
@@ -79,9 +72,9 @@ let you say *how* two songs are related. Anther's map uses the average of the
 three, and the song-detail panel shows the breakdown.
 
 Both models are used **frozen** — Anther doesn't train them, it just runs audio
-through them.
+through them. See the [references](#references) for the papers.
 
-## How similarity works (the ELI5 version)
+## How similarity works
 
 1. **Every song becomes a point.** Run the audio through MERT/MERIT and you get
    a list of numbers. Think of that list as coordinates — the song's address in a
@@ -103,25 +96,25 @@ through them.
    together. They're discovered from sound alone, and only *labeled* with genre
    names afterwards for readability.
 
-5. **New songs get dropped in, not re-mixed.** The reference map of 100k tracks
-   is frozen. When you add a song, it's fingerprinted the same way and placed
-   onto the existing map next to its neighbors. The map doesn't shift underneath
-   you, so two people looking at the same corpus see the same geography.
+5. **New songs get dropped in, not re-mixed.** The reference map is frozen. When
+   you add a song, it's fingerprinted the same way and placed onto the existing
+   map next to its neighbors. The map doesn't shift underneath you, so two people
+   looking at the same corpus see the same geography.
 
 The one rule that makes all of this honest: **genre is never an input.** Not to
 the clustering, not to the training, not to the evaluation metrics. It's display
 text only. If genres show up as coherent regions on the map, that's a result, not
 an assumption.
 
-## Example use cases
+## What you can do
 
-### 1. Analyzing music similarity
+### Analyze music similarity
 
 Ask concrete questions about how music relates and get measurable answers:
 
 - **"What does this song actually sound like?"** Query a track and get its
-  nearest neighbors across a 100k-track corpus, plus the melody/rhythm/timbre
-  breakdown showing *which* dimension drives each match.
+  nearest neighbors across the corpus, plus the melody/rhythm/timbre breakdown
+  showing *which* dimension drives each match.
 - **"Is this artist's catalog coherent, or all over the place?"** Place a whole
   discography and look at the spread — a tight clump versus scattered points is a
   real, quantified answer.
@@ -131,29 +124,28 @@ Ask concrete questions about how music relates and get measurable answers:
 - **"Does this change actually help?"** Every design decision goes through the
   genre-free eval harness rather than vibes:
 
-```bash
-python -m anther_ml.eval --index models/index_phase1
-```
+  ```bash
+  python -m anther_ml.eval --index <index-path>
+  ```
 
 See [docs/evaluation.md](docs/evaluation.md) and
 [docs/similarity.md](docs/similarity.md).
 
-### 2. Interactive playlist visualization
+### Explore a playlist visually
 
 The Flask + d3 web UI (`python ui/app.py`) turns a playlist into a picture you
 can explore:
 
 - **Drop a playlist, album, or artist discography onto the map** — search
   Deezer/Spotify/iTunes or upload your own files, and every track gets embedded
-  and placed among its neighbors. Tracks are embedded in the background so the
+  and placed among its neighbors. Tracks are embedded in the background, so the
   map fills in live.
 - **See the shape of your taste.** A well-sequenced playlist forms a path; a
   grab-bag scatters. Gaps between clumps are the transitions that don't work
   yet — and the corpus tracks sitting in those gaps are the songs that would
   bridge them.
 - **Play the map.** "Play map" walks the graph as a playlist, hopping between
-  connected songs so you *hear* the region you're looking at
-  ([docs/projects/GRAPH_AUTOPLAY_PLAN.md](docs/projects/GRAPH_AUTOPLAY_PLAN.md)).
+  connected songs so you *hear* the region you're looking at.
 - **Recommend from the map.** Select several songs as seeds and pull in corpus
   tracks near all of them at once — recommendation as a spatial query rather than
   a black box.
@@ -163,7 +155,7 @@ can explore:
 There's also a static export if you just want a shareable snapshot:
 
 ```bash
-python export_viz.py    # bakes index + 2D embedding into a self-contained song_view.html
+python export_viz.py   # bakes an index + 2D embedding into a self-contained song_view.html
 ```
 
 Re-run it after rebuilding an index — the HTML does not read `models/` live.
@@ -174,3 +166,13 @@ Model pickles and indices in `models/` are derived (gitignored). Regenerate them
 by running the notebooks in order (`01` → `05`); see the table in `CLAUDE.md`.
 The clustering/similarity notebooks (`01`, `02`, `04`, `05`) use the Leiden +
 standardized-index stack; `03` is an educational spectrogram demo.
+
+## References
+
+- **MERT** — Y. Li, R. Yuan, G. Zhang, et al. *MERT: Acoustic Music
+  Understanding Model with Large-Scale Self-supervised Training.*
+  [arXiv:2306.00107](https://arxiv.org/abs/2306.00107). Model:
+  [`m-a-p/MERT-v1-330M`](https://huggingface.co/m-a-p/MERT-v1-330M) (CC-BY-NC).
+- **MERIT** — AMAAI Lab. *MERIT: Learning Disentangled Music Representations for
+  Audio Similarity.* [arXiv:2605.27346](https://arxiv.org/abs/2605.27346).
+  Pretrained heads: [`amaai-lab/merit`](https://huggingface.co/amaai-lab/merit).
