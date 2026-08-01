@@ -132,7 +132,16 @@ class SongIndex:
             json.dump(meta, f)
 
     @classmethod
-    def load(cls, path: str | Path) -> "SongIndex":
+    def load(cls, path: str | Path, metadata: list[dict] | None = None) -> "SongIndex":
+        """Load a saved index.
+
+        ``metadata`` supplies the rows for an index whose JSON deliberately
+        omits them — a published bundle strips ``index_merit_agg.json``'s
+        metadata (an exact duplicate of ``index.json``'s) and leaves a
+        ``metadata_ref`` pointer instead. Passing the already-loaded list also
+        means both indices *share* it rather than holding two copies of 99k
+        dicts. Ignored when the payload carries its own metadata.
+        """
         path = Path(path)
         embeddings = np.load(path.with_suffix(".npy"))
         with open(path.with_suffix(".json")) as f:
@@ -157,7 +166,17 @@ class SongIndex:
             scale = payload.get("scale")
             obj.mean_ = np.asarray(mean, dtype=np.float32) if mean else None
             obj.scale_ = np.asarray(scale, dtype=np.float32) if scale else None
-            obj.metadata = payload["metadata"]
+            rows = payload.get("metadata")
+            if rows is None:
+                if metadata is None:
+                    ref = payload.get("metadata_ref")
+                    raise ValueError(
+                        f"{path.with_suffix('.json')} carries no metadata"
+                        + (f" (metadata_ref={ref!r})" if ref else "")
+                        + " and none was supplied to SongIndex.load"
+                    )
+                rows = metadata
+            obj.metadata = rows
         return obj
 
     def assert_compatible(self, other_config: dict) -> None:

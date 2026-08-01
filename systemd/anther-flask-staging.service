@@ -28,7 +28,9 @@ After=network.target
 Type=simple
 User=matt
 WorkingDirectory=/home/matt/Dev/Anther-staging
-ExecStart=/home/matt/Dev/Anther-staging/.venv/bin/python /home/matt/Dev/Anther-staging/ui/app.py
+# ui/wsgi.py (waitress), not ui/app.py (Werkzeug dev server) — see the note
+# in systemd/anther-flask.service and ui/wsgi.py.
+ExecStart=/home/matt/Dev/Anther-staging/.venv/bin/python /home/matt/Dev/Anther-staging/ui/wsgi.py
 Environment=ANTHER_UI_PORT=5001
 Restart=always
 RestartSec=5

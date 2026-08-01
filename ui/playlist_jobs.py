@@ -15,8 +15,8 @@ embed cache, so re-adding the playlist is a cheap resume.
 """
 
 import queue
+import secrets
 import threading
-import time
 
 import atlas
 
@@ -62,7 +62,10 @@ def start(pid: str, name: str, pending: list[dict]) -> str:
         existing = _active_pid.get((sid, pid))
         if existing is not None and _jobs[existing]["state"] == "running":
             return existing
-        job_id = f"pl-{pid[:8]}-{int(time.time() * 1000)}"
+        # Unguessable: the old pid+millisecond form could be enumerated by
+        # anyone who knew the playlist id. Ownership is checked independently
+        # (_owned_job) — this just removes the enumeration primitive.
+        job_id = f"pl-{secrets.token_urlsafe(16)}"
         _jobs[job_id] = {
             "job_id":     job_id,
             "session_id": sid,
@@ -84,44 +87,68 @@ def start(pid: str, name: str, pending: list[dict]) -> str:
     return job_id
 
 
+def _owned_job(job_id: str):
+    """The job record iff it belongs to the calling session, else None.
+
+    Job ids used to be guessable (playlist id + millisecond timestamp) and
+    neither endpoint checked ownership, so anyone could poll another user's
+    job — reading the fragments of their map — or cancel it. Ownership is
+    enforced here rather than in the routes so every caller inherits it.
+    Callers must hold _jobs_lock.
+    """
+    job = _jobs.get(job_id)
+    if job is None or job.get("session_id") != atlas.current_session_id():
+        return None
+    return job
+
+
+def _status_locked(job: dict, cursor: int = 0) -> dict:
+    """Status payload for an already-resolved job. Caller holds _jobs_lock."""
+    return {
+        "state":     job["state"],
+        "pid":       job["pid"],
+        "name":      job["name"],
+        "total":     job["total"],
+        "placed":    job["placed"],
+        "failed":    len(job["skipped"]),
+        "message":   job["message"],
+        "fragments": job["fragments"][cursor:],
+        "cursor":    len(job["fragments"]),
+        "skipped":   list(job["skipped"]),
+        "can_stop":  job["state"] == "running" and job["job_id"] not in _stopped_jobs,
+    }
+
+
 def get_status(job_id: str, cursor: int = 0) -> dict:
     """Job progress plus fragments[cursor:] — the client echoes the returned
-    cursor back so each fragment is delivered exactly once."""
+    cursor back so each fragment is delivered exactly once. Another session's
+    job is reported as "not_found", same as a missing one, so the endpoint
+    doesn't confirm that a given job id exists."""
     with _jobs_lock:
-        job = _jobs.get(job_id)
+        job = _owned_job(job_id)
         if job is None:
             return {"state": "not_found"}
-        can_stop = job["state"] == "running" and job_id not in _stopped_jobs
-        return {
-            "state":     job["state"],
-            "pid":       job["pid"],
-            "name":      job["name"],
-            "total":     job["total"],
-            "placed":    job["placed"],
-            "failed":    len(job["skipped"]),
-            "message":   job["message"],
-            "fragments": job["fragments"][cursor:],
-            "cursor":    len(job["fragments"]),
-            "skipped":   list(job["skipped"]),
-            "can_stop":  can_stop,
-        }
+        return _status_locked(job, cursor)
 
 
 def stop(job_id: str) -> dict:
     """Request that a running job stop after the current track.
     Returns the updated job status."""
     with _jobs_lock:
-        job = _jobs.get(job_id)
+        job = _owned_job(job_id)
         if job is None:
             return {"state": "not_found"}
         if job["state"] != "running":
             return {"error": f"Job {job_id} is not running", "state": job["state"]}
         if job_id in _stopped_jobs:
             return {"error": f"Job {job_id} is already stopping", "state": "stopping"}
-        
+
         _stopped_jobs.add(job_id)
         job["message"] = f"Stopping after current track… ({job['placed']}/{job['total']} placed)"
-        return get_status(job_id)
+        # _status_locked, not get_status: _jobs_lock is not reentrant and is
+        # already held here, so calling get_status would deadlock the request
+        # thread with the lock held, hanging every other job endpoint.
+        return _status_locked(job)
 
 
 def _worker_loop() -> None:

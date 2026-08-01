@@ -143,13 +143,41 @@ def build_merit_aggregate_index(
     }
 
 
-def load_merit_aggregate_index(bundle_dir: str | Path) -> SongIndex | None:
+def load_merit_aggregate_index(
+    bundle_dir: str | Path, metadata: list[dict] | None = None
+) -> SongIndex | None:
     """The bundle's MERIT-aggregate ``SongIndex``, or ``None`` if it hasn't
-    been built yet (older bundles / not yet run through this module)."""
+    been built yet (older bundles / not yet run through this module).
+
+    ``metadata`` is used when ``index_merit_agg.json`` omits its own — a
+    published bundle strips it as an exact duplicate of ``index.json``'s and
+    leaves a ``metadata_ref``. ``ReferenceCorpus.merit_index`` passes the main
+    index's already-loaded rows, so the two indices share one list.
+    """
     bundle_dir = Path(bundle_dir)
     if not (bundle_dir / f"{INDEX_MERIT_AGG_STEM}.npy").exists():
         return None
-    return SongIndex.load(bundle_dir / INDEX_MERIT_AGG_STEM)
+    if metadata is None:
+        # Standalone caller with no main index on hand: resolve the pointer.
+        metadata = _resolve_metadata_ref(bundle_dir, INDEX_MERIT_AGG_STEM)
+    return SongIndex.load(bundle_dir / INDEX_MERIT_AGG_STEM, metadata=metadata)
+
+
+def _resolve_metadata_ref(bundle_dir: Path, stem: str) -> list[dict] | None:
+    """Follow a ``metadata_ref`` in ``<stem>.json`` to the index that owns the
+    rows. Returns None when the payload has its own metadata (nothing to do)."""
+    json_path = bundle_dir / f"{stem}.json"
+    if not json_path.exists():
+        return None
+    with open(json_path) as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict) or payload.get("metadata") is not None:
+        return None
+    ref = payload.get("metadata_ref")
+    if not ref:
+        return None
+    with open(bundle_dir / f"{ref}.json") as f:
+        return json.load(f)["metadata"]
 
 
 def load_factor_vectors(bundle_dir: str | Path) -> dict[str, np.ndarray] | None:

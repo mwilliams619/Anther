@@ -337,6 +337,29 @@ def test_upload_without_artist_still_works_when_artist_mode_is_unavailable(
     assert response.get_json()['artist_fragment'] is None
 
 
+def test_same_upload_filename_gets_distinct_identity(
+        isolated_artist_sessions, monkeypatch):
+    atlas = isolated_artist_sessions
+    import app
+    ids = []
+
+    def fake_place(result):
+        ids.append(result['id'])
+        return {'nodes': [{'id': result['id']}], 'links': []}
+
+    monkeypatch.setattr(atlas, 'place_song', fake_place)
+    client = app.app.test_client()
+    for payload in (b'first audio', b'second audio'):
+        response = client.post('/api/upload', data={
+            'file': (io.BytesIO(payload), 'same-name.wav'),
+        }, content_type='multipart/form-data')
+        assert response.status_code == 200
+
+    assert len(ids) == 2
+    assert ids[0].startswith('upload:')
+    assert ids[0] != ids[1]
+
+
 class _FakeCorpus:
     """Minimal stand-in for ReferenceCorpus so the low-confidence pool can be
     built without loading the 100k-track bundle."""

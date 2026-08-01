@@ -11,7 +11,7 @@ precedent, because the data-engineering problem the corpus builder faces —
 embed once, freeze a coordinate system, map new items in cheaply — is the
 same one single-cell genomics solved when it went from per-dataset analysis to
 70-million-cell atlases. This plan is the **data-engineering** companion to the
-existing historical review in `implemented_archive/SCRNA_METHODS_REVIEW.md`,
+existing historical review in `private/implemented_archive/SCRNA_METHODS_REVIEW.md`,
 which already covered the clustering
 *algorithm* (Leiden, cluster-the-embedding, standardize-before-cosine,
 production-as-batch-effect).
@@ -50,6 +50,45 @@ this plan (this changelog is the record). What shipped:
 > **Note for production:** the validation DB was built `--no-membership` (playlist
 > tags aren't needed for the genre-free eval). Rebuild the SQLite DB *with*
 > membership before the 100k build so playlist-fit (design §5) is available.
+
+---
+
+## Hard ceilings: what the dump can actually supply per popularity band
+
+Measured on `data/mpd_dump/spotifydbdumpshare.sqlite` (2026-07-27). The
+`popularity` column is brutally skewed — **12.7M of the 13.3M tracks sit at
+popularity ≤ 30**, and popular music barely exists in this dump at all:
+
+| band | tracks | with preview | **capped ceiling** (`artist_cap=5`) |
+|---|---|---|---|
+| 0–30 (long tail) | 12,675,853 | 8,830,594 | **2,435,985** |
+| 31–70 (middle) | 603,324 | 471,819 | **207,425** (273,325 at cap 10) |
+| 71–100 (popular) | 2,832 | 1,639 | **1,341** |
+
+So any stratified request is capped hard: a nominally sensible 25/50/25 split at
+600k tracks asks for 300k middle-band and 150k popular tracks that **do not
+exist** — the popular ask is off by ~100×. `sample_tracks(require_preview=True)`
+also filters *before* the Deezer fallback in `sources.py` ever runs, so the
+fallback cannot recover a popular track that lacks a Spotify preview.
+
+Consequences for anyone extending a corpus from SQL:
+
+- **Pre-flight, always.** `mpd_sql.count_candidates()` gives the exact ceiling
+  for a band/cap/exclusion set in seconds. `scripts/corpus_enrichment/extend_sql.py`
+  calls it per stratum and prints a plan (`--plan-only` to stop there), clamping
+  each stratum to what exists and spilling the shortfall into bands with
+  headroom unless `--no-spill`. Before this check, exhaustion surfaced as a
+  `RuntimeError` *hours* into a fetch, one stratum at a time.
+- **Raising `--oversample-ratio` does not help** when the pool is DB-limited;
+  the ratio only buys headroom against dead preview URLs (which run ~0.005% —
+  199,102/199,111 fetched on the run that exposed this). `sql_source_oversampled`
+  now distinguishes the two failures in its error message.
+- **Pass `--exclude-checkpoint` for every prior checkpoint.** Omitting them
+  re-embeds tracks already done: the 200k/600k/remaining checkpoints hold
+  696,576 rows but only ~430k distinct tracks.
+- Excluding tracks *frees artist-cap slots*, promoting previously-capped tracks
+  of the same artist into the candidate set — so the remaining count after
+  excluding N tracks is not simply `ceiling − N`.
 
 ---
 
@@ -172,5 +211,5 @@ shape this wants.)
   billion-scale where IVF struggles; informs HNSW-over-IVF at high recall.
 
 _Clustering-algorithm precedents (Leiden, cluster-the-embedding, batch-effect
-correction) are in the historical `implemented_archive/SCRNA_METHODS_REVIEW.md`
+correction) are in the historical `private/implemented_archive/SCRNA_METHODS_REVIEW.md`
 and not repeated here._

@@ -22,7 +22,12 @@ After=network.target
 Type=simple
 User=matt
 WorkingDirectory=/home/matt/Dev/Anther-stable
-ExecStart=/home/matt/Dev/Anther-stable/.venv/bin/python /home/matt/Dev/Anther-stable/ui/app.py
+# ui/wsgi.py, not ui/app.py: app.py starts Werkzeug's development server
+# (no request timeouts, no connection limit, unhardened HTTP parsing).
+# wsgi.py serves the same app under waitress — one process, many threads,
+# which this app requires since the job registry, session registry, corpus
+# and MERT model are all process-local. See ui/wsgi.py for the full note.
+ExecStart=/home/matt/Dev/Anther-stable/.venv/bin/python /home/matt/Dev/Anther-stable/ui/wsgi.py
 Environment=ANTHER_UI_PORT=5000
 Restart=always
 RestartSec=5

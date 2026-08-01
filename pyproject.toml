@@ -11,6 +11,10 @@ requires-python = ">=3.10"
 dependencies = [
     "librosa>=0.10",
     "soundfile",
+    # iTunes previews are AAC in .m4a, which libsndfile cannot decode and which
+    # librosa's audioread fallback needs a system ffmpeg for. PyAV's manylinux
+    # wheels bundle their own FFmpeg, so the iTunes tier works without sudo.
+    "av",
     "numpy",
     "pandas",
     "scipy",
@@ -26,6 +30,8 @@ dependencies = [
     "torch>=2.1",
     "transformers>=4.40",
     "accelerate",
+    # corpus push/fetch — publishing a frozen bundle as a HF dataset repo
+    "huggingface_hub",
     "matplotlib",
     "seaborn",
     "tqdm",
@@ -33,6 +39,10 @@ dependencies = [
     "flask",
     "requests",
     "werkzeug",
+    # Production WSGI server (ui/wsgi.py). Single process + thread pool, which
+    # this app requires: the playlist job registry, session registry, corpus
+    # and MERT model are process-local and cannot be forked across workers.
+    "waitress",
 ]
 
 [project.optional-dependencies]
