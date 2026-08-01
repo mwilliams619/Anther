@@ -76,8 +76,9 @@ through them. See the [references](#references) for the papers.
 
 ## How similarity works
 <img width="4560" height="3210" alt="anther_pipeline_figure" src="https://github.com/user-attachments/assets/2d12bf88-b780-4329-ab07-5af27c09b7ba" />
-> _Panels: corpus construction (offline, once) and query placement (per song). Module-level detail in docs/architecture.md; mini-map geometry is illustrative._
 
+
+> _Panels: corpus construction (offline, once) and query placement (per song). Module-level detail in docs/architecture.md._
 1. **Every song becomes a point.** Run the audio through MERT/MERIT and you get
    a list of numbers. Think of that list as coordinates — the song's address in a
    very high-dimensional space.
