@@ -2,12 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- viewport-fit=cover so the mobile shell can pad itself out of the home
+       indicator / notch with env(safe-area-inset-*). -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Anther — Song Atlas</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=12" />
+  <link rel="stylesheet" href="/static/style.css?v=15" />
   <link rel="icon" type="image/png" href="/static/images/anther_logo.png" />
 </head>
 <body>
@@ -132,7 +134,7 @@
     </section>
 
     <!-- Upload -->
-    <section>
+    <section id="upload-section">
       <h2>Upload a track</h2>
       <div id="upload-zone">
         <p style="margin-bottom:8px">Drag &amp; drop audio here</p>
@@ -327,6 +329,10 @@
 <script src="/static/artist-graph.js?v=2"></script>
 <script src="/static/autoplay-traversal.js?v=1"></script>
 <script src="/static/autoplay.js?v=1"></script>
-<script src="/static/app.js?v=11"></script>
+<!-- Before app.js on purpose: the mobile shell rebuilds the DOM at parse time,
+     so app.js's init() binds listeners to elements already in their final
+     home, and initMobileSidebar() can see that the shell took over. -->
+<script src="/static/mobile.js?v=1"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

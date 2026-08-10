@@ -22,6 +22,7 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `ui/static/autoplay-traversal.js` | Pure DFS-with-backtracking planner over the query-node subgraph — no DOM, no audio, unit-tested in `tests/js/` |
 | `ui/static/autoplay.js` | Graph autoplay player: one persistent Spotify IFrame controller, end-of-track detection, resolve-ahead, camera follow |
 | `ui/static/app.js` | Song/artist view switching, search, detail popovers, uploads, recommend-from-map, mentor chat panel, autoplay transport bar |
+| `ui/static/mobile.js` | Phone shell only — re-hosts the same DOM in a bottom sheet under 768px (see "Mobile shell" below); inert on desktop |
 | `mentor/service.py` | Separate warm process hosting `MusicMentor` (chat/ReAct) over HTTP; `ui/app.py` forwards `/api/mentor/*` to it (see "Mentor chat" below) |
 
 ## Routes (`ui/app.py`)
@@ -259,6 +260,50 @@ storage — private mode never errors, it just doesn't persist).
 **Graph tours ignore the player setting and always use the Spotify embed**,
 because it is the only source that can play a full track. Changing the player
 stops whatever is currently sounding, so the two sources can't overlap.
+
+## Mobile shell — one surface at thumb height
+
+Phones get a different **shell**, not a different app. `ui/static/mobile.js`
+activates on `(max-width: 768px)` and re-hosts the existing UI in a bottom
+sheet; everything below `body.mshell` in `style.css` styles it. Design source:
+`ui/Anther Mobile.dc.html`, option **1b**.
+
+**Shape.** The map keeps the whole screen. A floating pill at the top carries
+the brand, the live song count, the song/artist view toggle, 💬 and ⚙. A sheet
+sits on the bottom in one of three states:
+
+| State | Height | Contents |
+|---|---|---|
+| `bar` | 82px + safe area | search field + ⇉ (tour the map) |
+| `expanded` | 72dvh | tabs — Search / My map / Upload / Settings — over the panel |
+| `detail` | 62dvh | `#detail-panel`, replacing the browse chrome entirely |
+
+Drag or tap the grip to move between them; the scrim puts it back down. Leaving
+`detail` deselects, so a pinned node never survives behind an invisible panel.
+
+**It moves markup, it does not duplicate it.** `#view-mode`, `#mentor-toggle`,
+`#settings-popover`, `.panel-left` and `#detail-panel` are *moved* into the
+sheet, so `app.js` keeps driving them by id and every listener survives. Two
+consequences worth knowing before editing either file:
+
+- Tabs work by toggling a `.mob-hidden` class on sections, layered *on top of*
+  the `[hidden]` attributes `setViewMode()` already manages — the tab picks the
+  group, `setViewMode` picks song-vs-artist within it.
+- The sheet **follows** `#detail-panel`'s `hidden` attribute via a
+  `MutationObserver` rather than intercepting selection, so every path that
+  opens a detail (node tap, neighbour row, tour) lands in the same place.
+- Every move is recorded, so a rotation back over 768px tears the shell down
+  and restores the desktop DOM exactly. `initMobileSidebar()` (the older
+  left-drawer shell, still in `app.js`) stands down while the sheet is active.
+- `AtlasGraph`/`AtlasAutoplay`/`AtlasMobile` are `const`s in the global
+  **lexical** scope — they are not properties of `window`. Cross-file guards
+  must be `typeof AtlasMobile !== 'undefined'`, never `window.AtlasMobile`.
+
+**Tap targets.** A corpus node is 5px across. `graph.js` gives every node an
+invisible 36px `rect.hit-target` when `(pointer: coarse)` matches, sized 0 on a
+mouse so hover targeting is unchanged. It is a `<rect>` on purpose: the blanket
+`.gnode circle` rules (selected ring, breathing, autoplay pulse) would paint a
+circle. `.btn-icon` goes 28px → 40px shell-wide for the same reason.
 
 ## Similarity scoring — aggregate score + expandable breakdown
 
