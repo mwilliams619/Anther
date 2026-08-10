@@ -133,5 +133,119 @@ This measures whether the EP is **acoustically consistent** with the playlist's 
 
 ---
 
-## 6. One-line verdict
+## 6. Publishing a bundle (`corpus publish`)
+
+A built bundle is not redistributable as-is. `anther_ml/corpus/publish.py` copies
+one into a publishable form:
+
+```bash
+python -m anther_ml.corpus publish models/corpus_mpd_100k_merit \
+    --out models/publish/corpus_mpd_100k_merit [--dry-run]
+```
+
+Measured on the real 100k MERIT bundle — **3,644.6 MB → 1,170.7 MB (68% smaller)**:
+
+| Transformation | Why | Effect |
+|---|---|---|
+| Strip `metadata[i]["playlists"]` | Playlist→track association is the substance of MPD; track id/name/artist are Spotify catalog facts | `index.json`: 79.0 MB → 13.6 MB (82% of the file) |
+| Point `index_merit_agg.json` at `index.json` | Its metadata block is an exact duplicate; a `metadata_ref` pointer replaces it | 79.0 MB → 0.0 MB |
+| Drop `merit_backbone.npy` | Build intermediate — only `merit_index.py` and `extend.py` read it, never the query path | −2.0 GB |
+| `leiden.pkl` → `leiden.npz` | The pickle holds fitted sklearn/UMAP objects: pins the reader to Python 3.11 + matching numba/sklearn, and makes a downloaded bundle an RCE vector | 334.6 MB → 37.5 MB |
+
+Everything else is copied verbatim (copy-unless-excluded), so sidecars added
+later travel without touching this module.
+
+`embeddings.npy` **cannot** be dropped — `ui/atlas.py` reads raw corpus rows to
+re-query, cache, and recommend. It is instead loaded lazily and memory-mapped
+(`ReferenceCorpus.embeddings`), since the access pattern is single-row lookup:
+only touched pages are paged in. `verify()` reads the row count from the `.npy`
+header (`_npy_rows`) so `load()` never maps the file at all.
+
+Combined with the metadata dedupe (both indices now *share* one list of 99k
+dicts rather than parsing two), loading the published 100k bundle costs
+**0.5 s / 1.54 GB peak RSS** against **2.7 s / 2.54 GB** for the source.
+
+**Spotify ids are deliberately kept.** A `spotify:`-prefixed node id
+short-circuits `get_spotify_track_id` (`ui/atlas.py`), so playback stays free —
+no credentials, no title/artist cross-match, no wrong-song risk. Provenance is
+stamped into the published `manifest.json` under `"publish"` rather than
+scrubbed; `source: "mpd_sql"` is left on every row.
+
+**Cluster labels and micro-genre tags are unaffected.** They were *seeded* from
+playlist names at build time, but what ships is their output
+(`cluster_profiles.json`, `tag_probe.pkl`, `track_tags.json`).
+
+### The portable Leiden format
+
+`cluster.save_leiden_portable` / `load_leiden_portable` write plain arrays plus a
+JSON blob, and rebuild the transforms as `FrozenStandardScaler` / `FrozenPCA` —
+shims that reimplement sklearn's own `transform` arithmetic (including its dtype
+path: `StandardScaler` operates in-place so float32 stays float32; `PCA` does
+not). Only `.transform` is ever called on these objects (`assign_cluster_knn`,
+`corpus/place.py`), so the shims are behaviourally complete, and the format is
+independent of the installed sklearn version. `np.load(..., allow_pickle=False)`
+suffices to read it.
+
+`reducer_2d` has no portable form — a fitted UMAP *is* its kNN index. It is
+dropped, and every consumer already guards for that: `place()` returns
+`coords_2d=None`, `extend_corpus` falls back to zero coords. The bundle's own
+`embedding_2d.npy` is untouched, so the frozen picture still renders, and the web
+UI never reads `coords_2d` (the force graph computes its own layout).
+
+### What a published bundle loses
+
+`corpus.playlists()`, `playlist_member_indices()`, and the in-corpus playlist
+index (`ui/atlas.py:_build_playlist_index`) go empty. Note this is *broader* than
+the full-MPD playlist search, which is separately gated on `ANTHER_MPD_DB`.
+
+### Verification
+
+`publish` runs `verify_published` unless `--no-verify`. The load-bearing check is
+that the published transform agrees with the source's pickled estimators — a
+drifted transform would silently misplace every query, since cluster assignment
+is a kNN vote in that space. Measured on the 100k bundle: `2.86e-06` max abs
+error, and an A/B of 200 real queries through both bundles gave **200/200
+identical cluster id, confidence, and top-10 neighbour list**.
+
+Without a source bundle to compare against, the check falls back to *cosine*
+agreement with the stored `clustering_space`. That fallback is deliberately not
+an absolute-error check: `clustering_space` is sklearn's float32 `fit_transform`
+output, and re-deriving it from `embeddings.npy` accumulates ~5e-3 relative error
+over a 1024-dim float32 matmul (per-row cosine still ≥ 0.99995). That is a
+property of the original bundle, not of publishing.
+
+### Distribution — `corpus push` / `corpus fetch`
+
+`anther_ml/corpus/hub.py` moves a published bundle through a Hugging Face
+**dataset** repo (git-LFS, resumable downloads, Xet chunk dedupe so re-uploads
+push only what changed, and revisions that match the bundle's frozen-map
+semantics — pin one and every user has byte-identical geography).
+
+```bash
+python -m anther_ml.corpus push models/publish/corpus_mpd_100k_merit \
+    --repo-id you/anther-corpus-mpd-100k --revision v1
+python -m anther_ml.corpus fetch --repo-id you/anther-corpus-mpd-100k \
+    --out models/corpus_mpd_100k_merit --revision v1
+```
+
+Three policies are enforced rather than left to habit:
+
+- **`push` refuses an unpublished bundle** (`bundle_publish_state`) — a leftover
+  `leiden.pkl`, `merit_backbone.npy`, or surviving playlist membership blocks
+  the upload, and the repo is not created before that check runs. There is no
+  override: this repository is public, so unsafe bundles must be published
+  first.
+- **Repos are created private by default.** Going public is a deliberate act,
+  not a side effect of the first upload.
+- **Downloads are never implicit.** `ReferenceCorpus.load` fetches only when
+  given a `repo_id` (or `ANTHER_CORPUS_REPO` is set) *and* the bundle is missing;
+  otherwise it raises with the exact `corpus fetch` command. A bundle already on
+  disk is never re-fetched — a frozen map that moved under a running session
+  would break the guarantee the corpus exists to make.
+
+`fetch` skips `merit_backbone.npy` unless `--include-backbone`.
+
+---
+
+## 7. One-line verdict
 A MERT reference corpus is a **frozen map of released music** — embeddings + the fitted whitening/graph/cluster model + a config stamp — fit once on a broad, deduped, deployment-matched sample. It turns clustering from an unstable, catalog-relative operation on 100 songs into stable *placement onto a fixed coordinate system*, which is exactly what "see how my song compares to what's out there / where it fits on a playlist" requires.

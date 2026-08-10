@@ -20,6 +20,12 @@ const AtlasGraph = (() => {
   // lets it spread further before settling. 0.03-0.10 is the useful range.
   const GRAVITY_STRENGTH = 0.03;
 
+  // A corpus node is 5px across — fine for a cursor, far under the ~44px a
+  // fingertip needs. On touch devices each node gets an invisible box to catch
+  // the tap; on a mouse it is zero-sized, so hover targeting stays exactly as
+  // tight as it always was.
+  const TOUCH_HIT_R = window.matchMedia('(pointer: coarse)').matches ? 18 : 0;
+
   // Each qq-edge's human-readable similarity score (0-100) is computed once on
   // the backend (atlas.py: _display_score, a fixed calibration against the
   // corpus null-distribution — not an on-map rescale) and persisted on the
@@ -212,6 +218,14 @@ const AtlasGraph = (() => {
     enter.append('text')
       .attr('class', 'glabel')
       .attr('x', 10).attr('dy', '0.32em');
+    // A <rect>, not a <circle>: the blanket `.gnode circle` rules in style.css
+    // (selected ring, breathing, autoplay pulse) would otherwise paint this
+    // invisible target as a giant one. Appended last so it sits over the label.
+    enter.append('rect')
+      .attr('class', 'hit-target')
+      .attr('x', -TOUCH_HIT_R).attr('y', -TOUCH_HIT_R)
+      .attr('width', TOUCH_HIT_R * 2).attr('height', TOUCH_HIT_R * 2)
+      .attr('fill', 'transparent');
 
     nodeSel = enter.merge(nodeSel);
 

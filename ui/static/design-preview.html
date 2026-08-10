@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en" data-design="new">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anther — design preview · elevation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   Anther design preview — ELEVATION. THROWAWAY.
+   Nothing here is imported by the app. Delete once the design lands.
+
+   No metaphor, no atmosphere, no effects on the map. Depth is z-height and
+   nothing else. :root holds the proposal; [data-design="current"] reverts to
+   today, so the toggle is a true A/B of identical markup.
+   See docs/projects/UI_DESIGN_OVERHAUL_PLAN.md
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* ── The elevation ladder ──────────────────────────────────────────────
+     On a near-black UI a shadow alone can't carry height — there's no
+     headroom beneath it. So height is carried FIRST by surface lightness
+     and only reinforced by shadow. This is why the two earlier attempts
+     read as effects: both tried to make near-black cast light. */
+  --z0:      #0D0D0D;                 /* the map — the floor everything sits on */
+  --z1-top:  #191919;  --z1-bot: #141414;   /* sidebar, mentor panel */
+  --z2-top:  #222222;  --z2-bot: #1A1A1A;   /* cards over the map */
+  --z3-top:  #282828;  --z3-bot: #1F1F1F;   /* popovers, tooltips, modals */
+
+  /* Shadows are warm-biased black, so the dark never reads blue.
+     You don't perceive it as warm; it just stops looking cold. */
+  --elev-1: 0 1px 2px rgba(20,15,10,0.40), 0 3px 8px rgba(20,15,10,0.22);
+  --elev-2: 0 4px 10px rgba(20,15,10,0.45), 0 14px 30px rgba(20,15,10,0.40);
+  --elev-3: 0 10px 20px rgba(20,15,10,0.50), 0 28px 60px rgba(20,15,10,0.50);
+
+  --bg:         #0A0A0A;
+  --surface-hi: #262626;
+  --border:     #2A2A2A;   /* was #4A4A4A — elevation separates now, so a
+                              bright hairline is just noise */
+  --text:       #FAFAFA;
+  --text-mid:   #AFAFAF;
+  --text-muted: #7A7A7A;
+
+  --primary:    #5B8FCC;
+  --primary-hi: #7AABDD;
+  --warning:    #957545;
+  --success:    #4E6155;
+
+  --radius:     3px;
+  --transition: 100ms ease;
+}
+
+[data-design="current"] {
+  --z0: #101010;
+  --z1-top: #1A1A1A; --z1-bot: #1A1A1A;
+  --z2-top: #1A1A1A; --z2-bot: #1A1A1A;
+  --z3-top: #1A1A1A; --z3-bot: #1A1A1A;
+  --elev-1: none;
+  --elev-2: 0 4px 16px rgba(0,0,0,0.6);
+  --elev-3: 0 4px 16px rgba(0,0,0,0.6);
+  --border: #4A4A4A;
+  --surface-hi: #2A2A2A;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app { display: grid; grid-template-columns: 320px 1fr; height: 100dvh; overflow: hidden; }
+
+/* ── z1: the sidebar ────────────────────────────────────────────────────
+   A graded surface rather than a flat fill, and no right border — the map
+   receives its shadow instead (see .boundary). */
+.panel {
+  display: flex; flex-direction: column; overflow-y: auto;
+  padding: 18px 16px; gap: 26px;
+  background: linear-gradient(180deg, var(--z1-top), var(--z1-bot));
+  position: relative; z-index: 2;
+}
+[data-design="current"] .panel { border-right: 1px solid var(--border); }
+
+h1 { font-size: 16px; font-weight: 500; letter-spacing: -0.01em; }
+h2 { font-size: 11px; font-weight: 500; color: var(--text-muted);
+     text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+.subtitle { font-size: 11px; color: var(--text-muted); }
+.hint-text { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+section { display: flex; flex-direction: column; }
+.header { display: flex; align-items: center; gap: 8px; position: relative; }
+
+/* ── Controls: flat. Deliberately.
+   Plates and emboss were tried and rejected; depth belongs to containers,
+   not to every clickable thing inside them. ───────────────────────────── */
+.btn {
+  background: var(--surface-hi); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 12px;
+  padding: 7px 12px; border-radius: var(--radius); cursor: pointer;
+  transition: background var(--transition);
+}
+.btn:hover { background: #303030; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: #0A0A0A; font-weight: 500; }
+.btn-primary:hover { background: var(--primary-hi); border-color: var(--primary-hi); }
+
+.btn-icon {
+  background: none; border: none; color: var(--text-mid);
+  font-size: 14px; cursor: pointer; width: 26px; height: 26px;
+  border-radius: var(--radius); display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.btn-icon:hover { background: var(--surface-hi); color: var(--text); }
+
+.btn:focus-visible, .btn-icon:focus-visible, .mode-btn:focus-visible,
+.btn-tiny:focus-visible, input:focus-visible {
+  outline: none; box-shadow: 0 0 0 2px rgba(91,143,204,0.55);
+}
+
+.search-mode { display: flex; gap: 4px; margin-bottom: 10px; }
+.mode-btn {
+  flex: 1; background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); font-family: inherit; font-size: 11px;
+  padding: 5px 0; border-radius: var(--radius); cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+.mode-btn:hover { color: var(--text-mid); }
+.mode-btn.active { background: var(--surface-hi); color: var(--text); border-color: #3A3A3A; }
+
+/* Inputs sit BELOW their panel — the one place a recess is honest, since
+   you're putting something into them. */
+.search-bar input {
+  width: 100%; background: #0E0E0E; border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 12px;
+  padding: 8px 10px; border-radius: var(--radius); outline: none;
+}
+[data-design="current"] .search-bar input { background: var(--bg); }
+.search-bar input:focus { border-color: var(--primary); }
+.search-bar input::placeholder { color: var(--text-muted); }
+
+.track-row, .map-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 6px; border-radius: var(--radius); cursor: pointer;
+  transition: background var(--transition);
+}
+.track-row:hover, .map-row:hover { background: var(--surface-hi); }
+.cover { width: 34px; height: 34px; border-radius: 2px; flex-shrink: 0;
+         background: linear-gradient(135deg, #2e3440, #1b2028); }
+.track-info { flex: 1; min-width: 0; }
+.track-title { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.track-artist { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ring-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.src-badge {
+  font-size: 9px; font-weight: 500; padding: 2px 6px; border-radius: var(--radius);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  background: rgba(91,143,204,0.15); color: var(--primary);
+}
+
+#upload-zone {
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 18px 12px; text-align: center; color: var(--text-muted); font-size: 12px;
+}
+#upload-zone span { color: var(--primary); }
+
+.map-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.map-action-buttons { display: flex; gap: 6px; }
+.btn-tiny {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  font-family: inherit; font-size: 11px; padding: 4px 8px;
+  border-radius: var(--radius); cursor: pointer;
+}
+.btn-tiny:hover { color: var(--text); background: var(--surface-hi); }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+  background: var(--surface-hi); border: 1px solid var(--border);
+  border-radius: var(--radius); font-size: 11px; color: var(--text-mid);
+}
+
+/* ── z0: the map. The floor. Untouched apart from being the darkest plane —
+   which is itself what makes it recede and the content stand out. ─────── */
+.graph-wrap { position: relative; overflow: hidden; background: var(--z0); }
+#graph { width: 100%; height: 100dvh; display: block; cursor: grab; }
+
+/* The sidebar's cast shadow, received by the map. Replaces the 1px border. */
+.boundary {
+  position: absolute; inset: 0 auto 0 0; width: 130px; pointer-events: none;
+  background: linear-gradient(90deg, rgba(0,0,0,0.72), rgba(0,0,0,0));
+  z-index: 1;
+}
+[data-design="current"] .boundary { display: none; }
+
+.glink { stroke: var(--border); stroke-opacity: 0.30; stroke-width: 1px; }
+.glink-qq { stroke: var(--success); stroke-opacity: 0.5; stroke-width: 1.2px; }
+[data-design="current"] .glink { stroke-opacity: 0.18; }
+
+circle.query-node { fill: var(--primary); stroke: var(--text); stroke-width: 2px; }
+circle.corpus-node { fill: #555577; stroke: var(--border); stroke-width: 1px;
+                     opacity: 0.45; filter: grayscale(0.8) brightness(0.75); }
+.gnode { cursor: pointer; }
+.gnode:hover circle.corpus-node { opacity: 1; filter: none; }
+.glabel { fill: var(--text-muted); font-size: 11px; pointer-events: none; }
+.glabel-query { fill: var(--text-mid); }
+
+/* ── z2: cards lying over the map ───────────────────────────────────────
+   Lighter than the sidebar because they're higher, graded top-to-bottom so
+   they have a form of their own, and casting onto the map below.
+   No top-edge highlight — the surface gradient does that job on its own. */
+#detail-panel {
+  position: absolute; top: 16px; right: 16px; width: 320px;
+  max-height: calc(100% - 130px); overflow-y: auto;
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
+  border: none; border-radius: var(--radius); padding: 16px; z-index: 50;
+  box-shadow: var(--elev-2);
+}
+[data-design="current"] #detail-panel { border: 1px solid var(--border); }
+
+.detail-title { font-size: 15px; font-weight: 500; word-break: break-word; }
+.detail-artist { font-size: 13px; color: var(--text-mid); }
+.detail-meta { font-size: 11px; color: var(--warning); margin-top: 8px;
+               text-transform: uppercase; letter-spacing: 0.06em; }
+.detail-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.similar-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; }
+.similar-score { font-size: 11px; color: var(--primary); font-variant-numeric: tabular-nums; }
+.breakdown-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.breakdown-label { font-size: 10px; color: var(--text-muted); width: 46px; }
+.breakdown-bar { height: 4px; background: #0E0E0E; border-radius: 2px; overflow: hidden; flex: 1; }
+.breakdown-fill { height: 100%; background: var(--primary); }
+
+.autoplay-bar {
+  position: absolute; left: 24px; right: 356px; bottom: 46px;
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
+  border: none; border-radius: var(--radius); padding: 9px 12px; z-index: 40;
+  box-shadow: var(--elev-2);
+}
+[data-design="current"] .autoplay-bar { border: 1px solid var(--border); }
+.autoplay-controls { display: flex; gap: 4px; }
+.autoplay-meta { min-width: 0; flex: 0 1 220px; }
+.autoplay-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.autoplay-sub { font-size: 11px; color: var(--text-muted); }
+.autoplay-fake-embed {
+  flex: 1; height: 32px; border-radius: var(--radius);
+  background: #141414; border: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 10px;
+  font-size: 10px; color: #5c5c5c;
+}
+
+/* ── z3: popovers, tooltips, modals — the top of the ladder ─────────────── */
+.settings-popover {
+  position: absolute; top: 32px; right: 0; width: 268px; z-index: 80;
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
+  border: none; border-radius: var(--radius); padding: 14px;
+  box-shadow: var(--elev-3);
+}
+[data-design="current"] .settings-popover { border: 1px solid var(--border); }
+.settings-popover h3 { font-size: 11px; font-weight: 500; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.settings-row { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; font-size: 12px; }
+.settings-row em { display: block; font-style: normal; font-size: 11px; color: var(--text-muted); }
+
+#graph-tooltip {
+  position: absolute; top: 292px; left: 210px; z-index: 60;
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
+  border: none; border-radius: var(--radius); padding: 8px 10px;
+  pointer-events: none; box-shadow: var(--elev-3);
+}
+[data-design="current"] #graph-tooltip { border: 1px solid var(--border); }
+.tip-title { font-size: 12px; }
+.tip-artist { font-size: 11px; color: var(--text-muted); }
+.tip-label { font-size: 10px; color: var(--warning); text-transform: uppercase;
+             letter-spacing: 0.06em; margin-top: 4px; }
+
+.graph-hint {
+  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--text-muted); pointer-events: none; text-align: center;
+}
+
+/* ── Level inspector (preview only, not part of the design) ─────────────── */
+[data-levels="on"] .panel::after,
+[data-levels="on"] #detail-panel::after,
+[data-levels="on"] .autoplay-bar::after,
+[data-levels="on"] .settings-popover::after,
+[data-levels="on"] .graph-wrap::after {
+  position: absolute; top: 4px; left: 6px; z-index: 200;
+  font: 500 9px/1.4 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.1em; color: #FFD08A;
+  background: rgba(0,0,0,0.7); padding: 1px 5px; border-radius: 2px;
+}
+[data-levels="on"] .graph-wrap::after      { content: 'z0  MAP  #0D0D0D'; }
+[data-levels="on"] .panel::after           { content: 'z1  SIDEBAR  #191919 → #141414'; position: fixed; }
+[data-levels="on"] #detail-panel::after    { content: 'z2  CARD  #222222 → #1A1A1A'; }
+[data-levels="on"] .autoplay-bar::after    { content: 'z2  CARD'; }
+[data-levels="on"] .settings-popover::after{ content: 'z3  POPOVER  #282828 → #1F1F1F'; }
+
+#panel-controls {
+  position: fixed; bottom: 14px; right: 14px; z-index: 999;
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(8,8,8,0.92); border: 1px solid #2A2A2A;
+  border-radius: 999px; padding: 6px 8px 6px 14px;
+  font-size: 11px; color: var(--text-mid);
+}
+#panel-controls b { color: var(--text); font-weight: 500; }
+#panel-controls button {
+  background: #242424; border: 1px solid #3A3A3A; color: var(--text);
+  font-family: inherit; font-size: 11px;
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+}
+#panel-controls button:hover { background: #2E2E2E; }
+#panel-controls button.primary { background: var(--primary); border-color: var(--primary); color: #0A0A0A; font-weight: 500; }
+#panel-controls kbd {
+  font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 10px;
+  color: var(--text-muted); border: 1px solid #2A2A2A; border-radius: 3px; padding: 1px 4px;
+}
+</style>
+</head>
+<body>
+
+<div id="panel-controls">
+  <span>design: <b id="design-label">NEW</b></span>
+  <button id="design-btn" class="primary">compare <kbd>D</kbd></button>
+  <button id="levels-btn">show levels <kbd>E</kbd></button>
+</div>
+
+<div class="app">
+
+  <!-- ── z1 ─────────────────────────────────────────────────────────────── -->
+  <div class="panel">
+    <div class="header">
+      <h1>Anther</h1>
+      <span class="subtitle">song atlas</span>
+      <button class="btn-icon" style="margin-left:auto" title="Settings">⚙</button>
+      <button class="btn-icon" title="Help">?</button>
+
+      <!-- z3, shown open so the top of the ladder is visible -->
+      <div class="settings-popover">
+        <h3>Song player</h3>
+        <label class="settings-row">
+          <input type="radio" name="player" checked>
+          <span><strong>Deezer preview</strong><em>30s clip, plays inline, no login</em></span>
+        </label>
+        <label class="settings-row">
+          <input type="radio" name="player">
+          <span><strong>Spotify embed</strong><em>Full track if you're logged in</em></span>
+        </label>
+      </div>
+    </div>
+
+    <section>
+      <h2>Search &amp; add</h2>
+      <div class="search-mode">
+        <button class="mode-btn active">Tracks</button>
+        <button class="mode-btn">Playlists</button>
+        <button class="mode-btn">Albums</button>
+      </div>
+      <p class="hint-text">Corpus → Deezer → Spotify. Click a result to place it.</p>
+      <div class="search-bar"><input type="text" placeholder="Artist, track…" /></div>
+      <div style="margin-top:10px">
+        <div class="track-row">
+          <div class="cover"></div>
+          <div class="track-info">
+            <div class="track-title">Sun Bleached Flies</div>
+            <div class="track-artist">Ethel Cain</div>
+          </div>
+          <span class="src-badge">corpus</span>
+        </div>
+        <div class="track-row">
+          <div class="cover"></div>
+          <div class="track-info">
+            <div class="track-title">Night Drive</div>
+            <div class="track-artist">Yaeji</div>
+          </div>
+          <span class="src-badge">corpus</span>
+        </div>
+        <div class="track-row">
+          <div class="cover"></div>
+          <div class="track-info">
+            <div class="track-title">Weightless, pt. 2</div>
+            <div class="track-artist">Marconi Union</div>
+          </div>
+          <span class="src-badge">corpus</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Map</h2>
+      <div class="search-bar"><input type="text" placeholder="Filter by artist, playlist, album…" /></div>
+      <div style="margin-top:8px"><span class="filter-chip">late night · 24 tracks ×</span></div>
+      <div style="margin-top:10px">
+        <div class="map-row">
+          <span class="ring-dot" style="background:#5B8FCC"></span>
+          <div class="track-info">
+            <div class="track-title">Alone Again</div>
+            <div class="track-artist">The Weeknd</div>
+          </div>
+        </div>
+        <div class="map-row">
+          <span class="ring-dot" style="background:#957545"></span>
+          <div class="track-info">
+            <div class="track-title">Redbone</div>
+            <div class="track-artist">Childish Gambino</div>
+          </div>
+        </div>
+        <div class="map-row">
+          <span class="ring-dot" style="background:#4E6155"></span>
+          <div class="track-info">
+            <div class="track-title">Self Control</div>
+            <div class="track-artist">Frank Ocean</div>
+          </div>
+        </div>
+        <div class="map-row">
+          <span class="ring-dot" style="background:#5B8FCC"></span>
+          <div class="track-info">
+            <div class="track-title">Cranes in the Sky</div>
+            <div class="track-artist">Solange</div>
+          </div>
+        </div>
+      </div>
+      <div class="map-actions">
+        <span class="hint-text" style="margin:0" id="node-count"></span>
+        <div class="map-action-buttons">
+          <button class="btn-tiny">Artist graph</button>
+          <button class="btn-tiny">Clear map</button>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="margin-top:10px">Recommend similar</button>
+    </section>
+
+    <section>
+      <h2>Upload a track</h2>
+      <div id="upload-zone">
+        <p style="margin-bottom:8px">Drag &amp; drop audio here</p>
+        <p>or <span>browse files</span></p>
+        <p style="margin-top:6px;font-size:11px">MP3, WAV, FLAC, M4A · max 25 MB</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ── z0 ─────────────────────────────────────────────────────────────── -->
+  <div class="graph-wrap">
+    <svg id="graph"></svg>
+    <div class="boundary"></div>
+
+    <div id="graph-tooltip">
+      <div class="tip-title">Self Control</div>
+      <div class="tip-artist">Frank Ocean</div>
+      <div class="tip-label">similarity 87</div>
+    </div>
+
+    <aside id="detail-panel">
+      <div class="detail-title">Cranes in the Sky</div>
+      <div class="detail-artist">Solange</div>
+      <div class="detail-meta">cluster 14 · neo-soul</div>
+
+      <div class="detail-section">
+        <h2 style="margin-bottom:8px">Similar songs</h2>
+        <div class="similar-row">
+          <div class="track-info">
+            <div class="track-title">Self Control</div>
+            <div class="track-artist">Frank Ocean</div>
+          </div>
+          <span class="similar-score">87</span>
+        </div>
+        <div class="breakdown-row">
+          <span class="breakdown-label">melody</span>
+          <span class="breakdown-bar"><span class="breakdown-fill" style="width:82%"></span></span>
+        </div>
+        <div class="breakdown-row">
+          <span class="breakdown-label">rhythm</span>
+          <span class="breakdown-bar"><span class="breakdown-fill" style="width:61%;background:var(--warning)"></span></span>
+        </div>
+        <div class="breakdown-row">
+          <span class="breakdown-label">timbre</span>
+          <span class="breakdown-bar"><span class="breakdown-fill" style="width:74%;background:var(--success)"></span></span>
+        </div>
+        <div class="similar-row" style="margin-top:8px">
+          <div class="track-info">
+            <div class="track-title">Redbone</div>
+            <div class="track-artist">Childish Gambino</div>
+          </div>
+          <span class="similar-score">81</span>
+        </div>
+        <div class="similar-row">
+          <div class="track-info">
+            <div class="track-title">Nights</div>
+            <div class="track-artist">Frank Ocean</div>
+          </div>
+          <span class="similar-score">78</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="autoplay-bar">
+      <div class="autoplay-controls">
+        <button class="btn-icon">⏸</button>
+        <button class="btn-icon">⏭</button>
+        <button class="btn-icon">■</button>
+      </div>
+      <div class="autoplay-meta">
+        <div class="autoplay-title">Nights</div>
+        <div class="autoplay-sub">Frank Ocean · 4 of 28</div>
+      </div>
+      <div class="autoplay-fake-embed">spotify embed</div>
+    </div>
+
+    <div class="graph-hint">drag nodes · scroll to zoom · hover to explore · click for details</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const NS  = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('graph');
+  const el  = (n, a) => { const e = document.createElementNS(NS, n);
+    for (const k in (a || {})) e.setAttribute(k, a[k]); return e; };
+
+  let seed = 20260807;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+  // Film grain, exactly as graph.js already paints it — unchanged.
+  const defs = el('defs');
+  const grain = el('filter', { id: 'grain-filter' });
+  grain.appendChild(el('feTurbulence', { type: 'fractalNoise', baseFrequency: '0.8', numOctaves: '2' }));
+  grain.appendChild(el('feColorMatrix', { type: 'saturate', values: '0' }));
+  defs.appendChild(grain);
+  svg.appendChild(defs);
+  svg.appendChild(el('rect', { width: '100%', height: '100%',
+                               opacity: '0.035', filter: 'url(#grain-filter)' }));
+
+  const W = svg.clientWidth || 1100, H = svg.clientHeight || 800;
+  const titles = ['Cranes in the Sky', 'Self Control', 'Redbone', 'Alone Again',
+                  'Nights', 'Night Drive', 'Sun Bleached Flies', 'Pink + White',
+                  'Weightless', 'Ivy', 'Cellophane', 'Motion Sickness'];
+
+  const nodes = [];
+  const centers = [[W * 0.42, H * 0.32], [W * 0.63, H * 0.62], [W * 0.33, H * 0.70]];
+  centers.forEach((c, ci) => {
+    for (let i = 0; i < 14; i++) {
+      const query = i < 4;
+      const a = rnd() * Math.PI * 2;
+      const d = (query ? 32 : 78) + rnd() * (query ? 62 : 145);
+      nodes.push({
+        ci: ci, query: query,
+        x: c[0] + Math.cos(a) * d, y: c[1] + Math.sin(a) * d * 0.78,
+        name: query ? titles[(ci * 4 + i) % titles.length] : ''
+      });
+    }
+  });
+
+  const gLink = el('g'), gNode = el('g');
+  nodes.forEach((n, i) => nodes.forEach((m, j) => {
+    if (j <= i || n.ci !== m.ci) return;
+    if (Math.hypot(n.x - m.x, n.y - m.y) > 132) return;
+    gLink.appendChild(el('line', {
+      class: 'glink' + (n.query && m.query ? ' glink-qq' : ''),
+      x1: n.x, y1: n.y, x2: m.x, y2: m.y
+    }));
+  }));
+
+  nodes.forEach(n => {
+    const g = el('g', { class: 'gnode' });
+    g.appendChild(el('circle', { cx: n.x, cy: n.y, r: n.query ? 9 : 5,
+                                 class: n.query ? 'query-node' : 'corpus-node' }));
+    if (n.name) {
+      const t = el('text', { class: 'glabel glabel-query', x: n.x + 13, y: n.y, dy: '0.32em' });
+      t.textContent = n.name;
+      g.appendChild(t);
+    }
+    gNode.appendChild(g);
+  });
+
+  svg.appendChild(gLink); svg.appendChild(gNode);
+  document.getElementById('node-count').textContent =
+    nodes.filter(n => n.query).length + ' songs · ' + nodes.length + ' nodes';
+
+  /* ── preview chrome ─────────────────────────────────────────────────── */
+  const root = document.documentElement;
+  const label = document.getElementById('design-label');
+  function flipDesign() {
+    const now = root.getAttribute('data-design') === 'new' ? 'current' : 'new';
+    root.setAttribute('data-design', now);
+    label.textContent = now.toUpperCase();
+  }
+  function flipLevels() {
+    root.setAttribute('data-levels',
+      root.getAttribute('data-levels') === 'on' ? 'off' : 'on');
+  }
+  document.getElementById('design-btn').addEventListener('click', flipDesign);
+  document.getElementById('levels-btn').addEventListener('click', flipLevels);
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    const k = e.key.toLowerCase();
+    if (k === 'd') flipDesign();
+    if (k === 'e') flipLevels();
+  });
+
+  document.querySelectorAll('.search-mode').forEach(group => {
+    group.addEventListener('click', e => {
+      const btn = e.target.closest('.mode-btn');
+      if (!btn) return;
+      group.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+})();
+</script>
+</body>
+</html>

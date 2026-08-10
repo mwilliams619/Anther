@@ -34,6 +34,14 @@ ensure_worktree "$STABLE_DIR"
 checkout_ref "$STABLE_DIR" "$BRANCH"
 symlink_shared_dirs "$STABLE_DIR"
 
+# Reuse the main checkout's .venv rather than building a second one — same
+# reasoning as setup_staging_worktree.sh. Without this the smoke-test gate
+# below invokes a python that doesn't exist yet, so the first-time setup this
+# script's header advertises aborts before it can create anything.
+if [ ! -e "$STABLE_DIR/.venv" ]; then
+    ln -s "$MAIN_REPO/.venv" "$STABLE_DIR/.venv"
+fi
+
 if [ "${ANTHER_SKIP_TESTS:-0}" != "1" ]; then
     # Only run smoke-test files that actually exist in this checkout (see
     # the longer explanation in deploy_staging.sh) — ml-dev should always be

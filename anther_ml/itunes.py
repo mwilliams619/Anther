@@ -40,6 +40,7 @@ from pathlib import Path
 
 import requests
 
+from .net_guard import UnsafeURLError, safe_get
 from .spotify_deezer import _norm, _primary_artist
 
 log = logging.getLogger("anther_ml.itunes")
@@ -235,10 +236,21 @@ def download_preview(url: str, timeout: int = 20):
     """
     if not url:
         raise ValueError("no preview URL available")
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()
+    # ``url`` reaches here from a request body (atlas.resolve_and_embed), so
+    # it gets the same allowlist/public-IP/redirect treatment as the Deezer
+    # path, and the same opaque failure — see net_guard.
+    try:
+        r = safe_get(url, timeout=timeout)
+        r.raise_for_status()
+    except UnsafeURLError as exc:
+        log.warning("preview download blocked for %r: %s", url, exc)
+        raise ValueError("preview unavailable") from None
+    except requests.RequestException as exc:
+        log.warning("preview download failed for %r: %s", url, exc)
+        raise ValueError("preview unavailable") from None
     if len(r.content) < 1024:                       # error page, not audio
-        raise ValueError(f"suspiciously small response ({len(r.content)} bytes)")
+        log.warning("preview download for %r too small (%d bytes)", url, len(r.content))
+        raise ValueError("preview unavailable")
 
     raw = tempfile.NamedTemporaryFile(suffix=".m4a", delete=False)
     raw.write(r.content)

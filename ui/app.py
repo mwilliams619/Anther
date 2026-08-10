@@ -7,6 +7,7 @@ Open: http://localhost:5000
 import os
 import secrets
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -62,6 +63,12 @@ AUTOPLAY_RESOLVE_CAP = int(os.environ.get('ANTHER_AUTOPLAY_RESOLVE_CAP', '25'))
 SESSION_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+# Hard body cap enforced by Werkzeug *before* the request is buffered. The
+# MAX_UPLOAD check in upload() reads the whole body into memory first, so on
+# its own it rejects a huge upload only after already paying for it — an
+# unauthenticated caller could OOM the box with a few concurrent requests.
+# Slack over MAX_UPLOAD covers multipart framing and the artist form fields.
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD + 1024 * 1024
 # Signed session cookie identifies a browser's mentor chat session; a fresh
 # key each restart just means chat history resets, which is fine since the
 # mentor service's own sessions are keyed the same way and get swept by TTL.
@@ -98,12 +105,50 @@ def _release_graph_session(exc=None):
         atlas.reset_session(token)
 
 
-def _session_uploads_dir():
-    """This request's uploads directory (session/<sid>/uploads/), created on
-    demand. Replaces the old global UPLOADS_DIR so one user's uploads aren't
-    served to another."""
+def _server_error(exc, status=500, message='Something went wrong on the server.'):
+    """Log an *unexpected* exception with a short reference id; return a
+    generic body carrying only that id.
+
+    Exception text from an unhandled failure carries absolute filesystem
+    paths, library internals and corpus/SQLite structure, and every /api/*
+    route is unauthenticated — so the detail belongs in the log and the
+    caller gets an id to quote instead.
+
+    Deliberate ValueError/RuntimeError messages are NOT routed through here.
+    Those are authored, user-facing validation text ("Unsupported type: .txt",
+    "Artist not found") and stay verbatim — genericising them would break the
+    UI for no security gain.
+    """
+    ref = uuid.uuid4().hex[:8]
+    # .exception() only captures a traceback inside an active except block,
+    # which is the only place this is called from.
+    app.logger.exception('[%s] unhandled error on %s %s', ref, request.method, request.path)
+    return jsonify({'error': message, 'ref': ref}), status
+
+
+UPSTREAM_MSG = 'A music source is temporarily unavailable. Try again shortly.'
+
+
+@app.errorhandler(413)
+def _too_large(_exc):
+    """MAX_CONTENT_LENGTH rejects oversized bodies with Werkzeug's HTML error
+    page by default; the frontend parses every response as JSON, so answer in
+    JSON to keep the existing "File too large" handling working."""
+    return jsonify({'error': 'File too large (max 25 MB)'}), 413
+
+
+def _session_uploads_dir(create=False):
+    """This request's uploads directory (session/<sid>/uploads/). Replaces the
+    old global UPLOADS_DIR so one user's uploads aren't served to another.
+
+    Only creates the directory when ``create=True`` (i.e. an actual upload).
+    The read paths must not create it: /api/* is unauthenticated, so a caller
+    looping preview lookups with fresh cookies would otherwise mint a session
+    directory per request — the amplification the session sweep exists to
+    stop. A missing directory just means the file isn't there."""
     st = atlas.get_session()
-    st.ensure_dirs()
+    if create:
+        st.ensure_dirs()
     return st.uploads_dir
 
 
@@ -126,7 +171,7 @@ def atlas_search():
     try:
         return jsonify(atlas.search(q))
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 502
+        return _server_error(exc, 502, UPSTREAM_MSG)
 
 
 @app.route('/api/playlists/search')
@@ -138,7 +183,7 @@ def playlists_search():
         limit = int(request.args.get('limit', 20))
         return jsonify(atlas.search_playlists(q, limit=limit))
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 502
+        return _server_error(exc, 502, UPSTREAM_MSG)
 
 
 @app.route('/api/playlist/place', methods=['POST'])
@@ -149,7 +194,7 @@ def playlist_place():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/playlist/status/<job_id>')
@@ -165,7 +210,7 @@ def playlist_stop(job_id):
     try:
         return jsonify(playlist_jobs.stop(job_id))
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/albums/search')
@@ -177,7 +222,7 @@ def albums_search():
         limit = int(request.args.get('limit', 20))
         return jsonify(atlas.search_albums(q, limit=limit))
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 502
+        return _server_error(exc, 502, UPSTREAM_MSG)
 
 
 @app.route('/api/album/place', methods=['POST'])
@@ -186,10 +231,9 @@ def album_place():
     try:
         return jsonify(atlas.place_album(body.get('album_id')))
     except ValueError as exc:
-        import traceback; traceback.print_exc()  # TEMP: reveal exact line
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/itunes/artists/search')
@@ -201,7 +245,7 @@ def itunes_artists_search():
         limit = int(request.args.get('limit', 10))
         return jsonify(atlas.search_itunes_artists(q, limit=limit))
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 502
+        return _server_error(exc, 502, UPSTREAM_MSG)
 
 
 @app.route('/api/itunes/artist/place', methods=['POST'])
@@ -220,7 +264,7 @@ def itunes_artist_place():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/place', methods=['POST'])
@@ -228,8 +272,12 @@ def atlas_place():
     result = request.get_json(force=True) or {}
     try:
         fragment = atlas.place_song(result)
+    except ValueError as exc:
+        # place_song's authored failures ("Could not place song: no_preview",
+        # "uploaded file not found") are shown to the user by the frontend.
+        return jsonify({'error': str(exc)}), 400
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     return jsonify(fragment)
 
 
@@ -245,7 +293,7 @@ def atlas_recommend():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/graph')
@@ -257,10 +305,13 @@ def atlas_graph():
     # so the rest of the UI stays usable and the cause is visible.
     try:
         return jsonify(atlas.get_graph())
-    except Exception as exc:  # noqa: BLE001
-        app.logger.exception("get_graph failed")
-        return jsonify({'ready': True, 'nodes': [], 'links': [],
-                        'groups': {}, 'error': str(exc)})
+    except Exception:  # noqa: BLE001
+        ref = uuid.uuid4().hex[:8]
+        app.logger.exception("[%s] get_graph failed", ref)
+        # 200 with an empty map is deliberate (see above); the cause goes to
+        # the log under `ref` rather than into the response body.
+        return jsonify({'ready': True, 'nodes': [], 'links': [], 'groups': {},
+                        'error': 'Could not load your map.', 'ref': ref})
 
 
 @app.route('/api/graph/clear', methods=['POST'])
@@ -284,7 +335,7 @@ def atlas_song(song_id):
         detail = atlas.song_detail(song_id, top_n=int(request.args.get('n', 10)),
                                    expand=expand)
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     if detail is None:
         return jsonify({'error': 'unknown song id'}), 404
     return jsonify(detail)
@@ -304,7 +355,7 @@ def atlas_song_preview(song_id):
     try:
         url = atlas.get_preview_url(song_id)
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     return jsonify({'preview_url': url})
 
 
@@ -329,7 +380,7 @@ def atlas_song_spotify(song_id):
     try:
         track_id = atlas.get_spotify_track_id(song_id)
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     return jsonify({'track_id': track_id})
 
 
@@ -345,7 +396,7 @@ def atlas_autoplay_resolve():
     try:
         tracks = atlas.resolve_spotify_batch([str(i) for i in ids[:AUTOPLAY_RESOLVE_CAP]])
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     return jsonify({'tracks': tracks})
 
 
@@ -362,7 +413,7 @@ def atlas_autoplay_jump():
     try:
         hit = atlas.nearest_unplayed(from_id, [str(i) for i in exclude])
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
     if hit is None:
         return jsonify({'id': None})
     return jsonify(hit)
@@ -429,10 +480,9 @@ def demo_load():
     try:
         return jsonify(atlas.place_demo_top20())
     except ValueError as exc:
-        import traceback; traceback.print_exc()  # TEMP: reveal exact line
         return jsonify({'error': str(exc)}), 404
     except Exception as exc:
-        return jsonify({'error': str(exc)}), 500
+        return _server_error(exc)
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -455,26 +505,43 @@ def upload():
         return jsonify({'error': str(exc)}), 400
 
     safe = secure_filename(f.filename)
-    dest = _session_uploads_dir() / safe
+    if not safe:
+        # Backstop: secure_filename can reduce a name to "", which would make
+        # dest the uploads dir itself and raise IsADirectoryError out of
+        # write_bytes as an unhandled 500. The ALLOWED_EXTS gate above makes
+        # that hard to reach today (an ASCII extension survives sanitising),
+        # so this guards the invariant rather than a known-live input.
+        return jsonify({'error': 'Unsupported filename'}), 400
+    # The display filename is not an identity: two uploads may legitimately
+    # have the same basename. A unique stored name prevents cache/path
+    # collisions and makes concurrent uploads independent.
+    stored = f"{secrets.token_hex(16)}-{safe}"
+    dest = _session_uploads_dir(create=True) / stored
+    upload_id = f"upload:{stored}"
     dest.write_bytes(data)
 
     # Place the uploaded file onto the frozen-corpus force graph.
     try:
+        # No 'path' key: place_song resolves upload:<name> against this
+        # session's uploads dir itself, and ignores a client-supplied path.
         fragment = atlas.place_song({
             'source': 'upload',
-            'id':     f'upload:{safe}',
+            'id':     upload_id,
             'title':  Path(safe).stem,
             'artist': artist_name,
-            'path':   str(dest),
         })
-    except Exception as exc:
+    except ValueError as exc:
+        # Authored placement message ("Could not place song: …", "uploaded
+        # file not found") — user-facing, kept verbatim.
         return jsonify({'error': f'Placement failed: {exc}'}), 500
+    except Exception as exc:
+        return _server_error(exc, 500, 'Placement failed.')
     try:
         artist_fragment = atlas.assign_upload_artist(
-            f'upload:{safe}', artist_id=artist_id, artist_name=new_artist_name)
+            upload_id, artist_id=artist_id, artist_name=new_artist_name)
     except (ValueError, RuntimeError) as exc:
         return jsonify({'error': f'Artist assignment failed: {exc}'}), 400
-    return jsonify({'status': 'uploaded', 'id': f'upload:{safe}',
+    return jsonify({'status': 'uploaded', 'id': upload_id,
                     'title': Path(safe).stem, 'fragment': fragment,
                     'artist_fragment': artist_fragment})
 
@@ -544,9 +611,10 @@ def artist_from_song_graph():
         return jsonify(atlas.build_artist_graph_from_song_graph(body.get('mode', 'append')))
     except (ValueError, RuntimeError) as exc:
         return _artist_error_response(exc)
-    except Exception as exc:  # noqa: BLE001 — always answer the JSON client, never HTML
-        app.logger.exception("build_artist_graph_from_song_graph failed")
-        return jsonify({'error': f'Could not build artist graph: {exc}',
+    except Exception:  # noqa: BLE001 — always answer the JSON client, never HTML
+        ref = uuid.uuid4().hex[:8]
+        app.logger.exception("[%s] build_artist_graph_from_song_graph failed", ref)
+        return jsonify({'error': 'Could not build artist graph.', 'ref': ref,
                         **atlas.artist_status()}), 500
 
 
@@ -579,6 +647,9 @@ def artist_demo():
 
 
 if __name__ == '__main__':
+    # LOCAL DEVELOPMENT ONLY. This is Werkzeug's dev server: no request
+    # timeouts, no connection limit, unhardened HTTP parsing. Production and
+    # staging run ui/wsgi.py (waitress) via systemd — see ui/wsgi.py.
     atlas.warm()          # load the frozen corpus in the background at startup
     # 0.0.0.0 so the UI is reachable from other machines on the LAN
     # (e.g. a laptop browsing to http://<dev-box-ip>:5000) without VS Code

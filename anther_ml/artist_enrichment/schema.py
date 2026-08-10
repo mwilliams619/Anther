@@ -54,6 +54,10 @@ class ArtistProfile:
     genres: list[dict[str, Any]] = field(default_factory=list)  # [{name, source, weight?}]
     hometown: dict[str, Any] | None = None         # {name, city?, region?, country?, type, source}
     labels: list[dict[str, Any]] = field(default_factory=list)  # [{name, mbid?, release_count?, source, scope}]
+    # Sound-over-time analysis from anther_ml.sonic_trajectory (audio-derived; genre never an input).
+    # {n_tracks, mean_cluster_conf, metrics:[...], shifts:[...], biggest_shift, figures:{trajectory, atlas},
+    #  data:{placements_csv, embeddings_npz}, source, updated_at}
+    sonic_trajectory: dict[str, Any] | None = None
     match_confidence: float | None = None
     status: str = STATUS_UNMATCHED
     updated_at: str | None = None
@@ -91,6 +95,7 @@ class ArtistProfile:
             "origin": (self.hometown or {}).get("name"),
             "origin_source": (self.hometown or {}).get("source"),
             "labels": [l["name"] for l in self.labels],
+            "sonic_trajectory": self.sonic_trajectory,
             "match_confidence": self.match_confidence,
             "enrichment_status": self.status,
             "updated_at": self.updated_at,
@@ -105,6 +110,7 @@ def _defaults() -> dict[str, Any]:
         "genres": [],
         "hometown": None,
         "labels": [],
+        "sonic_trajectory": None,
         "match_confidence": None,
         "status": STATUS_UNMATCHED,
         "updated_at": None,

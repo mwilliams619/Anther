@@ -15,6 +15,7 @@ This module owns all corpus/MERT state so ui/app.py stays a thin router.
 
 import os
 import json
+import shutil
 import time
 import sqlite3
 import tempfile
@@ -26,10 +27,12 @@ from pathlib import Path
 
 import numpy as np
 import requests
+from werkzeug.utils import secure_filename
 
 from anther_ml import mpd_sql
 from anther_ml import merit as merit_mod
 from anther_ml import calibration as link_calibration
+from anther_ml.net_guard import UnsafeURLError, safe_get
 from anther_ml.cluster import assign_cluster_knn
 from anther_ml.corpus.bundle import ReferenceCorpus
 from anther_ml.corpus.place import embed_query, embed_query_dual, place, recommend_from_seeds
@@ -215,6 +218,7 @@ class _SessionState:
 
     def __init__(self, session_id: str):
         self.session_id = session_id
+        self.last_used = time.time()      # refreshed by get_session; drives the sweep
         self.dir = SESSION_DIR / session_id
         self.graph_path = self.dir / "graph.json"
         self.artist_graph_path = self.dir / "artist_graph.json"
@@ -250,9 +254,87 @@ class _SessionState:
             _load_artist_graph(self)
 
 
+# ── Session lifecycle ────────────────────────────────────────────────────────
+# Every unrecognised cookie mints a _SessionState, and /api/* is
+# unauthenticated, so without eviction anyone can grow this without bound by
+# looping requests. Three bounds, cheapest first:
+#
+#   1. Directory creation is deferred to the first actual *write* (_save_graph,
+#      _save_artist_graph, _ensure_artist_tables, cache_vec, uploads — each
+#      already mkdirs). A caller that only reads therefore costs one in-memory
+#      object and no inode.
+#   2. In-memory states idle beyond SESSION_IDLE_SECONDS are dropped. This is
+#      lossless: ensure_loaded() re-reads the map from disk on next use.
+#   3. On-disk dirs untouched for SESSION_DISK_TTL_SECONDS are deleted.
+#
+# (3) is OFF BY DEFAULT and must be switched on deliberately, e.g.
+# ANTHER_SESSION_DISK_TTL_SECONDS=604800 for a 7-day cleanup. Deleting a
+# session dir discards that browser's saved map permanently, and a default
+# that quietly destroys user data the first time the service restarts is the
+# wrong trade — (1) and (2) already remove the cheap amplification, since a
+# caller that never places a song never creates a directory at all, and
+# placing one costs a download plus a MERT pass. Turn (3) on once you're
+# happy with the retention window.
+SESSION_IDLE_SECONDS     = int(os.environ.get("ANTHER_SESSION_IDLE_SECONDS", 3600))
+SESSION_DISK_TTL_SECONDS = int(os.environ.get("ANTHER_SESSION_DISK_TTL_SECONDS", 0))
+SESSION_SWEEP_INTERVAL   = int(os.environ.get("ANTHER_SESSION_SWEEP_INTERVAL", 300))
+
 # Registry of live sessions, and the request-scoped selector.
 _sessions: dict[str, _SessionState] = {}
 _sessions_lock = threading.Lock()
+_last_sweep = 0.0
+
+
+def _session_touched_at(d: Path) -> float:
+    """Most recent mtime among a session dir's own entries. Deliberately a
+    handful of stats rather than an rglob — uploads/ can hold many files and
+    this runs on a request path."""
+    times = [d.stat().st_mtime]
+    for name in ("graph.json", "artist_graph.json", "embed_cache.sqlite", "uploads"):
+        p = d / name
+        if p.exists():
+            times.append(p.stat().st_mtime)
+    return max(times)
+
+
+def _sweep_sessions() -> None:
+    """Drop idle in-memory sessions and delete long-abandoned session dirs.
+
+    Rate-limited to one pass per SESSION_SWEEP_INTERVAL and called
+    opportunistically from get_session, so there is no extra thread to
+    supervise and nothing runs when the app is idle.
+    """
+    global _last_sweep
+    now = time.time()
+    with _sessions_lock:
+        if now - _last_sweep < SESSION_SWEEP_INTERVAL:
+            return
+        _last_sweep = now
+        idle_cutoff = now - SESSION_IDLE_SECONDS
+        stale = [sid for sid, st in _sessions.items()
+                 if sid != DEFAULT_SESSION_ID
+                 and st.last_used < idle_cutoff
+                 # A held lock means a background worker is mid-mutation on
+                 # this state; evicting now would let a fresh _SessionState be
+                 # built for the same sid and lose that worker's writes.
+                 and not st.lock.locked()]
+        for sid in stale:
+            del _sessions[sid]
+        live = set(_sessions)
+
+    if SESSION_DISK_TTL_SECONDS <= 0 or not SESSION_DIR.is_dir():
+        return
+    disk_cutoff = now - SESSION_DISK_TTL_SECONDS
+    for child in SESSION_DIR.iterdir():
+        if (not child.is_dir() or child.name == DEFAULT_SESSION_ID
+                or child.name in live):
+            continue
+        try:
+            if _session_touched_at(child) < disk_cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+                print(f"[atlas] swept abandoned session dir: {child.name}")
+        except OSError:
+            continue          # racing writer or permissions — try again next pass
 _session_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "anther_session_id", default=DEFAULT_SESSION_ID)
 
@@ -303,6 +385,7 @@ def get_session() -> _SessionState:
     """The _SessionState for the current contextvar id, created + loaded on
     first use (thread-safe). Off-request threads must bind via use_session
     first, else they get the default session."""
+    _sweep_sessions()
     sid = current_session_id()
     with _sessions_lock:
         st = _sessions.get(sid)
@@ -310,8 +393,10 @@ def get_session() -> _SessionState:
             st = _SessionState(sid)
             if sid == DEFAULT_SESSION_ID:
                 _migrate_legacy_default(st)
-            st.ensure_dirs()
+            # No ensure_dirs() here: the directory is created by the first
+            # write instead, so a read-only caller leaves nothing on disk.
             _sessions[sid] = st
+        st.last_used = time.time()
     st.ensure_loaded()
     return st
 
@@ -1217,11 +1302,42 @@ def _place_query_vec(track_id: str, name: str, artist: str, raw_vec,
     return _merge_fragment(node, corpus.index.transform_query(raw_vec), merit_qvec)
 
 
+def _upload_path(song_id) -> Path:
+    """
+    Resolve an ``upload:<name>`` node id to the file on disk, confined to the
+    current session's uploads dir.
+
+    The id is the only client-supplied part, and ``secure_filename`` reduces
+    it to a bare basename, so traversal can't escape; the resolve()-then-
+    verify-prefix check covers the symlink case as well. Raises ValueError —
+    with no filesystem detail — if the id is malformed or the file is gone
+    (e.g. the session was swept between upload and re-placement).
+    """
+    sid = str(song_id or "")
+    if not sid.startswith("upload:"):
+        raise ValueError("upload placement requires an 'upload:<name>' id")
+    safe = secure_filename(sid.split(":", 1)[1])
+    if not safe:
+        raise ValueError("uploaded file not found")
+    st = get_session()
+    # No ensure_dirs(): this is a read path. A missing uploads dir just means
+    # the file isn't there, which is_file() already reports.
+    root = st.uploads_dir.resolve()
+    path = (root / safe).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("uploaded file not found")
+    return path
+
+
 def place_song(result: dict) -> dict:
     """
     Place one search result onto the frozen corpus and merge it into the graph.
     Returns the fragment {nodes, links} that was newly added (for the frontend
     to splice into the running force simulation).
+
+    ``result`` is an untrusted request body (``POST /api/place``); only the
+    keys read below are honoured. Notably there is no ``path`` key — upload
+    placement resolves its own path via ``_upload_path``.
     """
     corpus = load()
     source = result.get("source")
@@ -1248,7 +1364,11 @@ def place_song(result: dict) -> dict:
 
     backbone = None
     if source == "upload":
-        path, cleanup = Path(result["path"]), None
+        # Derived from the node id against *this session's* uploads dir, never
+        # read from the request body: /api/place is unauthenticated, so a
+        # caller-supplied "path" would let anyone aim librosa at any file the
+        # service account can read.
+        path, cleanup = _upload_path(result.get("id")), None
         try:
             with _embed_lock:
                 model, processor, device = _mert()
@@ -1311,7 +1431,11 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, np.ndarray | None, str]:
             path, cleanup = itunes_src.download_preview(url)
             method = "itunes"
         except Exception as e:
-            raise PlacementSkip(f"download_failed:{e}")
+            # Fixed reason, detail to the log only — this string is returned
+            # to the caller verbatim by /api/place, and a per-URL failure
+            # reason is exactly the SSRF oracle net_guard exists to remove.
+            print(f"[atlas] itunes preview failed for {url!r}: {e}")
+            raise PlacementSkip("download_failed")
     else:
         if url:
             try:
@@ -1330,7 +1454,8 @@ def resolve_and_embed(track: dict) -> tuple[np.ndarray, np.ndarray | None, str]:
                     {"preview_url": m["preview"], "deezer_id": m.get("deezer_id")})
                 method = "deezer"
             except Exception as e:
-                raise PlacementSkip(f"download_failed:{e}")
+                print(f"[atlas] deezer preview failed for {m.get('preview')!r}: {e}")
+                raise PlacementSkip("download_failed")
 
     backbone = None
     try:
@@ -1461,11 +1586,30 @@ def recommend(seed_ids: list, top_k: int = 20, method: str = "topk",
 
 
 def _download_url(url: str):
-    """Download an audio URL to a temp mp3; returns (path, cleanup)."""
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    if len(r.content) < 1024:                               # error page, not audio
-        raise ValueError(f"suspiciously small response ({len(r.content)} bytes)")
+    """Download an audio URL to a temp mp3; returns (path, cleanup).
+
+    ``url`` can come straight off a request body (``POST /api/place``), so it
+    goes through net_guard.safe_get — allowlisted CDN hosts, public addresses
+    only, redirects re-validated per hop. Every failure raises the same
+    opaque message: the *reason* a fetch failed (refused vs. timed out vs.
+    404, and the exact response size) is what turns this into an internal
+    port scanner, so detail goes to the log and never to the caller.
+    """
+    def _reject(detail: str):
+        print(f"[atlas] preview download rejected for {url!r}: {detail}")
+        return ValueError("preview unavailable")
+
+    try:
+        r = safe_get(url, timeout=20)
+        r.raise_for_status()
+    except UnsafeURLError as exc:
+        raise _reject(f"blocked: {exc}") from None
+    except requests.RequestException as exc:
+        raise _reject(f"fetch failed: {exc}") from None
+
+    if len(r.content) < 1024:                           # error page, not audio
+        raise _reject(f"response too small ({len(r.content)} bytes)")
+
     tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
     tmp.write(r.content)
     tmp.close()

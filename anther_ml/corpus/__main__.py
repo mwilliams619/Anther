@@ -12,6 +12,7 @@ import sys
 
 from .build import MIN_TRACKS, build_corpus
 from .bundle import ReferenceCorpus
+from .hub import CORPUS_REPO_ENV
 
 
 def _add_build_parser(sub):
@@ -112,6 +113,54 @@ def _add_label_parser(sub):
                    help="names joined into the auto label")
     p.add_argument("--min-support", type=int, default=3,
                    help="min track count for a name to enter the label")
+
+
+def _add_publish_parser(sub):
+    p = sub.add_parser(
+        "publish",
+        help="copy a built bundle into a redistributable one (strip playlist "
+             "membership, drop the MERIT backbone, de-pickle the Leiden fit)",
+    )
+    p.add_argument("corpus", help="source bundle dir, e.g. models/corpus_mpd_100k_merit")
+    p.add_argument("--out", required=True, help="destination bundle dir")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would change and the size delta; write nothing")
+    p.add_argument("--keep-playlists", action="store_true",
+                   help="keep per-track playlist membership (MPD-derived — only "
+                        "for bundles you are not redistributing)")
+    p.add_argument("--keep-backbone", action="store_true",
+                   help="keep merit_backbone.npy (needed only to rebuild the "
+                        "MERIT sidecar or extend the corpus)")
+    p.add_argument("--keep-pickle", action="store_true",
+                   help="copy leiden.pkl as-is instead of converting to the "
+                        "portable leiden.npz (keeps reducer_2d; pins Python 3.11)")
+    p.add_argument("--keep-duplicate-metadata", action="store_true",
+                   help="keep index_merit_agg.json's copy of the metadata "
+                        "instead of pointing it at index.json")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the post-publish load-and-check pass")
+
+
+def _add_push_parser(sub):
+    p = sub.add_parser("push", help="upload a published bundle to a HF dataset repo")
+    p.add_argument("corpus", help="published bundle dir (see `publish`)")
+    p.add_argument("--repo-id", required=True, help="e.g. you/anther-corpus-mpd-100k")
+    p.add_argument("--revision", default=None,
+                   help="branch/tag to upload to (pin this in fetch)")
+    p.add_argument("--public", action="store_true",
+                   help="create the repo public (default: private)")
+    p.add_argument("--message", default=None, help="commit message")
+
+
+def _add_fetch_parser(sub):
+    p = sub.add_parser("fetch", help="download a bundle from a HF dataset repo")
+    p.add_argument("--repo-id", default=None,
+                   help=f"e.g. you/anther-corpus-mpd-100k (default: ${CORPUS_REPO_ENV})")
+    p.add_argument("--out", required=True, help="destination bundle dir")
+    p.add_argument("--revision", default=None, help="branch/tag to pin")
+    p.add_argument("--include-backbone", action="store_true",
+                   help="also download merit_backbone.npy (only needed to "
+                        "rebuild the MERIT sidecar or extend the corpus)")
 
 
 def _make_source(args):
@@ -260,6 +309,104 @@ def _cmd_label(args) -> None:
               f"{args.corpus}/cluster_profiles.json")
 
 
+def _mb(n: int) -> str:
+    return f"{n / 1e6:,.1f} MB"
+
+
+def _cmd_publish(args) -> None:
+    from .publish import publish_bundle, verify_published
+
+    report = publish_bundle(
+        args.corpus,
+        args.out,
+        strip_playlists=not args.keep_playlists,
+        drop_backbone=not args.keep_backbone,
+        portable_leiden=not args.keep_pickle,
+        dedupe_metadata=not args.keep_duplicate_metadata,
+        dry_run=args.dry_run,
+    )
+
+    tag = "would publish" if args.dry_run else "published"
+    print(f"\n=== {tag} {args.corpus} → {args.out} ===")
+    before, after = report["bytes_before"], report["bytes_after"]
+    saved = 1.0 - (after / before) if before else 0.0
+    caveat = " + leiden.npz" if report.get("bytes_after_excludes_leiden") else ""
+    print(f"  {_mb(before)} → {_mb(after)}{caveat}  ({saved:.0%} smaller)")
+
+    for name, stats in report.get("rewritten_indices", {}).items():
+        how = (f"deduped → {stats['deduped_to']}.json"
+               if stats.get("deduped_to")
+               else f"{stats.get('rows_stripped', 0):,} rows stripped")
+        print(f"  {name}: {_mb(stats['bytes_before'])} → "
+              f"{_mb(stats['bytes_after'])} ({how})")
+    if "leiden" in report:
+        ld = report["leiden"]
+        if ld.get("unsized_in_dry_run"):
+            print(f"  {ld['source']} ({_mb(ld['bytes_before'])}) → leiden.npz: "
+                  "size not computed in --dry-run")
+        else:
+            note = " (reducer_2d dropped)" if ld["reducer_2d_dropped"] else ""
+            print(f"  {ld['source']} → leiden.npz: {_mb(ld['bytes_before'])} → "
+                  f"{_mb(ld['bytes_after'])}{note}")
+    for name in report["excluded_files"]:
+        print(f"  excluded: {name}")
+
+    if args.dry_run or args.no_verify:
+        return
+
+    checks = verify_published(args.out, src_dir=args.corpus)
+    print("\nverify:")
+    for key, val in checks.items():
+        print(f"  {key}: {val:.2e}" if isinstance(val, float) else f"  {key}: {val}")
+    if not checks["transform_ok"]:
+        sys.exit(
+            "FAILED: the published bundle's frozen scaler/PCA disagree with the "
+            "source's — a query would be assigned to a different cluster"
+        )
+
+
+def _cmd_push(args) -> None:
+    from .hub import bundle_publish_state, push_bundle
+
+    state = bundle_publish_state(args.corpus)
+    if not state["published"]:
+        sys.exit(
+            "refusing to push an unpublished bundle:\n  - "
+            + "\n  - ".join(state["reasons"])
+            + "\nRun `python -m anther_ml.corpus publish "
+            f"{args.corpus} --out <dst>` first."
+        )
+
+    url = push_bundle(
+        args.corpus,
+        args.repo_id,
+        private=not args.public,
+        revision=args.revision,
+        commit_message=args.message,
+    )
+    visibility = "public" if args.public else "private"
+    rev = f" (revision {args.revision})" if args.revision else ""
+    print(f"pushed {args.corpus} → {url} [{visibility}]{rev}")
+
+
+def _cmd_fetch(args) -> None:
+    from .bundle import ReferenceCorpus
+    from .hub import fetch_bundle, resolve_repo_id
+
+    repo_id = resolve_repo_id(args.repo_id)
+    if repo_id is None:
+        sys.exit(f"--repo-id is required (or set ${CORPUS_REPO_ENV})")
+
+    out = fetch_bundle(
+        repo_id, args.out,
+        revision=args.revision,
+        include_backbone=args.include_backbone,
+    )
+    corpus = ReferenceCorpus.load(out)
+    print(f"fetched {repo_id} → {out} ({corpus.n_tracks:,} tracks, "
+          f"{len(corpus.profiles)} clusters)")
+
+
 def main(argv=None) -> None:
     import logging
 
@@ -270,6 +417,9 @@ def main(argv=None) -> None:
     _add_build_parser(sub)
     _add_place_parser(sub)
     _add_label_parser(sub)
+    _add_publish_parser(sub)
+    _add_push_parser(sub)
+    _add_fetch_parser(sub)
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
@@ -279,6 +429,12 @@ def main(argv=None) -> None:
         _cmd_build(args)
     elif args.command == "label":
         _cmd_label(args)
+    elif args.command == "publish":
+        _cmd_publish(args)
+    elif args.command == "push":
+        _cmd_push(args)
+    elif args.command == "fetch":
+        _cmd_fetch(args)
     else:
         _cmd_place(args)
 

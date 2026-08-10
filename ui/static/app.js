@@ -584,7 +584,14 @@ function initSettings() {
   });
   AtlasAutoplay.setAutoAdvance(settings.autoAdvance);
 
-  const close = () => { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+  // On mobile the popover is not a popover: mobile.js re-hosts it as the
+  // sheet's Settings tab, where an outside click means "I tapped something
+  // else in the panel", not "dismiss".
+  const close = () => {
+    if (typeof AtlasMobile !== 'undefined' && AtlasMobile.isActive()) return;
+    pop.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  };
   btn.addEventListener('click', e => {
     e.stopPropagation();
     const open = pop.hidden;
@@ -1696,7 +1703,11 @@ function toggleMentorPanel() {
   }
 }
 
+/* Legacy left-drawer shell. The bottom-sheet shell in mobile.js replaces it
+ * wherever it activates; this stays for the no-JS-module path and for the
+ * 768px band a rotation can drop out of. */
 function initMobileSidebar() {
+  if (typeof AtlasMobile !== 'undefined' && AtlasMobile.isActive()) return;
   const app = document.querySelector('.app');
   const toggle = document.querySelector('.sidebar-toggle');
   const panelLeft = document.querySelector('.panel-left');

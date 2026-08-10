@@ -18,6 +18,7 @@ kept strictly for 2D visualization (``embedding_2d``), never for clustering —
 method; prefer ``fit_clusters_leiden``.
 """
 
+import json
 import pickle
 from pathlib import Path
 
@@ -416,9 +417,223 @@ def save_leiden(path: str | Path, result: dict) -> None:
 
 
 def load_leiden(path: str | Path) -> dict:
-    """Load a saved Leiden pipeline dict (see ``save_leiden``)."""
+    """Load a saved Leiden pipeline dict.
+
+    Accepts either serialization: the pickle written by ``save_leiden`` or the
+    portable ``.npz`` written by ``save_leiden_portable``. Dispatch is by
+    suffix, so a bundle carrying only ``leiden.npz`` loads through the exact
+    same call sites (``ReferenceCorpus.load`` asks for whichever file exists).
+    """
+    path = Path(path)
+    if path.suffix == ".npz":
+        return load_leiden_portable(path)
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Portable (pickle-free) Leiden serialization
+# ---------------------------------------------------------------------------
+#
+# ``save_leiden`` pickles fitted sklearn/UMAP objects, which locks a bundle to
+# the Python + numba + sklearn versions that wrote it (a 3.11-pickled UMAP does
+# not load on 3.12) and makes a downloaded bundle an arbitrary-code-execution
+# vector. For *publishing* a bundle neither is acceptable, so the portable
+# format stores plain arrays plus a JSON blob and rebuilds the two transforms
+# that placement actually needs.
+#
+# Only ``.transform`` is ever called on the scaler/PCA (see
+# ``assign_cluster_knn`` and ``corpus/place.py``), so the frozen shims below are
+# behaviourally complete — they reimplement sklearn's own transform arithmetic
+# rather than reconstructing sklearn objects, which is what keeps the format
+# independent of the installed sklearn version.
+#
+# ``reducer_2d`` has no portable form (a fitted UMAP is its kNN index). It is
+# dropped, and every consumer already guards for that: ``place()`` returns
+# ``coords_2d=None`` and ``extend_corpus`` falls back to zero coords. The
+# corpus's own ``embedding_2d.npy`` is unaffected, so the frozen picture still
+# renders; only per-query 2D projection is lost, which is display-only by the
+# clustering invariant.
+
+LEIDEN_PORTABLE_FORMAT_VERSION = 1
+
+
+class FrozenStandardScaler:
+    """``StandardScaler.transform`` with no sklearn dependency.
+
+    Mirrors sklearn's *in-place* arithmetic (``X -= mean_; X /= scale_``), which
+    is why a float32 query stays float32 even though the fitted stats are
+    float64. Reproducing the dtype path matters: publishing must not move a
+    query across a cluster boundary, so the goal is bit-fidelity with the
+    pickled object, not the most accurate answer.
+    """
+
+    def __init__(self, mean: np.ndarray | None, scale: np.ndarray | None):
+        self.mean_ = None if mean is None else np.asarray(mean)
+        self.scale_ = None if scale is None else np.asarray(scale)
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        X = np.array(X, dtype=_float_dtype(X), copy=True)
+        if self.mean_ is not None:
+            X -= self.mean_
+        if self.scale_ is not None:
+            X /= self.scale_
+        return X
+
+
+class FrozenPCA:
+    """``PCA.transform`` with no sklearn dependency (whitening included).
+
+    Mirrors sklearn's out-of-place ``X = X - mean_`` then ``X @ components_.T``,
+    so dtype promotion follows the stored parameters exactly as it does for the
+    pickled estimator.
+    """
+
+    def __init__(
+        self,
+        components: np.ndarray,
+        mean: np.ndarray | None,
+        explained_variance: np.ndarray | None = None,
+        whiten: bool = False,
+    ):
+        self.components_ = np.asarray(components)
+        self.mean_ = None if mean is None else np.asarray(mean)
+        self.explained_variance_ = (
+            None if explained_variance is None else np.asarray(explained_variance)
+        )
+        self.whiten = bool(whiten)
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        X = np.asarray(X, dtype=_float_dtype(X))
+        if self.mean_ is not None:
+            X = X - self.mean_
+        Xt = X @ self.components_.T
+        if self.whiten:
+            if self.explained_variance_ is None:
+                raise ValueError(
+                    "whitened PCA needs explained_variance_; the portable file "
+                    "was written without it"
+                )
+            Xt = Xt / np.sqrt(self.explained_variance_)
+        return Xt
+
+
+def _float_dtype(X) -> np.dtype:
+    """sklearn's ``check_array(dtype=FLOAT_DTYPES)`` rule: keep float32, and
+    promote everything else (float16, ints) to float64."""
+    dtype = np.asarray(X).dtype
+    return np.dtype(np.float32) if dtype == np.float32 else np.dtype(np.float64)
+
+
+def _as_optional_array(obj, attr: str):
+    val = getattr(obj, attr, None)
+    return None if val is None else np.asarray(val)
+
+
+def save_leiden_portable(path: str | Path, result: dict) -> dict:
+    """Write a Leiden fit as a pickle-free ``.npz`` (see the note above).
+
+    ``result`` is either a ``fit_clusters_leiden`` return value or an
+    already-loaded ``save_leiden`` dict, so this doubles as the pkl → npz
+    converter. Returns the metadata block that was written, for logging.
+
+    Raises ``TypeError`` if the scaler/PCA are not the sklearn objects (or the
+    frozen shims) this knows how to flatten — better to fail loudly than to
+    silently publish a bundle whose cluster assignment is wrong.
+    """
+    path = Path(path)
+    scaler, pca = result.get("scaler"), result.get("pca")
+
+    arrays: dict[str, np.ndarray] = {
+        "labels": np.asarray(result["labels"]),
+        "clustering_space": np.asarray(result["clustering_space"], dtype=np.float32),
+    }
+
+    if scaler is not None:
+        if not hasattr(scaler, "mean_") or not hasattr(scaler, "scale_"):
+            raise TypeError(
+                f"cannot flatten scaler of type {type(scaler).__name__}: "
+                "expected StandardScaler-like (mean_/scale_)"
+            )
+        # Stored at their fitted dtype, not upcast — FrozenStandardScaler /
+        # FrozenPCA reproduce sklearn's dtype path, which depends on these.
+        for name, attr in (("scaler_mean", "mean_"), ("scaler_scale", "scale_")):
+            val = _as_optional_array(scaler, attr)
+            if val is not None:
+                arrays[name] = val
+
+    if pca is not None:
+        if not hasattr(pca, "components_"):
+            raise TypeError(
+                f"cannot flatten PCA of type {type(pca).__name__}: "
+                "expected PCA-like (components_)"
+            )
+        arrays["pca_components"] = np.asarray(pca.components_)
+        for name, attr in (
+            ("pca_mean", "mean_"),
+            ("pca_explained_variance", "explained_variance_"),
+        ):
+            val = _as_optional_array(pca, attr)
+            if val is not None:
+                arrays[name] = val
+
+    meta = {
+        "leiden_portable_format_version": LEIDEN_PORTABLE_FORMAT_VERSION,
+        "has_scaler": scaler is not None,
+        "has_pca": pca is not None,
+        "pca_whiten": bool(getattr(pca, "whiten", False)) if pca is not None else False,
+        "n_neighbors": result.get("n_neighbors"),
+        "resolution": result.get("resolution"),
+        "metric": result.get("metric"),
+        "diagnostics": result.get("diagnostics"),
+        # Recorded so a loaded bundle can explain why coords_2d is None rather
+        # than looking like a build that silently skipped the 2D step.
+        "reducer_2d_dropped": result.get("reducer_2d") is not None,
+    }
+    np.savez_compressed(path, meta=np.array(json.dumps(meta)), **arrays)
+    return meta
+
+
+def load_leiden_portable(path: str | Path) -> dict:
+    """Read ``save_leiden_portable`` output back into a ``load_leiden`` dict."""
+    with np.load(path, allow_pickle=False) as z:
+        meta = json.loads(str(z["meta"]))
+        version = meta.get("leiden_portable_format_version")
+        if version != LEIDEN_PORTABLE_FORMAT_VERSION:
+            raise ValueError(
+                f"leiden portable format version {version!r} != supported "
+                f"{LEIDEN_PORTABLE_FORMAT_VERSION}"
+            )
+
+        scaler = None
+        if meta["has_scaler"]:
+            scaler = FrozenStandardScaler(
+                z["scaler_mean"] if "scaler_mean" in z else None,
+                z["scaler_scale"] if "scaler_scale" in z else None,
+            )
+
+        pca = None
+        if meta["has_pca"]:
+            pca = FrozenPCA(
+                z["pca_components"],
+                z["pca_mean"] if "pca_mean" in z else None,
+                z["pca_explained_variance"]
+                if "pca_explained_variance" in z
+                else None,
+                whiten=meta.get("pca_whiten", False),
+            )
+
+        return {
+            "labels": z["labels"],
+            "scaler": scaler,
+            "pca": pca,
+            "reducer_2d": None,  # not portable; see the note above
+            "clustering_space": z["clustering_space"],
+            "n_neighbors": meta.get("n_neighbors"),
+            "resolution": meta.get("resolution"),
+            "metric": meta.get("metric"),
+            "diagnostics": meta.get("diagnostics"),
+        }
 
 
 def cluster_summary(labels: np.ndarray, genre_labels: list[str] | None = None) -> dict:

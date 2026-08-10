@@ -6,15 +6,49 @@
   --bg:           #0A0A0A;
   --surface:      #1A1A1A;
   --surface-hi:   #2A2A2A;
-  --border:       #4A4A4A;
+  /* Chrome hairlines. Softened from #4A4A4A because elevation now does the
+     separating — on a dark UI a bright hairline is the loudest thing on
+     screen. The graph keeps the original value (--graph-stroke): the map is
+     deliberately untouched by the elevation work. */
+  --border:       #2A2A2A;
+  --graph-stroke: #4A4A4A;
   --text:         #FAFAFA;
   --text-mid:     #AFAFAF;
   --text-muted:   #7A7A7A;
 
   /* Graph-only atmosphere: warm charcoal "dim studio" foundation, kept
-     separate from --bg so the surrounding productivity UI stays untouched */
-  --graph-bg:     #101010;
-  
+     separate from --bg so the surrounding productivity UI stays untouched.
+     Also z0 of the elevation ladder below — the floor everything rests on. */
+  --graph-bg:     #0D0D0D;
+
+  /* ── Elevation ladder ───────────────────────────────────────────────────
+     Depth is z-height and nothing else. On a near-black UI a shadow has
+     nothing lighter than itself to fall on, so height is carried FIRST by
+     surface lightness and only reinforced by shadow. Each level is a
+     top-to-bottom gradient, which gives a surface a form of its own rather
+     than one flat fill.
+
+       z0  the map                              --graph-bg
+       z1  sidebar, mentor panel
+       z2  cards over the map (detail, transport, filter suggest)
+       z3  popovers, tooltip, modals, toast
+
+     Deliberately NOT part of this: a lit top edge. The surface gradient
+     already implies the light direction, and a bright hairline on a dark UI
+     reads as a drawn line rather than as light. See
+     docs/projects/UI_DESIGN_OVERHAUL_PLAN.md. */
+  --z1-top:       #191919;
+  --z1-bot:       #141414;
+  --z2-top:       #222222;
+  --z2-bot:       #1A1A1A;
+  --z3-top:       #282828;
+  --z3-bot:       #1F1F1F;
+
+  /* Warm-biased black, so the dark never reads blue. It isn't perceived as
+     warm — it just stops looking cold. */
+  --elev-2:       0 4px 10px rgba(20,15,10,0.45), 0 14px 30px rgba(20,15,10,0.40);
+  --elev-3:       0 10px 20px rgba(20,15,10,0.50), 0 28px 60px rgba(20,15,10,0.50);
+
   /* Function-based accents (muted) */
   --primary:      #5B8FCC;
   --primary-hi:   #7AABDD;
@@ -67,6 +101,8 @@ html, body {
     max-height:40dvh;
 }
   
+  /* On mobile the panels stop being neighbours and become overlays sliding
+     over the map, so here they really are elevated and really do cast. */
   .panel-right{
     position:fixed;
     top:0;
@@ -77,6 +113,7 @@ html, body {
     transform:translateX(100%);
     transition:transform .2s;
     z-index:100;
+    box-shadow: var(--elev-3);
 }
 
 .app.mentor-open .panel-right{
@@ -93,6 +130,7 @@ html, body {
     transform: translateX(-100%);
     transition: transform var(--transition);
     overflow-y: auto;
+    box-shadow: var(--elev-3);
   }
   
   .app.sidebar-open .panel-left {
@@ -157,8 +195,16 @@ html, body {
   gap: calc(var(--spacing) * 3);
 }
 
-.panel-left  { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); }
-.panel-right { border-left: 1px solid var(--border); overflow: hidden; background: var(--surface); }
+/* z1. No border against the graph — the panel ends because its shadow runs
+   out, not because a line says so (see .graph-wrap::before / ::after). */
+.panel-left  {
+  overflow-y: auto;
+  background: linear-gradient(180deg, var(--z1-top), var(--z1-bot));
+}
+.panel-right {
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--z1-top), var(--z1-bot));
+}
 
 .mentor-panel {
   opacity: 1;
@@ -195,7 +241,8 @@ section { display: flex; flex-direction: column; }
 #loader {
   position: fixed;
   inset: 0;
-  background: #101010; 
+  /* matches z0 so the handoff to the map is seamless */
+  background: var(--graph-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -568,8 +615,10 @@ input[type="text"]::placeholder {
   bottom: calc(var(--spacing) * 3);
   left: 50%;
   transform: translateX(-50%);
-  background: var(--surface);
+  /* z3, but it keeps its danger-coloured border — that's semantic, not chrome. */
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
   border: 1px solid var(--danger);
+  box-shadow: var(--elev-3);
   color: var(--danger);
   padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2.5);
   border-radius: var(--radius);
@@ -587,10 +636,45 @@ input[type="text"]::placeholder {
   margin-bottom: calc(var(--spacing) * 1.5); 
 }
 
-.graph-wrap { 
-  position: relative; 
-  overflow: hidden; 
-  background: var(--graph-bg); 
+.graph-wrap {
+  position: relative;
+  overflow: hidden;
+  background: var(--graph-bg);
+}
+
+/* The panels' cast shadow, received by the map. This replaces the 1px
+   borders .panel-left/.panel-right used to carry. Pseudo-elements rather
+   than real nodes so the whole elevation pass stays CSS-only.
+   ::after is only visible while the mentor panel is open. */
+.graph-wrap::before,
+.graph-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 130px;
+  pointer-events: none;
+  z-index: 1;          /* above the static <svg>, below #detail-panel (50) */
+}
+
+.graph-wrap::before {
+  left: 0;
+  background: linear-gradient(90deg, rgba(0,0,0,0.72), rgba(0,0,0,0));
+}
+
+.graph-wrap::after {
+  right: 0;
+  background: linear-gradient(270deg, rgba(0,0,0,0.72), rgba(0,0,0,0));
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.app.mentor-open .graph-wrap::after { opacity: 1; }
+
+/* On mobile the panels are overlays, not neighbours, so nothing is casting. */
+@media (max-width: 768px) {
+  .graph-wrap::before,
+  .graph-wrap::after { display: none; }
 }
 
 /* static film-grain overlay, painted once behind the graph (see the SVG
@@ -661,9 +745,13 @@ input[type="text"]::placeholder {
   left: 0;
   right: 0;
   z-index: 20;
-  background: var(--surface-hi);
+  /* z2 — it floats over the panel it belongs to. Keeps a hairline because
+     it overlays a similarly-lit surface, not the dark map, so lightness
+     alone doesn't separate it. */
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--elev-2);
   max-height: 220px;
   overflow-y: auto;
   display: none;
@@ -832,7 +920,7 @@ input[type="text"]::placeholder {
 
 /* graph elements */
 .glink {
-  stroke: var(--border); 
+  stroke: var(--graph-stroke); 
   stroke-opacity: 0.008;   /* almost invisible by default — constellations
                              only reveal themselves on hover/selection */
   stroke-width: 1px; 
@@ -870,7 +958,7 @@ input[type="text"]::placeholder {
    divided by the number of edges so each one is a bit fainter, visually
    connecting the brighter cluster to the rest without shouting. */
 .glink.neighbor-mid {
-  stroke: var(--border);
+  stroke: var(--graph-stroke);
   stroke-opacity: 0.12;
   stroke-width: 1px;
   transition: stroke-opacity var(--transition);
@@ -981,7 +1069,7 @@ circle.query-node.in-playlist {
 /* corpus context nodes rest dim; full brightness on hover */
 circle.corpus-node {
   fill: #555577;
-  stroke: var(--border);
+  stroke: var(--graph-stroke);
   stroke-width: 1px;
   opacity: 0.4;
   filter: grayscale(0.8) brightness(0.7);
@@ -1041,13 +1129,14 @@ circle.corpus-node {
   pointer-events: none; 
   display: none; 
   z-index: 100;
-  background: rgba(26,26,26,0.98); 
-  border: 1px solid var(--border);
-  border-radius: var(--radius); 
-  padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2); 
-  font-size: 13px; 
+  /* z3 */
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
+  border: none;
+  border-radius: var(--radius);
+  padding: calc(var(--spacing) * 1.5) calc(var(--spacing) * 2);
+  font-size: 13px;
   max-width: 260px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+  box-shadow: var(--elev-3);
 }
 
 #graph-tooltip .tip-title { 
@@ -1077,12 +1166,14 @@ circle.corpus-node {
   max-height: calc(100% - var(--spacing) * 4);
   width: 320px;
   overflow-y: auto;
-  background: rgba(26,26,26,0.98);
-  border: 1px solid var(--border);
+  /* z2 — a card lying over the map. Fully opaque now: it was 0.98 alpha,
+     and opaque reads better over a busy graph for no cost. */
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
+  border: none;
   border-radius: var(--radius);
   padding: calc(var(--spacing) * 2);
   z-index: 50;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+  box-shadow: var(--elev-2);
 }
 
 @media (max-width:768px) {
@@ -1393,6 +1484,11 @@ circle.corpus-node {
   margin: 0 var(--spacing) var(--spacing);
 }
 
+/* Required: the `display` above is an author rule, so it outranks the UA
+   stylesheet's `[hidden] { display: none }` and the panel would render
+   permanently open no matter what toggleBreakdown() sets. */
+.breakdown-panel[hidden] { display: none; }
+
 .breakdown-row {
   display: flex;
   align-items: center;
@@ -1555,10 +1651,40 @@ circle.corpus-node {
   margin-top: var(--spacing); 
 }
 
+/* ── Accessibility ────────────────────────────────────────────────────────
+ * Both of these predate the elevation work; softening the hairlines made the
+ * missing focus ring more pressing, so they're fixed here rather than left.
+ */
+
+/* Only .view-toggle-btn had a focus ring. Everything focusable needs one. */
+.btn:focus-visible,
+.btn-icon:focus-visible,
+.btn-add:focus-visible,
+.btn-tiny:focus-visible,
+.btn-remove:focus-visible,
+.btn-expand:focus-visible,
+.btn-show-more:focus-visible,
+.mode-btn:focus-visible,
+.modal-tab:focus-visible,
+.filter-chip button:focus-visible,
+input[type="text"]:focus-visible,
+input[type="file"]:focus-visible + span,
+#upload-zone label:focus-within {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(91, 143, 204, 0.55);
+}
+
+/* The ambient node breathing (see .idle-breathing) ran unconditionally. */
+@media (prefers-reduced-motion: reduce) {
+  .nodes.idle-breathing .gnode circle { animation: none; }
+  .modal { animation: none; }
+  * { scroll-behavior: auto; }
+}
+
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius); }
+::-webkit-scrollbar-thumb { background: #3A3A3A; border-radius: var(--radius); }
 
 /* ── Mentor chat panel ────────────────────────────────────────────────────── */
 #mentor-panel {
@@ -1618,22 +1744,23 @@ circle.corpus-node {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* z3 — it floats over the map like the tooltip does. */
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
+  border: none;
   color: var(--text);
   font-size: 20px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+  box-shadow: var(--elev-3);
+  transition: background var(--transition), box-shadow var(--transition);
   z-index: 40;
 }
 
 .mentor-toggle-btn:hover {
-  background: var(--surface-hi);
-  border-color: var(--primary);
-  box-shadow: 0 2px 8px rgba(91,143,204,0.2);
+  background: linear-gradient(180deg, #303030, #262626);
+  box-shadow: var(--elev-3), 0 0 0 1px rgba(91,143,204,0.35);
 }
 
 .app.mentor-open .mentor-toggle-btn {
@@ -1676,7 +1803,9 @@ circle.corpus-node {
 .modal-content {
   position: relative;
   z-index: 501;
-  background: var(--surface);
+  /* z3. Keeps a hairline: it sits over .modal-overlay rather than over the
+     dark map, so surface lightness alone doesn't define its edge. */
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   max-height: 80vh;
@@ -1684,7 +1813,7 @@ circle.corpus-node {
   max-width: 640px;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
+  box-shadow: var(--elev-3);
   animation: modal-slide-up 150ms ease;
 }
 
@@ -1867,10 +1996,11 @@ circle.corpus-node {
   padding: 5px calc(var(--spacing) * 1.5);
   width: min(1100px, calc(100% - var(--spacing) * 4));
   max-width: calc(100% - var(--spacing) * 4);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* z2 — same level as the detail panel; both are cards over the map. */
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
+  border: none;
   border-radius: var(--radius);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--elev-2);
 }
 .autoplay-bar[hidden] { display: none; }
 
@@ -1955,10 +2085,11 @@ circle.corpus-node {
   width: 268px;
   margin-top: 6px;
   padding: calc(var(--spacing) * 1.5);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* z3 */
+  background: linear-gradient(180deg, var(--z3-top), var(--z3-bot));
+  border: none;
   border-radius: var(--radius);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+  box-shadow: var(--elev-3);
   text-align: left;
 }
 .settings-popover[hidden] { display: none; }
@@ -1997,4 +2128,305 @@ circle.corpus-node {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-muted);
+}
+
+/* ══ Mobile shell — design 1b, "one surface, thumb height" ══════════════════
+ *
+ * Everything below hangs off `body.mshell`, a class ui/static/mobile.js adds
+ * only while the 768px breakpoint matches. It is deliberately NOT wrapped in a
+ * media query: the class is the switch, so a rule can never fire without the
+ * JS that builds the DOM it styles (and vice versa). Selectors are written one
+ * step more specific than the older left-drawer rules above, which stay in the
+ * file for the no-JS path.
+ *
+ * Shape: the map keeps the whole screen. A bar sits on top of it at thumb
+ * height and grows into the panel; the detail view replaces the panel in the
+ * same sheet rather than floating its own card. The map itself gets no
+ * treatment — same rule as the desktop elevation work.
+ */
+body.mshell {
+  --mob-bar-h: 82px;                        /* collapsed sheet: grip + search row */
+  --mob-safe:  env(safe-area-inset-bottom, 0px);
+  --mob-top-h: 46px;
+  overscroll-behavior: none;
+}
+
+/* The old drawer shell and this one are mutually exclusive. */
+body.mshell .sidebar-toggle,
+body.mshell .app.sidebar-open::before { display: none; }
+/* The panel header moves to the floating top bar; the map hint is replaced by
+   the sheet, which says the same thing by being draggable. */
+body.mshell .panel-left .header,
+body.mshell .graph-hint { display: none; }
+
+/* ── Top bar ───────────────────────────────────────────────────────────── */
+body.mshell .mob-top {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top));
+  left: 10px;
+  right: 10px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;                     /* the gaps stay map, not chrome */
+}
+body.mshell .mob-top > * { pointer-events: auto; }
+
+body.mshell .mob-brand,
+body.mshell .mob-icon-btn,
+body.mshell .mob-top .view-mode,
+body.mshell .mob-top .mentor-toggle-btn {
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(20, 20, 20, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: none;
+  box-shadow: none;
+}
+
+body.mshell .mob-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+}
+body.mshell .mob-count {
+  color: var(--text-muted);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.mshell .mob-top-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+body.mshell .mob-top .view-mode {
+  margin: 0;
+  padding: 3px;
+  display: inline-flex;
+}
+body.mshell .mob-top .view-toggle-btn { width: 28px; height: 28px; }
+
+body.mshell .mob-icon-btn,
+body.mshell .mob-top .mentor-toggle-btn {
+  position: static;
+  width: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-mid);
+  font-size: 15px;
+  cursor: pointer;
+}
+body.mshell .mob-top .mentor-toggle-btn { font-size: 16px; }
+
+/* ── Scrim ─────────────────────────────────────────────────────────────── */
+body.mshell .mob-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+body.mshell.mob-sheet-open .mob-scrim { opacity: 1; pointer-events: auto; }
+
+/* ── The sheet ─────────────────────────────────────────────────────────── */
+body.mshell .mob-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: var(--mob-safe);
+  /* z2 — a card over the map, same level as the detail panel it now hosts. */
+  background: linear-gradient(180deg, var(--z2-top), var(--z2-bot));
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -10px 34px rgba(20, 15, 10, 0.6);
+  height: calc(var(--mob-bar-h) + var(--mob-safe));
+  transition: height 240ms cubic-bezier(.32, .72, 0, 1);
+}
+body.mshell .mob-sheet.dragging { transition: none; }
+body.mshell .mob-sheet[data-state="expanded"] { height: 72dvh; }
+body.mshell .mob-sheet[data-state="detail"]   { height: 62dvh; }
+
+/* Grip: the whole band is the drag target, not just the 36px pill. */
+body.mshell .mob-grip {
+  flex: none;
+  padding: 10px 0 6px;
+  touch-action: none;
+  cursor: grab;
+}
+body.mshell .mob-handle {
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: 3px;
+  background: #3A3A3A;
+}
+
+body.mshell .mob-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+body.mshell .mob-searchfield {
+  flex: 1;
+  min-width: 0;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+body.mshell .mob-searchfield-icon { color: var(--primary); font-size: 14px; }
+body.mshell .mob-tourbtn {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border: none;
+  border-radius: 12px;
+  background: var(--surface-hi);
+  color: var(--primary);
+  font-size: 16px;
+  cursor: pointer;
+}
+body.mshell .mob-tourbtn:active { opacity: 0.7; }
+
+body.mshell .mob-tabs {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 2px 12px 10px;
+}
+body.mshell .mob-tab {
+  flex: 1;
+  height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+body.mshell .mob-tab.active { background: var(--surface-hi); color: var(--text); }
+
+/* Bar state is only the search row; expanding trades it for the tabs and the
+   panel — the Search tab has the real input, and two search fields on one
+   screen is one too many. The detail view replaces the browse chrome
+   entirely rather than stacking under it. */
+body.mshell .mob-sheet[data-state="bar"] .mob-tabs,
+body.mshell .mob-sheet[data-state="bar"] .panel-left,
+body.mshell .mob-sheet:not([data-state="bar"]) .mob-bar,
+body.mshell .mob-sheet[data-state="detail"] .mob-tabs,
+body.mshell .mob-sheet[data-state="detail"] .panel-left { display: none; }
+
+/* ── The panel, re-hosted as the sheet body ────────────────────────────── */
+body.mshell .app .panel-left {
+  position: static;
+  transform: none;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  z-index: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 12px 24px;
+  gap: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: none;
+}
+body.mshell .mob-hidden { display: none !important; }
+/* The tab already names the pane, so the section heading is one label too
+   many — except inside a pane that shows more than one section. */
+body.mshell .panel-left > section > h2 { display: none; }
+body.mshell .panel-left > section { padding-top: 12px; }
+/* The sheet is the scroller — a section that scrolls inside it fights the
+   drag and hides its own bottom rows. */
+body.mshell .map-list { max-height: none; overflow: visible; }
+
+/* The popover becomes an ordinary pane once it is a tab rather than a menu. */
+body.mshell #settings-popover {
+  position: static;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+body.mshell .settings-row { padding: 11px 0; font-size: 13px; }
+body.mshell .mob-help-btn {
+  width: 100%;
+  margin-top: 18px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--surface-hi);
+  color: var(--text);
+}
+
+/* ── The detail view, re-hosted as the sheet body ──────────────────────── */
+body.mshell .mob-sheet #detail-panel {
+  position: static;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 16px 24px;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+}
+body.mshell .mob-sheet #detail-close { top: 4px; right: 12px; }
+
+/* 28px is a comfortable click and a poor tap. Bumped shell-wide rather than
+   per-panel: every .btn-icon in here is now a finger target. */
+body.mshell .btn-icon {
+  width: 40px;
+  height: 40px;
+  font-size: 15px;
+}
+
+/* ── Things that floated over the bottom of the map ────────────────────── */
+body.mshell .autoplay-bar {
+  left: 8px;
+  right: 8px;
+  width: auto;
+  max-width: none;
+  transform: none;
+  bottom: calc(var(--mob-bar-h) + var(--mob-safe) + 8px);
 }
