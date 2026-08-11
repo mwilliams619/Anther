@@ -378,10 +378,12 @@ def atlas_song_spotify(song_id):
     visitors already logged into Spotify in that browser; 30s preview
     otherwise — no OAuth, no app registration, no per-user quota)."""
     try:
-        track_id = atlas.get_spotify_track_id(song_id)
+        result = atlas.resolve_spotify_track(song_id)
     except Exception as exc:
         return _server_error(exc)
-    return jsonify({'track_id': track_id})
+    return jsonify({'track_id': result.get('track_id'),
+                    'status': result.get('status', 'unknown'),
+                    'configured': atlas.spotify_configured()})
 
 
 @app.route('/api/autoplay/resolve', methods=['POST'])

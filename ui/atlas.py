@@ -2164,9 +2164,10 @@ def get_preview_url(song_id: str) -> str | None:
 
 
 _spotify_id_cache: dict[str, str | None] = {}   # song_id → bare Spotify track id | None
+_spotify_status_cache: dict[str, str] = {}     # song_id → resolution status
 
 
-def get_spotify_track_id(song_id: str) -> str | None:
+def resolve_spotify_track(song_id: str) -> dict:
     """Resolve a bare Spotify track id for the no-login iframe embed
     (open.spotify.com/embed/track/<id>) — this gives logged-in Spotify
     visitors full-track playback with zero OAuth/app registration, and
@@ -2181,24 +2182,29 @@ def get_spotify_track_id(song_id: str) -> str | None:
     the API.
     """
     if song_id in _spotify_id_cache:
-        return _spotify_id_cache[song_id]
+        return {"track_id": _spotify_id_cache[song_id],
+                "status": _spotify_status_cache.get(song_id, "not_found")}
 
     if song_id.startswith("spotify:"):
         tid = song_id.split(":", 1)[1]
         _spotify_id_cache[song_id] = tid
-        return tid
+        _spotify_status_cache[song_id] = "resolved"
+        return {"track_id": tid, "status": "resolved"}
 
     if not spotify_configured():
         _spotify_id_cache[song_id] = None
-        return None
+        _spotify_status_cache[song_id] = "not_configured"
+        return {"track_id": None, "status": "not_configured"}
 
     meta = track_name_artist(song_id)
     if meta is None:
         _spotify_id_cache[song_id] = None
-        return None
+        _spotify_status_cache[song_id] = "metadata_missing"
+        return {"track_id": None, "status": "metadata_missing"}
     name, artist = meta
 
     tid = None
+    status = "not_found"
     if name and artist:
         try:
             from anther_ml.mpd_ingest import get_spotify_token
@@ -2213,10 +2219,23 @@ def get_spotify_track_id(song_id: str) -> str | None:
             items = ((r.json().get("tracks") or {}).get("items")) or []
             if items:
                 tid = items[0].get("id")
+                status = "resolved" if tid else "not_found"
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else None
+            status = ("auth_failed" if code in (401, 403) else
+                      "rate_limited" if code == 429 else "upstream_error")
+        except requests.RequestException:
+            status = "upstream_error"
         except Exception:
-            tid = None
+            status = "upstream_error"
     _spotify_id_cache[song_id] = tid
-    return tid
+    _spotify_status_cache[song_id] = status
+    return {"track_id": tid, "status": status}
+
+
+def get_spotify_track_id(song_id: str) -> str | None:
+    """Backward-compatible ID-only wrapper for existing autoplay callers."""
+    return resolve_spotify_track(song_id)["track_id"]
 
 
 def resolve_spotify_batch(ids: list[str]) -> dict[str, str | None]:

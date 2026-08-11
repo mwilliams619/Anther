@@ -1536,8 +1536,16 @@ async function toggleSpotifyEmbed(id, btn) {
     btn.textContent = original;
     if (state.detailId !== id && wrap.dataset.forId !== id) return;  // superseded
     if (!data.track_id) {
-      btn.title = 'Not found on Spotify';
-      wrap.innerHTML = '<div class="empty spotify-embed-status">Not available on Spotify.</div>';
+      const messages = {
+        not_configured: 'Spotify lookup is not configured on the server.',
+        auth_failed: 'Spotify authentication failed on the server.',
+        rate_limited: 'Spotify is rate-limiting lookups. Try again shortly.',
+        metadata_missing: 'This song has no metadata to search on Spotify.',
+        upstream_error: 'Spotify lookup failed. Try again shortly.',
+        not_found: 'Not available on Spotify.',
+      };
+      btn.title = messages[data.status] || messages.not_found;
+      wrap.innerHTML = `<div class="empty spotify-embed-status">${esc(btn.title)}</div>`;
       return;
     }
     btn.dataset.trackId = data.track_id;
