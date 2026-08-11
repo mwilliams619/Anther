@@ -6,6 +6,11 @@
  */
 const loaderStart = performance.now();
 const AtlasGraph = (() => {
+  // A phone tap can synthesize mouseover/mousemove events after the pointer
+  // lands. Hover labels are useful on desktop, but on mobile they can float
+  // over the bottom-sheet detail view and obscure the content being read.
+  const hoverEnabled = () => !window.matchMedia('(max-width: 768px)').matches
+    && !window.matchMedia('(pointer: coarse)').matches;
   // Nodes are NOT colored by cluster — the force layout itself shows song
   // relationships; cluster info lives only in the click popover. Fills come
   // from CSS (query = --primary, corpus = grey).
@@ -568,6 +573,7 @@ const AtlasGraph = (() => {
   }
 
   function onHover(d) {
+    if (!hoverEnabled()) return;
     if (pinnedId === null) applyHighlight(d);   // hover previews only when unpinned
     setHoverSimilarityLinks(d);
     // raise the entire node group (circle + label) so they're on top of all
@@ -587,6 +593,7 @@ const AtlasGraph = (() => {
   }
 
   function onLinkHover(d) {
+    if (!hoverEnabled()) return;
     if (d.score == null) return;
     tooltip.style('display', 'block').html(
       `<div class="tip-title">Similarity score: ${Math.round(d.score)}</div>`
@@ -594,6 +601,7 @@ const AtlasGraph = (() => {
     onMove.call(this, d);
   }
   function onMove() {
+    if (!hoverEnabled()) return;
     const [mx, my] = d3.mouse(document.body);
     tooltip.style('left', (mx + 14) + 'px').style('top', (my + 14) + 'px');
   }

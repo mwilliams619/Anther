@@ -271,6 +271,10 @@ const AtlasMobile = (function () {
     // The sheet follows the detail panel rather than intercepting selection,
     // so every path that opens one (node tap, neighbour row, tour) lands here.
     observe(detail, () => {
+      // A touch can leave a synthetic hover tooltip visible for one frame;
+      // remove it whenever the sheet becomes the detail surface.
+      const tip = $('graph-tooltip');
+      if (tip) tip.style.display = 'none';
       if (!detail.hidden) setState('detail');
       else if (sheet.dataset.state === 'detail') setState('bar');
     }, { attributes: true, attributeFilter: ['hidden'] });

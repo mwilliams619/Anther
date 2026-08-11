@@ -1,5 +1,9 @@
 /* Isolated incremental force graph for explicitly-added artists. */
 const ArtistGraph = (() => {
+  // Touch input may synthesize mouse events. Artist hover labels are a
+  // desktop affordance and should not compete with the mobile detail sheet.
+  const hoverEnabled = () => !window.matchMedia('(max-width: 768px)').matches
+    && !window.matchMedia('(pointer: coarse)').matches;
   let svg, g, gLink, gNode, sim, zoom;
   let nodes = [], links = [];
   const byId = new Map();
@@ -61,6 +65,7 @@ const ArtistGraph = (() => {
     linkSel.exit().remove();
     linkSel = linkSel.enter().append('line').attr('class', 'artist-link')
       .on('mouseover', d => {
+        if (!hoverEnabled()) return;
         tooltip.style('display', 'block').html(
           `<div class="tip-title">Artist similarity: ${Math.round(d.score || 0)}</div>`);
       })
@@ -100,6 +105,7 @@ const ArtistGraph = (() => {
   }
 
   function moveTooltip() {
+    if (!hoverEnabled()) return;
     const point = d3.mouse(document.body);
     tooltip.style('left', `${point[0] + 14}px`).style('top', `${point[1] + 14}px`);
   }

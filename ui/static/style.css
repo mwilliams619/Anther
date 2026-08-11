@@ -2413,6 +2413,11 @@ body.mshell .mob-sheet #detail-panel {
 }
 body.mshell .mob-sheet #detail-close { top: 4px; right: 12px; }
 
+/* The graph tooltip is a mouse-only affordance. Keep this defensive rule in
+   addition to the JS event guard so a stale tooltip can never cover the
+   mobile detail sheet during a tap/selection transition. */
+body.mshell #graph-tooltip { display: none !important; }
+
 /* 28px is a comfortable click and a poor tap. Bumped shell-wide rather than
    per-panel: every .btn-icon in here is now a finger target. */
 body.mshell .btn-icon {
