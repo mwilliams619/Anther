@@ -1391,6 +1391,22 @@ circle.corpus-node {
 .artist-prov { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .artist-prov summary { cursor: pointer; }
 .artist-prov > div { margin-top: 2px; }
+.artist-previews { margin-top: calc(var(--spacing) * 1.5); font-size: 12px; }
+.artist-previews summary { cursor: pointer; color: var(--text-mid); }
+.artist-previews summary:hover { color: var(--text); }
+.artist-previews-body { margin-top: calc(var(--spacing) * 1); }
+.preview-row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 1);
+  padding: calc(var(--spacing) * 0.5) 0;
+}
+.preview-title {
+  color: var(--text-mid);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .artist-profile-empty {
   font-size: 11px;
   color: var(--text-muted);

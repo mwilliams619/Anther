@@ -372,6 +372,24 @@ def upload_audio(name):
     return send_from_directory(uploads_dir, safe, conditional=True)
 
 
+CUSTOM_AUDIO_DIR = Path(__file__).parent / 'custom_audio'
+
+
+@app.route('/api/custom-audio/<path:name>')
+def custom_audio(name):
+    """Serve bundled audio for premade-map tracks whose source has no
+    playable preview via iTunes/Spotify/Deezer (e.g. Bandcamp-only artists
+    like K. Porcelain). Files live in ui/custom_audio/<id>.mp3 and are shared
+    across sessions (unlike per-session uploads), since a premade map must
+    play for every visitor. secure_filename + the is_file() guard confine the
+    read to CUSTOM_AUDIO_DIR; conditional=True enables Range requests for
+    seeking."""
+    safe = secure_filename(name)
+    if not safe or not (CUSTOM_AUDIO_DIR / safe).is_file():
+        return jsonify({'error': 'not found'}), 404
+    return send_from_directory(CUSTOM_AUDIO_DIR, safe, conditional=True)
+
+
 @app.route('/api/song/<path:song_id>/spotify')
 def atlas_song_spotify(song_id):
     """Bare Spotify track id for the no-login iframe embed (full track for
@@ -577,6 +595,19 @@ def artist_detail(artist_id):
         if detail is None:
             return jsonify({'error': 'Artist not found'}), 404
         return jsonify(detail)
+    except (ValueError, RuntimeError) as exc:
+        return _artist_error_response(exc)
+
+
+@app.route('/api/artist/<path:artist_id>/previews')
+def artist_previews(artist_id):
+    """Top-5 playable song previews for the detail pane dropdown (display-only,
+    fetched live from iTunes and cached to the session)."""
+    try:
+        result = atlas.artist_top_previews(artist_id)
+        if result is None:
+            return jsonify({'error': 'Artist not found'}), 404
+        return jsonify(result)
     except (ValueError, RuntimeError) as exc:
         return _artist_error_response(exc)
 

@@ -23,6 +23,7 @@ import threading
 import contextlib
 import contextvars
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,8 @@ from anther_ml.cluster import assign_cluster_knn
 from anther_ml.corpus.bundle import ReferenceCorpus
 from anther_ml.corpus.place import embed_query, embed_query_dual, place, recommend_from_seeds
 from anther_ml.corpus.popularity import load_popularity_by_track_id, popularity_percentiles
-from anther_ml.spotify_deezer import _deezer_get, match_deezer_track, _norm, _ratio
+from anther_ml.spotify_deezer import (_artist_ratio, _deezer_get, match_deezer_track,
+                                      _norm, _ratio)
 from anther_ml import itunes as itunes_src
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -900,37 +902,16 @@ def _ensure_cache_columns(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE embed_cache ADD COLUMN backbone_dim INTEGER")
 
 
-def cached_vec(track_id: str) -> np.ndarray | None:
-    cache_path = get_session().embed_cache_path
+def _read_cache_column(cache_path, track_id: str, column: str):
+    """Return one column's bytes for ``track_id`` from ``cache_path``, or None.
+    Never raises — a missing file or table just misses."""
     if not track_id or not cache_path.exists():
         return None
     try:
         con = sqlite3.connect(str(cache_path))
         try:
             row = con.execute(
-                "SELECT vec FROM embed_cache WHERE track_id = ?", (track_id,)
-            ).fetchone()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return None
-    if row is None:
-        return None
-    return np.frombuffer(row[0], dtype=np.float32).copy()
-
-
-def cached_backbone(track_id: str) -> np.ndarray | None:
-    """Raw 5120-d MERIT backbone for a previously-cached track, or None if
-    the track isn't cached or was cached before MERIT support (no backbone
-    column populated)."""
-    cache_path = get_session().embed_cache_path
-    if not track_id or not cache_path.exists():
-        return None
-    try:
-        con = sqlite3.connect(str(cache_path))
-        try:
-            row = con.execute(
-                "SELECT backbone FROM embed_cache WHERE track_id = ?", (track_id,)
+                f"SELECT {column} FROM embed_cache WHERE track_id = ?", (track_id,)
             ).fetchone()
         finally:
             con.close()
@@ -938,7 +919,38 @@ def cached_backbone(track_id: str) -> np.ndarray | None:
         return None
     if row is None or row[0] is None:
         return None
-    return np.frombuffer(row[0], dtype=np.float32).copy()
+    return row[0]
+
+
+def _cache_paths_for_read():
+    """Cache files to consult on a read, current session first. The DEFAULT
+    session is a read-through fallback so a prewarmed premade map (whose vectors
+    are curated, not private user data) loads instantly in any browser session
+    without re-embedding — writes still land only in the current session."""
+    paths = [get_session().embed_cache_path]
+    default_path = SESSION_DIR / DEFAULT_SESSION_ID / "embed_cache.sqlite"
+    if default_path not in paths:
+        paths.append(default_path)
+    return paths
+
+
+def cached_vec(track_id: str) -> np.ndarray | None:
+    for cache_path in _cache_paths_for_read():
+        raw = _read_cache_column(cache_path, track_id, "vec")
+        if raw is not None:
+            return np.frombuffer(raw, dtype=np.float32).copy()
+    return None
+
+
+def cached_backbone(track_id: str) -> np.ndarray | None:
+    """Raw 5120-d MERIT backbone for a previously-cached track, or None if
+    the track isn't cached or was cached before MERIT support (no backbone
+    column populated)."""
+    for cache_path in _cache_paths_for_read():
+        raw = _read_cache_column(cache_path, track_id, "backbone")
+        if raw is not None:
+            return np.frombuffer(raw, dtype=np.float32).copy()
+    return None
 
 
 def cache_vec(track_id: str, vec, name: str = "", artist: str = "",
@@ -1752,8 +1764,15 @@ def _place_collection_rows(rows: list, gid, source: str):
         else:
             raw = cached_vec(nid)
             if raw is not None:                            # embedded before → instant
+                # Re-project the cached MERIT backbone the same way the
+                # search-result path (_place_search_result) and the graph-reload
+                # rebuild both do. Without it the node never lands in
+                # st.merit_vecs, so _merit_vec_for returns None and the detail
+                # pane's melody/rhythm/timbre breakdown silently disappears for
+                # every track placed via a playlist/album/discography.
                 f = _place_query_vec(nid, r["name"], r["artist"], raw,
-                                     source, extra={"playlist_pid": gid})
+                                     source, extra={"playlist_pid": gid},
+                                     merit_vec=_merit_query_vec(cached_backbone(nid)))
             else:
                 st = get_session()
                 with st.lock:
@@ -1842,10 +1861,15 @@ def place_playlist(pid) -> dict:
     custom = _custom_playlist_index.get(str(pid))
     if custom is not None:
         rows = []
-        for t in custom["tracks"][:IMPORT_CAP]:
+        for t in custom["tracks"]:
             tid = str(t.get("id", ""))
-            # Prefer bare ID if in corpus; fall back to spotify: prefix
-            if _id_to_idx.get(tid) is None and not tid.startswith(("spotify:", "deezer:")):
+            # Prefer bare ID if in corpus; otherwise keep any explicit source
+            # prefix (itunes:/deezer:/spotify:/upload:) as-is, and only bare,
+            # unprefixed ids are assumed to be Spotify corpus track ids. The
+            # earlier check listed only spotify:/deezer:, so itunes: ids were
+            # rewritten to spotify:itunes:<id> — which missed the itunes:-keyed
+            # embed cache and sent them down the Spotify embed path.
+            if _id_to_idx.get(tid) is None and ":" not in tid:
                 nid = f"spotify:{tid}"
             else:
                 nid = tid
@@ -1898,23 +1922,352 @@ def place_playlist(pid) -> dict:
 
 # ── Album search + placement (Deezer-sourced) ────────────────────────────────
 
-def search_albums(q: str, limit: int = 20) -> dict:
-    """Album-name search against the Deezer catalog (no local DB needed).
-    Returns {"results": [{album_id, name, artist, cover, n_tracks}]}."""
-    q = (q or "").strip()
-    if not q:
-        return {"results": []}
+ALBUM_MIN_HITS   = int(os.environ.get("ANTHER_ALBUM_MIN_HITS", "5"))
+ALBUM_TITLE_MIN  = 0.72   # title similarity needed to accept a resolved album
+ALBUM_ARTIST_MIN = 0.80   # artist similarity needed to accept a resolved album
+ALBUM_BROWSE_MIN = 0.90   # artist similarity to read the whole query as an artist
+ALBUM_SPLIT_CAP  = 6      # max artist lookups while scanning query splits
+ALBUM_STOPWORDS  = {"the", "a", "an", "of", "and", "by", "in", "on", "to"}
+
+_artist_albums_cache: dict = {}     # normalized artist name → album rows
+
+
+def _album_row(h: dict, artist: str = "") -> dict:
+    """Normalize one Deezer album payload. ``search/album`` carries an
+    ``artist`` block and ``nb_tracks``; ``artist/<id>/albums`` carries neither,
+    so the artist is passed in and the track count stays None (the UI shows
+    "?" and ``place_album`` refetches the album anyway)."""
+    return {
+        "album_id": h.get("id"),
+        "name":     h.get("title", ""),
+        "artist":   (h.get("artist") or {}).get("name") or artist,
+        "cover":    h.get("cover_small") or "",
+        "n_tracks": h.get("nb_tracks"),
+    }
+
+
+def _relevant_albums(q: str, rows: list) -> list:
+    """The album-tier twin of ``_relevant``: every query token must appear as
+    a whole word in artist+title. Deezer answers an album miss with confident
+    noise ("the ooz" → nine albums by a band called The Oozes), which would
+    otherwise both mislead the user and keep the later tiers from running."""
+    tokens = _norm(q).split()
+    if not tokens:
+        return list(rows)
+    out = []
+    for r in rows:
+        words = set(_norm(f"{r.get('artist', '')} {r.get('name', '')}").split())
+        if all(t in words for t in tokens):
+            out.append(r)
+    return out
+
+
+def _albums_by_recall(q: str, rows: list, min_recall: float = 0.6) -> list:
+    """Relevance filter for the Spotify/iTunes tiers, which rank by their own
+    fuzzy logic and answer a hopeless query with confident nonsense.
+
+    Softer than ``_relevant_albums``: a fraction of the query tokens has to
+    land as whole words in artist+title, not all of them. Requiring all of
+    them drops real hits the name tiers exist to catch — "beatles sgt pepper"
+    scores 2/3 against "The Beatles — Sgt. Pepper's Lonely Hearts Club Band"
+    because _norm leaves the possessive on "peppers".
+    """
+    tokens = _norm(q).split()
+    if not tokens:
+        return list(rows)
+    out = []
+    for r in rows:
+        words = set(_norm(f"{r.get('artist', '')} {r.get('name', '')}").split())
+        if sum(t in words for t in tokens) / len(tokens) >= min_recall:
+            out.append(r)
+    return out
+
+
+def _dedupe_albums(existing: list, new: list) -> list:
+    """Drop albums an earlier tier already returned — by Deezer id, and by
+    normalized artist+title (the name tiers can resolve two Spotify editions
+    of one record onto the same Deezer release)."""
+    ids = {r["album_id"] for r in existing}
+    keys = {(_norm(r["artist"]), _norm(r["name"])) for r in existing}
+    out = []
+    for r in new:
+        key = (_norm(r["artist"]), _norm(r["name"]))
+        if r["album_id"] in ids or key in keys:
+            continue
+        ids.add(r["album_id"])
+        keys.add(key)
+        out.append(r)
+    return out
+
+
+def _deezer_album_search(q: str, limit: int = 20) -> list:
+    """Raw Deezer album-title search. Raises RuntimeError on an API error;
+    ``search_albums`` catches it, tops up from the later tiers, and re-raises
+    only if every tier came back empty."""
     data = _deezer_get("search/album", params={"q": q, "limit": limit})
     if "error" in data:
         raise RuntimeError(data["error"].get("message", "Deezer error"))
-    results = [{
-        "album_id": h.get("id"),
-        "name":     h.get("title", ""),
-        "artist":   (h.get("artist") or {}).get("name", ""),
-        "cover":    h.get("cover_small") or "",
-        "n_tracks": h.get("nb_tracks"),
-    } for h in (data.get("data") or [])]
-    return {"results": results}
+    return [_album_row(h) for h in (data.get("data") or []) if h.get("id")]
+
+
+def _deezer_artist_albums(name: str) -> list:
+    """Every album by the best Deezer artist match for ``name`` (cached).
+
+    This is the route that actually finds records: Deezer's album search
+    indexes the *title* alone, but an artist's discography endpoint lists the
+    whole catalog, so a fuzzy title match against it is exact where free-text
+    search is hopeless.
+    """
+    key = _norm(name)
+    if not key:
+        return []
+    if key in _artist_albums_cache:
+        return _artist_albums_cache[key]
+    rows: list = []
+    data = _deezer_get("search/artist", params={"q": name, "limit": 5})
+    cands = [a for a in (data.get("data") or [])
+             if a.get("id") and _artist_ratio(name, a.get("name", "")) >= ALBUM_ARTIST_MIN]
+    # Deezer carries ghost duplicates — "radiohead" ranks an empty Radiohead
+    # (id 323887691, nb_album 0) above the real one (id 399, 45 albums) — so
+    # equally-good name matches are broken by catalog size, not search rank.
+    cands.sort(key=lambda a: (-round(_artist_ratio(name, a.get("name", "")), 2),
+                              -(a.get("nb_album") or 0)))
+    for a in cands[:3]:
+        if not (a.get("nb_album") or 0):
+            continue
+        al = _deezer_get(f"artist/{a['id']}/albums", params={"limit": 200})
+        rows += [_album_row(h, artist=a.get("name", ""))
+                 for h in (al.get("data") or []) if h.get("id")]
+        if rows:
+            break
+    _artist_albums_cache[key] = rows
+    return rows
+
+
+def _album_title_score(want: str, row: dict) -> float:
+    """How well ``want`` names this album. Whole-word containment scores as a
+    match so "ooz" hits "The OOZ" and "man alive" hits "Man Alive!", which a
+    raw character ratio rates too low."""
+    title = row.get("name", "")
+    tokens = _norm(want).split()
+    if tokens and all(t in set(_norm(title).split()) for t in tokens):
+        return max(0.9, _ratio(want, title))
+    return _ratio(want, title)
+
+
+def _best_album(rows: list, title: str, artist: str = "") -> dict | None:
+    """Best title match among ``rows``, rejected below ALBUM_TITLE_MIN.
+    Verification matters: Deezer's structured queries are not a strict AND, so
+    `artist:"Frank Ocean" album:"Chanel"` happily returns someone else's
+    "Chanel", and `album:"In Rainbows"` leads with "In Rainbows (Disk 2)"."""
+    best, best_score = None, 0.0
+    for r in rows:
+        if artist and _artist_ratio(artist, r.get("artist", "")) < ALBUM_ARTIST_MIN:
+            continue
+        score = _album_title_score(title, r)
+        if score > best_score:
+            best, best_score = r, score
+    return best if best_score >= ALBUM_TITLE_MIN else None
+
+
+def _resolve_album(artist: str, title: str) -> dict | None:
+    """Find the Deezer release for a known (artist, title) pair — the join the
+    Spotify/iTunes tiers need, since placement is Deezer-only (every Deezer
+    track carries a preview URL to embed from)."""
+    if not artist or not title:
+        return None
+    try:
+        rows = _deezer_album_search(f'artist:"{artist}" album:"{title}"', limit=5)
+    except RuntimeError:
+        rows = []
+    return (_best_album(rows, title, artist)
+            or _best_album(_deezer_artist_albums(artist), title, artist))
+
+
+def _usable_half(part: str) -> bool:
+    """Reject query halves too thin to identify anything. Without this, "the
+    ooz" splits into artist "the" / album "ooz" and matches whatever Deezer
+    calls the artist "The", and a bare "the" title token matches most
+    discographies on the whole-word shortcut in ``_album_title_score``."""
+    norm = _norm(part)
+    words = [w for w in norm.split() if w not in ALBUM_STOPWORDS]
+    return len(norm) >= 3 and bool(words)
+
+
+def _albums_by_query_split(q: str, limit: int) -> list:
+    """Tier 2: read the query as "<artist> <album>" (or the reverse).
+
+    Deezer's album search matches the title only, so "king krule the ooz"
+    returns nothing at all and "the ooz" returns a different band entirely.
+    Cutting the query at each token boundary, looking one half up as an artist
+    and fuzzy-matching the other half against that artist's discography finds
+    it on the first split that resolves — and the rest of that discography
+    comes back with it, which is both useful and enough hits to spare the
+    query the slower name tiers below.
+
+    A query that is *only* an artist name ("king krule") is answered with the
+    discography alone, but on a stricter artist threshold: at the tier's usual
+    0.80, "the ooz" resolves to a band called The Oozes and their albums would
+    crowd out the record actually being searched for.
+    """
+    tokens = q.split()
+    rows = _deezer_artist_albums(q)
+    browse = rows[:limit] if rows and _artist_ratio(q, rows[0]["artist"]) >= ALBUM_BROWSE_MIN else []
+
+    splits = []
+    for i in range(len(tokens) - 1, 0, -1):
+        splits.append((" ".join(tokens[:i]), " ".join(tokens[i:])))
+        splits.append((" ".join(tokens[i:]), " ".join(tokens[:i])))
+
+    looked = 0
+    for artist_part, album_part in splits:
+        if looked >= ALBUM_SPLIT_CAP:
+            break
+        if not _usable_half(artist_part) or not _usable_half(album_part):
+            continue
+        looked += 1
+        rows = _deezer_artist_albums(artist_part)
+        hit = _best_album(rows, album_part)
+        if hit:
+            return [hit] + _dedupe_albums([hit], rows)[:limit - 1]
+    return browse
+
+
+def _spotify_album_names(q: str, limit: int) -> list:
+    """Tier 3 input: (artist, title) pairs off Spotify's album search, whose
+    free-text handling is the best of the three catalogs. Gated on
+    SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET."""
+    if not spotify_configured():
+        return []
+    try:
+        from anther_ml.mpd_ingest import get_spotify_token
+        r = requests.get(
+            "https://api.spotify.com/v1/search",
+            headers={"Authorization": f"Bearer {get_spotify_token()}"},
+            params={"q": q, "type": "album", "limit": min(limit, 20)},
+            timeout=15,
+        )
+        r.raise_for_status()
+        items = ((r.json().get("albums") or {}).get("items")) or []
+    except Exception as exc:                                    # auth / network
+        print(f"[atlas] Spotify album search failed for {q!r}: {exc}")
+        return []
+    return [((a.get("artists") or [{}])[0].get("name", ""), a.get("name", ""))
+            for a in items if a.get("name")]
+
+
+def _itunes_album_names(q: str, limit: int) -> list:
+    """Tier 4 input: (artist, title) pairs off iTunes, for releases the other
+    two search indexes miss. iTunes suffixes releases ("Czech One - Single"),
+    which no other catalog does, so the suffix is stripped before resolving."""
+    try:
+        data = itunes_src._get("search", params={"term": q, "entity": "album",
+                                                 "limit": max(1, min(limit, 25))})
+    except Exception as exc:                                    # network / API shape
+        print(f"[atlas] iTunes album search failed for {q!r}: {exc}")
+        return []
+    out = []
+    for r in (data.get("results") or []):
+        title = r.get("collectionName") or ""
+        for suffix in (" - Single", " - EP"):
+            if title.endswith(suffix):
+                title = title[:-len(suffix)]
+        if title:
+            out.append((r.get("artistName", ""), title))
+    return out
+
+
+def _albums_from_names(pairs: list, cap: int = 8) -> list:
+    """Resolve (artist, title) pairs from a name tier onto Deezer releases.
+
+    Resolved in parallel and re-sorted into the catalog's own ranking: each
+    pair costs one or two Deezer round-trips, and eight of them in series adds
+    ~4s to a search a user is waiting on."""
+    pairs = pairs[:cap]
+    if not pairs:
+        return []
+    with ThreadPoolExecutor(max_workers=min(6, len(pairs) or 1)) as pool:
+        hits = list(pool.map(lambda p: _resolve_album(*p), pairs))
+    return [h for h in hits if h]
+
+
+def _fill_track_counts(rows: list, cap: int = 12) -> None:
+    """Fill in ``n_tracks`` for rows that came from ``artist/<id>/albums``,
+    which does not carry it (the UI would show "? tracks"). One extra Deezer
+    call per row, in parallel, capped — cosmetic, so failures stay silent."""
+    todo = [r for r in rows if r.get("n_tracks") is None][:cap]
+    if not todo:
+        return
+
+    def fetch(row):
+        info = _deezer_get(f"album/{row['album_id']}")
+        if "error" not in info and info.get("nb_tracks") is not None:
+            row["n_tracks"] = info["nb_tracks"]
+
+    with ThreadPoolExecutor(max_workers=min(6, len(todo))) as pool:
+        list(pool.map(fetch, todo))
+
+
+def search_albums(q: str, limit: int = 20) -> dict:
+    """
+    Four-tier album search, mirroring the track search in ``search``:
+    Deezer title search → Deezer artist discography → Spotify → iTunes.
+
+    Deezer alone is not enough, and not because of catalog gaps: its album
+    index matches the *title* only. "king krule the ooz" returns zero rows,
+    "the ooz king krule" zero, and "the ooz" nine albums by an unrelated band
+    called The Oozes — while the album itself sits in the catalog and its
+    tracks are findable one by one through the track search's own later tiers.
+    So each tier here attacks the lookup differently:
+
+    - Tier 2 splits the query into artist + album and matches against the
+      artist's discography (Deezer-native, no auth, catches the common
+      "<artist> <album>" phrasing and bare artist names).
+    - Tiers 3/4 use Spotify and iTunes purely as *name resolvers*: they turn
+      loose text into a canonical (artist, title) pair, which is then resolved
+      back to a Deezer release so ``place_album`` stays unchanged and every
+      placed track still has a preview to embed from.
+
+    Tiers gate on relevance (``_relevant_albums``), not emptiness, and top up
+    rather than stopping — same reasoning as ``search``.
+
+    Returns {"results": [{album_id, name, artist, cover, n_tracks}], "tiers",
+    "spotify_configured"}.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {"results": [], "tiers": {}, "spotify_configured": spotify_configured()}
+
+    deezer_error = None
+    try:
+        rows = _relevant_albums(q, _deezer_album_search(q, limit))
+    except RuntimeError as exc:                       # Deezer down / rate-limited
+        rows, deezer_error = [], exc
+    tiers = {"deezer": len(rows)}
+
+    if len(rows) < ALBUM_MIN_HITS:
+        hits = _dedupe_albums(rows, _albums_by_query_split(q, limit))
+        rows += hits
+        tiers["deezer_artist"] = len(hits)
+
+    if len(rows) < ALBUM_MIN_HITS:
+        hits = _dedupe_albums(rows, _albums_by_recall(
+            q, _albums_from_names(_spotify_album_names(q, limit))))
+        rows += hits
+        tiers["spotify"] = len(hits)
+
+    if len(rows) < ALBUM_MIN_HITS:
+        hits = _dedupe_albums(rows, _albums_by_recall(
+            q, _albums_from_names(_itunes_album_names(q, limit))))
+        rows += hits
+        tiers["itunes"] = len(hits)
+
+    if not rows and deezer_error is not None:
+        raise deezer_error
+    rows = rows[:limit]
+    _fill_track_counts(rows)
+    return {"results": rows, "tiers": tiers,
+            "spotify_configured": spotify_configured()}
 
 
 def place_album(album_id) -> dict:
@@ -2147,6 +2500,20 @@ def get_preview_url(song_id: str) -> str | None:
                     break
         except Exception as exc:
             print(f"[atlas] iTunes preview lookup failed for {song_id}: {exc}")
+        _preview_cache[song_id] = url
+        return url
+
+    if str(song_id).startswith("bandcamp:"):
+        # Bandcamp-only tracks (e.g. K. Porcelain) aren't on iTunes/Spotify/
+        # Deezer, so a title/artist match would play the wrong song. Their
+        # audio is bundled on disk under ui/custom_audio/<id>.mp3 and served
+        # by the app's /api/custom-audio/ route; the node id is the only
+        # client-supplied part and secure_filename confines it on the serve
+        # side. None means the bundled file isn't present.
+        bid = song_id.split(":", 1)[1]
+        audio_dir = Path(__file__).resolve().parent / "custom_audio"
+        if (audio_dir / f"{bid}.mp3").is_file():
+            url = f"/api/custom-audio/{bid}.mp3"
         _preview_cache[song_id] = url
         return url
 
@@ -2576,6 +2943,14 @@ def _ensure_artist_tables(st: "_SessionState") -> None:
             "CREATE TABLE IF NOT EXISTS artist_track_assignments ("
             "track_id TEXT PRIMARY KEY, artist_id TEXT NOT NULL, created REAL NOT NULL)"
         )
+        # Session-local cache for the detail pane's "top 5 previews" dropdown.
+        # `tracks` is a JSON array of {title, preview_url}; keyed by the graph
+        # artist id (corpus:/lowconf:/session:). Best-effort — a miss just
+        # re-fetches from iTunes. Never touches the frozen bundle.
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS artist_preview_cache ("
+            "artist_id TEXT PRIMARY KEY, tracks TEXT NOT NULL, created REAL NOT NULL)"
+        )
         con.commit()
     finally:
         con.close()
@@ -2954,6 +3329,19 @@ def _session_artist_from_songs(st: "_SessionState", artist_name: str,
                 meta = _corpus.metadata[idx]
                 cache_vec(tid, _corpus.embeddings[idx],
                           meta.get("name", ""), meta.get("artist", ""))
+    # Prewarmed premade-map tracks (e.g. itunes: ids) live in the DEFAULT
+    # session's embed cache and reach song placement via the cached_vec
+    # read-through, so they were never written into THIS session's cache. The
+    # artist-vector machinery below reads embed_cache with a SQL JOIN, which
+    # can't cross databases — so materialize any read-through-only track into
+    # this session's cache (same idea as the corpus copy above). cached_vec
+    # checks this session first, so a track already local is a harmless rewrite.
+    for tid in track_ids:
+        if _id_to_idx.get(tid) is not None:
+            continue                                     # corpus track: copied above
+        v = cached_vec(tid)
+        if v is not None:
+            cache_vec(tid, v, "", artist_name, backbone=cached_backbone(tid))
     # Longer busy timeout: a background embed job (e.g. from the demo import)
     # may be writing embed_cache concurrently — wait for the lock, don't fail.
     con = sqlite3.connect(str(st.embed_cache_path), timeout=30.0)
@@ -3347,6 +3735,83 @@ def artist_detail(artist_id: str) -> dict | None:
             "sample_track": meta.get("sample_track", ""),
             "profile": _artist_profiles.get(_norm(node.get("name", ""))),
             "connected_artists": connected}
+
+
+ARTIST_PREVIEW_COUNT = 5
+
+
+def artist_top_previews(artist_id: str, limit: int = ARTIST_PREVIEW_COUNT) -> dict:
+    """Top-N playable song previews for the artist detail pane's dropdown.
+
+    Resolves the artist name → iTunes catalog → the artist's tracks, keeping
+    the first ``limit`` that carry a 30s preview URL. Results are cached in the
+    session's ``artist_preview_cache`` so re-opening the pane is instant. This
+    is display-only (audio the fan can play) and never feeds clustering or the
+    map — the frozen artist bundle carries no per-track previews, so it must be
+    fetched live the first time.
+
+    Returns ``{"artist_id", "name", "tracks": [{"title", "preview_url"}, ...]}``.
+    A resolve/lookup miss returns an empty ``tracks`` list rather than raising —
+    the dropdown simply won't render.
+    """
+    _require_artist_ready()
+    st = get_session()
+    _ensure_artist_graph_loaded(st)
+    node = _artist_node_for_id(st, artist_id)
+    if node is None:
+        return None
+    name = node.get("name", "")
+
+    _ensure_artist_tables(st)
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        row = con.execute(
+            "SELECT tracks FROM artist_preview_cache WHERE artist_id = ?",
+            (artist_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if row is not None:
+        try:
+            cached = json.loads(row[0])
+        except (TypeError, ValueError):
+            cached = None
+        if cached is not None:
+            return {"artist_id": artist_id, "name": name, "tracks": cached[:limit]}
+
+    tracks: list[dict] = []
+    try:
+        resolved = itunes_src.resolve_artist(name)
+        if resolved and resolved.get("artist_id"):
+            rows = itunes_src.artist_tracks(resolved["artist_id"])
+            seen: set[str] = set()
+            for r in rows:
+                url = r.get("preview_url")
+                title = r.get("name") or r.get("title") or ""
+                key = _norm(title)
+                if not url or not title or key in seen:
+                    continue
+                seen.add(key)
+                tracks.append({"title": title, "preview_url": url})
+                if len(tracks) >= limit:
+                    break
+    except Exception as exc:                              # noqa: BLE001 — best-effort
+        print(f"[atlas] artist preview lookup failed for {name!r}: {exc}")
+        return {"artist_id": artist_id, "name": name, "tracks": []}
+
+    # Cache even an empty result so a genuinely preview-less artist isn't
+    # re-fetched on every pane open. Best-effort write.
+    con = sqlite3.connect(str(st.embed_cache_path))
+    try:
+        con.execute(
+            "INSERT OR REPLACE INTO artist_preview_cache(artist_id, tracks, created) "
+            "VALUES (?, ?, ?)", (artist_id, json.dumps(tracks), time.time()))
+        con.commit()
+    except Exception as exc:                              # noqa: BLE001
+        print(f"[atlas] artist preview cache write failed for {artist_id}: {exc}")
+    finally:
+        con.close()
+    return {"artist_id": artist_id, "name": name, "tracks": tracks}
 
 
 def remove_artist(artist_id: str) -> dict | None:

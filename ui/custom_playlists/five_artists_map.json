@@ -1,0 +1,721 @@
+{
+  "pid": "five_artists_map",
+  "name": "Friends of Gunk",
+  "description": "Top ~15 most-popular tracks per artist. Untitled Freak, Allegra Krieger, Lowaim, Tasha, Jana Horn, Little Cliff, Hiding Places, annihil (iTunes) + K. Porcelain (Bandcamp, local audio). Popularity ranked by Deezer track rank; K. Porcelain by the artist's Greatest Hits Mix order.",
+  "tracks": [
+    {
+      "id": "itunes:1500607238",
+      "name": "Every Side of You",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/ae/36/6f/ae366fb8-1bc9-cf34-d3c6-d67a09337850/mzaf_12710972550707130448.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1500607244",
+      "name": "I'm Gonna Drive",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview114/v4/97/56/e6/9756e61a-c634-12b2-c909-216813bd7a1f/mzaf_17096403239956250604.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1500607237",
+      "name": "It's Nice to Believe",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/f8/4c/af/f84cafc8-d7b3-4880-6ac0-3b4d1dbc4455/mzaf_3315486166372620539.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1500607240",
+      "name": "Rot",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/8d/ad/be/8dadbe7a-b3bc-c0a6-7c40-940638edc99f/mzaf_49778900978222651.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1500606935",
+      "name": "Welcome",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/d3/15/b1/d315b10e-f6c3-d216-02df-8ffbfde8f7f8/mzaf_16558723504141719178.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1500607245",
+      "name": "Where",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/cc/78/45/cc78451c-0394-e25f-bac3-05e95c9567a8/mzaf_3982521915475504485.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1707692810",
+      "name": "Chemical Flower",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/bf/ba/ed/bfbaed95-8b79-ce59-0791-fd58766fc1ac/mzaf_4987884037857161247.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1707692816",
+      "name": "Here",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/dc/9b/94/dc9b94c2-3ed4-1b25-4582-bd6681ed2f6d/mzaf_7973837331099700515.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1707692828",
+      "name": "I Want to Help You Move (No. 1)",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/69/e6/d9/69e6d928-2e87-1a25-d5af-7f834cb6a882/mzaf_6121264264136491549.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1707692811",
+      "name": "Joke/Dream",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/d4/b4/fa/d4b4fa1e-4b9f-5194-fbfb-ed0c3fc34c6d/mzaf_1779167922545772497.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1707692812",
+      "name": "Smoke Dome",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/a1/e0/4c/a1e04c84-cd29-4520-3f60-a995be59ea84/mzaf_5493555024031017660.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1686190517",
+      "name": "I Had Some To Give",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/12/fa/33/12fa33ab-febd-7ee0-9090-b5a6a7c63e44/mzaf_1134143849235949021.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1743113600",
+      "name": "Interlude for the Undefined",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/d0/80/54/d08054dc-4321-067d-6789-6ab8d5f8fe73/mzaf_14013404070234692357.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1743113608",
+      "name": "One or the Other",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/0a/07/4f/0a074f5a-3833-3467-d342-b8054f29b1cc/mzaf_18103814242595793891.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1743113616",
+      "name": "Where You Want to Go",
+      "artist": "Allegra Krieger",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/32/e0/d4/32e0d4f4-d026-7a08-20e3-1df2466d02e7/mzaf_12540613829920104486.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847977388",
+      "name": "Heartbreak Skatepark",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/83/25/bd/8325bdd4-693b-0d42-c1d0-97338de9f759/mzaf_16604426212635879987.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847977386",
+      "name": "Homework",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/61/4f/23/614f236e-18b9-0929-7d17-461e5aadd4e0/mzaf_757833839494145797.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847978060",
+      "name": "Animals",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/90/0c/11/900c11bc-f01a-5dab-fe5c-f9a9eadf6e44/mzaf_14994576550680355862.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847978061",
+      "name": "Canyon",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/b4/dc/87/b4dc87ec-2b91-3d3f-9a83-250b7f982090/mzaf_9465526626434789748.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847977979",
+      "name": "I'll Be",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/1d/b8/e0/1db8e0f0-37d8-2762-144b-b3f6cb5951b4/mzaf_2248055398380369160.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847978054",
+      "name": "Michelle (Arizona)",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/d8/a9/bc/d8a9bca3-1fff-e9bd-3a0c-bd95f04be0e3/mzaf_14057686646167698923.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847978047",
+      "name": "So Considerate",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/47/c2/96/47c29653-4ab8-821d-c565-ce60e2609eba/mzaf_5089782839479742109.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847977378",
+      "name": "The Fly",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/84/bd/dc/84bddc2e-c40d-adfb-46b4-e005c05386a8/mzaf_6132401130882862033.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847451169",
+      "name": "Crown of Tin",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/5f/37/a4/5f37a40a-4c69-acb2-8eb6-847423531890/mzaf_639145357233482623.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847451042",
+      "name": "Elephant Key",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/f5/ae/cc/f5aecc73-0af2-91ab-8ff6-d9a1a4c8f238/mzaf_1817183657204685359.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847451040",
+      "name": "Lesson",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/52/2b/87/522b8724-3295-df20-9b55-d9e9d98b69f8/mzaf_2240408293115429927.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847451014",
+      "name": "Pulp",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/af/17/3b/af173b5c-ba7e-6b31-6fa6-d83f3e423e45/mzaf_1681337647208094873.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1809412409",
+      "name": "Flooded Island",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/8c/f5/31/8cf5319a-fe8c-ba0e-72c1-c39f6d35278c/mzaf_17222785208744794725.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1809412408",
+      "name": "Unfixing",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/e0/03/6d/e0036d7c-012a-5357-a058-f0097e510df7/mzaf_17909184605912666316.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1866044526",
+      "name": "If The Floor Is Burning",
+      "artist": "Hiding Places",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/e1/47/39/e14739ba-cdc6-d377-ab89-75e5c423ffb4/mzaf_7312739268784655986.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589287284",
+      "name": "A Good Thing",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/1e/33/59/1e33594d-3d5b-d8f4-8501-7e88b6de5984/mzaf_5054621558389534240.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589286899",
+      "name": "Changing Lines",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/f5/51/54/f5515473-24b9-5835-9372-56a6626aeeda/mzaf_2309219778381931440.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589287272",
+      "name": "Man Meandering",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/f4/73/6e/f4736ea3-f69b-727b-2587-fee2a4155a94/mzaf_10791439028984364909.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589287278",
+      "name": "Tonight",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/2b/1c/72/2b1c7232-dcef-9afb-ffce-46dcf7a0024c/mzaf_119483187350451730.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589287402",
+      "name": "When I Go Down Into the Night",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/17/e8/50/17e850e2-858d-cc9a-66b4-560e7a701a64/mzaf_14022225659787300000.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1589287290",
+      "name": "Jordan",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/fb/96/91/fb9691fa-d828-eaaa-e6d9-bd7ea89740de/mzaf_495876722840945589.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656810673",
+      "name": "Days Go By",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/3e/ff/1b/3eff1b9b-9510-5b9e-2c30-7f38c2db1403/mzaf_12797713917639588327.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656811304",
+      "name": "Energy Go",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview112/v4/56/57/f5/5657f59f-080d-aebf-94c7-1b041fcf470c/mzaf_16496912038289126110.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656811279",
+      "name": "Love In Return",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/c3/0d/f9/c30df90c-1e3d-a505-0de9-b30c09150b2f/mzaf_14584553298325224262.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656811283",
+      "name": "Old Friend",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview112/v4/40/9e/2b/409e2b59-3bb6-5144-ee73-946df5214201/mzaf_12516764610409492675.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656811289",
+      "name": "Song For Eve",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview112/v4/cd/85/de/cd85de9c-8a3d-a02a-e5ac-98f1fbe32fac/mzaf_14824467666093908322.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1656811638",
+      "name": "The Way It Was",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview122/v4/04/63/c3/0463c3d8-c2d8-1601-7f76-838c0e7dbc98/mzaf_9925236649016793591.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847461150",
+      "name": "Don't think",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/34/ae/14/34ae14f4-1183-1f18-d025-5968213f1cd6/mzaf_13038387063044105380.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847461165",
+      "name": "It's alright",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/d6/f1/4a/d6f14a57-81a0-98c6-bbb5-b542db2ada73/mzaf_14550300923591192153.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1847461169",
+      "name": "Untitled (Cig)",
+      "artist": "Jana Horn",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/ee/c2/a9/eec2a90a-12be-23b0-5475-4117d66bbb97/mzaf_11475474092413551231.plus.aac.p.m4a"
+    },
+    {
+      "id": "bandcamp:3948087516",
+      "name": "PORN",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/68255a97a57323135ac3270e37794343/mp3-128/3948087516?p=0&ts=1787142787&t=ab62ed59f09ddf22c44bafdca0b7c2582b0cf6ef&token=1787142787_f002438be688553c8931bfb63391263a9fece8a8"
+    },
+    {
+      "id": "bandcamp:2287856636",
+      "name": "DREAMING",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/42e6ed1883da0aca7d0a0664c9b1b67f/mp3-128/2287856636?p=0&ts=1787142787&t=68696f07745b8736aa5b9927e548057893360e8f&token=1787142787_5dc9887300a8abde5561157480690125fb8c7a66"
+    },
+    {
+      "id": "bandcamp:417321955",
+      "name": "EVERY GUY FEELS DIFFERENT",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/a733a43671ddc76b1e531b4881ab5375/mp3-128/417321955?p=0&ts=1787142787&t=89d320cc6f31ec5e0adf3451515ef21a3eb7b34c&token=1787142787_a651882212503dda686bfff10c0089a7f30f1de4"
+    },
+    {
+      "id": "bandcamp:3451130579",
+      "name": "I LOVE WHAT I DO",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/c3ec93c76a651150aeb724792f23e6c0/mp3-128/3451130579?p=0&ts=1787142787&t=3e20f9d760f1fe6feced2179e6792ff75b97abbf&token=1787142787_7c6f70db1d7c1486ffdd4f12d717c7d9fc228be7"
+    },
+    {
+      "id": "bandcamp:2418629082",
+      "name": "I LOVE YOU MARCUS",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/da143579ac6e1743c273e2712ab77114/mp3-128/2418629082?p=0&ts=1787142787&t=8c06c2d9d77987cbcdc25ce7eea6265b6255eb9d&token=1787142787_b1afc61f3e69fabbf3c25528758446209baccb0b"
+    },
+    {
+      "id": "bandcamp:2265465422",
+      "name": "K. PORCELAIN\u2019S GREATEST HITS MIX",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/b278326d2f756d2111221fc9b0117899/mp3-128/2265465422?p=0&ts=1787142787&t=31d0be10aa90979e3b0ee36a650f02cec74d6962&token=1787142787_1a52b5f7067cc2ed0cd456cd0f8fdf7a25f24329"
+    },
+    {
+      "id": "bandcamp:1530051443",
+      "name": "LET THE CHILDREN BE FREE!",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/0ec373104a1edebbc1db60154264726f/mp3-128/1530051443?p=0&ts=1787142787&t=f1d573c8f78d5fb3b580895b80ebb5d8ceeb13cb&token=1787142787_910fca60f717931808d3a0ee985213ce6992b02f"
+    },
+    {
+      "id": "bandcamp:2636186829",
+      "name": "LOVE SONG FROM THE PORCELAIN THRONE",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/0a9aec64a7426caf7ec9572bbb0013f6/mp3-128/2636186829?p=0&ts=1787142787&t=e845e29954c6caee7717c34a63e4822be44a9400&token=1787142787_34ca9fdcb9012d52572240039429822770d324b4"
+    },
+    {
+      "id": "bandcamp:3333261968",
+      "name": "MARINA\u2019S \u2018PRIMADONNA\u2019",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/6038be55dd6a72ed637c4eaabea846e1/mp3-128/3333261968?p=0&ts=1787142787&t=b091924a6a7be309c09b8aef365aa0130636ca0c&token=1787142787_bf60401f3103bd3f3519be4ec290563c181921c6"
+    },
+    {
+      "id": "bandcamp:3501484045",
+      "name": "MOVE!",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/12e126d2cb56c51c1821359e28611357/mp3-128/3501484045?p=0&ts=1787142787&t=fa2c49314fb3f717a9a3b8be97e231ef7d196a3d&token=1787142787_4a0d4bc40bd40488f41f223c8eb2fc1ffd6c93a1"
+    },
+    {
+      "id": "bandcamp:2499399354",
+      "name": "ON THIS MY BIRTHDAY",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/c514601969c559c86a5b86d72f4f5750/mp3-128/2499399354?p=0&ts=1787142787&t=de9c31cea0d27219c984172757f04f609ff46765&token=1787142787_fbfd6d8f6733b9eb8d64103b71238e1b80b69ca6"
+    },
+    {
+      "id": "bandcamp:1093444822",
+      "name": "RSM\u2019S \u2018HERE COMES SUMMER AGAIN\u2019",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/3a3c193ce36266b9dda92a4b27744020/mp3-128/1093444822?p=0&ts=1787142787&t=4dc2c92ecef5b89ddf3f291312c2bbcf62a467a6&token=1787142787_1897855c42b5a69d267c593b0bf41712309f1d6b"
+    },
+    {
+      "id": "bandcamp:2691547415",
+      "name": "THIS PRETTY SONG",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/d0cdb98bdce452f80c4f1c0d57415e38/mp3-128/2691547415?p=0&ts=1787142787&t=8c2cdf369deb17f2e812318b8a3660257fce4938&token=1787142787_f2116fe879803e10d34bd7c19ef6dff59bfc7e13"
+    },
+    {
+      "id": "bandcamp:2224952684",
+      "name": "YOU, MY BEAUTIFUL SEAN",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/29e38557712794a862adacd0a9d70fa0/mp3-128/2224952684?p=0&ts=1787142787&t=3501c62d67d0d0149559e67c6eb2df650d50018f&token=1787142787_de0a4eae0b3e3d239859ca6819c6306ac94ed737"
+    },
+    {
+      "id": "bandcamp:3887969470",
+      "name": "Tonight was a good night",
+      "artist": "K. Porcelain",
+      "preview_url": "https://t4.bcbits.com/stream/7d83b755bdea83f710ee57d2fbcc177b/mp3-128/3887969470?p=0&ts=1787142789&t=0440c68aa00411fda6c7d53c10af9101440f8ded&token=1787142789_30ff6c770d5c7f0f432c419142917287ec0d1463"
+    },
+    {
+      "id": "itunes:1474485969",
+      "name": "Freaked Out Folks",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview113/v4/c7/cb/1d/c7cb1da9-9425-fbea-9cce-8040cd02c247/mzaf_7542733657753353635.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1529253351",
+      "name": "All My Trials",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview124/v4/2a/47/6d/2a476d6e-52cf-f39a-6f6e-fd78377637be/mzaf_12782121230403185698.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1529253343",
+      "name": "Lemon Tree",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview114/v4/af/a9/79/afa9791f-0e3a-700b-7787-6a636dba9268/mzaf_17351708791982957777.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1529253344",
+      "name": "On the News",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview124/v4/73/01/24/73012477-9dca-6c92-3d16-c1046060a5ef/mzaf_4951980764251772639.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1596017660",
+      "name": "Snapdragon",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/04/ce/25/04ce25b9-9038-cc01-4167-166b6ccc3db1/mzaf_16734160027671045714.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1702459184",
+      "name": "Bad Decisions",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/bc/7c/dc/bc7cdc64-4105-9d26-cfc6-4254285ab34d/mzaf_7600067806403130423.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592284",
+      "name": "Crazy (The Birthday Song)",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/ab/bd/01/abbd01ed-fe9a-2381-400f-984f45b27193/mzaf_7622835172297679823.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592650",
+      "name": "Hard",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/ab/f5/15/abf5152c-7c7b-739f-5421-d76b952e4a7f/mzaf_256770189577930191.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592283",
+      "name": "I Looked Up",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/d8/e8/13/d8e81374-5244-cc71-5ebf-4877eca65781/mzaf_10745426361802516580.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592647",
+      "name": "If U Slip",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/b1/6f/07/b16f0775-6200-143e-fbf0-ebe28c130aa2/mzaf_11827362314330976228.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592653",
+      "name": "Overshare",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/04/94/53/0494530a-5700-0aad-f3b1-5eaea7fd2176/mzaf_2470486916443749772.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592654",
+      "name": "Sunshine",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/02/21/54/022154ce-55e2-48d8-b37c-19ec0c53fa68/mzaf_7692055146555959959.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592646",
+      "name": "Tell Me",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/89/c5/3f/89c53fea-c62b-540c-5a84-127e854c4124/mzaf_10900067351804987882.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592651",
+      "name": "The Falling Part",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/10/7d/0c/107d0c77-0ede-4598-7850-4c3b1857e3dd/mzaf_13081487018087930605.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1703592649",
+      "name": "When I Get Home From Work",
+      "artist": "Little Cliff",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/08/b8/41/08b84113-2994-9be3-8688-f83f7b895813/mzaf_5160170364150926373.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1773035823",
+      "name": "Somniferous",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/68/63/61/6863612a-0631-1c5c-8c2e-56ed33c93839/mzaf_16313970547460905992.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1804176097",
+      "name": "In Space",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/ec/bc/77/ecbc7720-5e89-3cff-63df-2b37794c79ad/mzaf_15500966083319859892.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710602",
+      "name": "All Been Told",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/c8/68/eb/c868eb42-cc86-3f93-f646-f7cdf104b927/mzaf_4255168267099172096.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710603",
+      "name": "Foretold I",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/18/b5/19/18b51938-957d-ba2b-70ca-76958bb7a04c/mzaf_1187188208655636227.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710604",
+      "name": "Foretold II",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/c3/9a/54/c39a547c-fdfd-60af-335f-454bfaa54610/mzaf_12752097313823381721.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710601",
+      "name": "Hologram",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/54/a9/bb/54a9bbbf-f822-8b32-a16a-31f6fbeada78/mzaf_12142755686294530183.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710596",
+      "name": "Humming",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/c6/64/09/c664094b-18ed-6190-21da-c741c8112023/mzaf_9374818662232390957.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710599",
+      "name": "Life Force",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/40/21/c3/4021c3e9-3558-d764-7fc2-c209aefff312/mzaf_1695211738199079196.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1842710598",
+      "name": "Whole",
+      "artist": "Lowaim",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/84/9a/69/849a693d-4240-7a20-a02a-a3cb106de53e/mzaf_401017824038846828.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1541506538",
+      "name": "Love Song",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview114/v4/34/24/97/342497aa-078d-5b97-e463-4931e3eca87a/mzaf_16431749831114502535.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1576748340",
+      "name": "Lake Superior",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/06/b6/18/06b618db-8dd4-bad9-49c3-13f321a2370b/mzaf_7873471386290350540.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579577674",
+      "name": "Burton Island",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/62/bb/da/62bbda4a-1c4e-590f-d9d1-7798ab05a70b/mzaf_755036528147661768.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579577672",
+      "name": "Dream Still",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/08/ce/93/08ce93f9-2c17-2c0b-8f29-1098a5ff8cee/mzaf_18073600815997605582.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579577658",
+      "name": "History",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/23/d2/6b/23d26bd3-5fee-4a4e-f76f-37a0b41cd0dd/mzaf_16662957856843030946.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579577659",
+      "name": "Perfect Wife",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/d5/6d/53/d56d532c-8872-3a2e-b9ed-453de75894ef/mzaf_457038951655207413.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579577664",
+      "name": "Sorry\u2019s Not Enough",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/5b/60/26/5b602674-c3e7-fa99-7f50-e33b87f448f6/mzaf_6586556077881174696.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1579578008",
+      "name": "Year From Now",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/4c/db/ed/4cdbed54-47b0-b9a2-0e6c-b3a85f56e629/mzaf_3887392584161182197.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1751294596",
+      "name": "Michigan",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/6c/44/f3/6c44f394-da26-9fae-2e84-cf2ea4e597bd/mzaf_843263249517200426.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1751295169",
+      "name": "So Much More",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/11/d4/31/11d4318b-99bd-3663-37c1-a482d415f7cc/mzaf_17270172013266580298.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1751294583",
+      "name": "The Beginning",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/58/39/8a/58398a21-4450-a961-8c2a-61259900a14f/mzaf_6103864794613081838.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1748216919",
+      "name": "Jacksonville",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/c3/5f/e9/c35fe999-cc42-37b5-2b2e-00e2cbfbc348/mzaf_11633102304682260852.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1748216923",
+      "name": "The Man of\u00a0Metropolis",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/db/0a/31/db0a3102-84a2-471c-788e-aa75bc04f9c1/mzaf_5993055756773297088.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873407015",
+      "name": "Little Sparrow",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/16/6c/18/166c188e-d8ee-7d0b-3f2e-9845fd13ed9c/mzaf_7574354583095768610.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1887590411",
+      "name": "Actor",
+      "artist": "Tasha",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/51/67/20/516720e9-6d7e-1368-d40f-34718abdc31c/mzaf_13008148555291245259.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873904609",
+      "name": "untitled freak",
+      "artist": "Untitled Freak",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/54/4f/71/544f71d3-c4b2-f1cd-586e-355fda6b5e41/mzaf_18189083951965402376.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873904608",
+      "name": "birthday",
+      "artist": "Untitled Freak",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/b9/38/41/b938413f-d693-2c40-72cd-d19cd8752b75/mzaf_4545712316168785638.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873904612",
+      "name": "flower",
+      "artist": "Untitled Freak",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/e3/1e/a2/e31ea27f-6b9f-89ef-7437-a39ef662ebd3/mzaf_9524634589665179038.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873904615",
+      "name": "hammerhead shark (feat. Retail Drugs)",
+      "artist": "Untitled Freak",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/0c/d8/22/0cd822a8-2797-0012-d9ae-3704f300b310/mzaf_10563469614124562733.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1873904614",
+      "name": "insincerity",
+      "artist": "Untitled Freak",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/24/3d/85/243d8512-6a06-194f-477f-73051c14ec3c/mzaf_14976224554459591562.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1715895041",
+      "name": "Dickrider",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/f1/83/28/f18328fa-2652-41e2-0794-33e983c844f0/mzaf_552049039319489317.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1715895039",
+      "name": "Fragment",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/ab/28/9d/ab289d7b-a03d-9052-de8c-8f8055ed6075/mzaf_494960552223712967.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1715895038",
+      "name": "Imposter Hunt",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview126/v4/77/e8/58/77e858a4-7980-01ea-7762-61baa7407be7/mzaf_18362250922510015619.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1715895040",
+      "name": "Weightlesss",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview116/v4/c7/d4/18/c7d41860-b445-bef4-c4c5-62526c1ba173/mzaf_3021656526199725135.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1749204167",
+      "name": "Charmer",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/02/91/69/029169f8-658d-abd8-944b-d895c74de1e1/mzaf_9804281108672848052.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946206",
+      "name": "Against the Grain of Assumption",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/2f/7e/8d/2f7e8d76-b79f-d5db-8d4d-d704adbaf471/mzaf_9384822581301557657.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946214",
+      "name": "BOYS ARE SO DISTRACTING",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/13/fc/29/13fc29e3-abda-0c86-065c-004ebdb5dba6/mzaf_15053313623564843046.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946210",
+      "name": "Disencounter",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/50/bd/a4/50bda4cc-e9fd-d55d-b224-ce4f7009b205/mzaf_5296973916907147260.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946209",
+      "name": "Sinister Inertia",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/ff/3b/82/ff3b82e4-84d6-da60-474f-23b7e04d1fe9/mzaf_17032419475186627983.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946212",
+      "name": "Sluts",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/bc/21/ea/bc21ea7f-9ea6-c200-7de9-392f3548d191/mzaf_13650840770086172506.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946213",
+      "name": "Spicule",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/db/f0/48/dbf04888-9ee6-7130-09dc-b283965820c8/mzaf_8383851321503963711.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946211",
+      "name": "Sutures of Time (feat. Anka Raczynska)",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/14/a9/4e/14a94e34-e2a2-60b9-0695-df05cb3f3697/mzaf_11091653143481556285.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946215",
+      "name": "Tether",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/63/91/0b/63910bef-5320-57ff-1f6c-9f48d1c27403/mzaf_15210824019831246092.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946208",
+      "name": "Trap Door",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/c0/ba/e1/c0bae13b-32bd-ac9d-e101-376ddc0727eb/mzaf_4741697783437062096.plus.aac.p.m4a"
+    },
+    {
+      "id": "itunes:1811946216",
+      "name": "Trap Door II: Heaven's Gate (Kat Nzingha Remix)",
+      "artist": "annihil",
+      "preview_url": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/a4/ad/ba/a4adba96-2d60-3899-b79c-81eca4c50ef6/mzaf_2058358868922014148.plus.aac.p.m4a"
+    }
+  ]
+}
