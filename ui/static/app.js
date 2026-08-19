@@ -56,7 +56,7 @@ const SEARCH_MODES = {
   },
   albums: {
     placeholder: 'Album name…',
-    hint: 'Deezer albums — any release. Tracks embed in the background as they download.',
+    hint: 'Deezer → artist discography → Spotify → iTunes. Tracks embed in the background as they download.',
     empty: 'Search for an album to load its tracks onto the atlas',
   },
 };
@@ -1131,9 +1131,13 @@ async function openArtistDetail(id) {
       <div class="detail-artist">${esc(data.cluster_label || `Cluster ${data.cluster_id}`)}</div>
       ${artistProfileHtml(data.profile)}
       <div class="detail-section">
-        <div class="positioning-size">${data.track_count || 0} corpus/private track${data.track_count === 1 ? '' : 's'}${data.upload_count ? ` · ${data.upload_count} uploaded` : ''}</div>
+        <div class="positioning-size">${data.track_count || 0} song${data.track_count === 1 ? '' : 's'} used for placement</div>
         ${data.low_confidence ? `<div class="low-confidence-note" id="lowconf-note" role="button" tabindex="0" title="Click to strengthen this placement with more song previews">Placed from fewer than 5 tracks, so this clustering is less confident.</div>` : ''}
         ${data.sample_track ? `<div class="positioning-pitch">Representative track: ${esc(data.sample_track)}</div>` : ''}
+        <details class="artist-previews" id="artist-previews">
+          <summary>Play top 5 songs</summary>
+          <div class="artist-previews-body"><div class="empty-hint">Loading previews…</div></div>
+        </details>
       </div>
       <div class="detail-section"><h3>Connected artists</h3>
         ${connected.length ? connected.map(row => `
@@ -1154,9 +1158,45 @@ async function openArtistDetail(id) {
         });
       }
     }
+    const previews = document.getElementById('artist-previews');
+    if (previews) {
+      previews.addEventListener('toggle', () => {
+        if (previews.open && !previews.dataset.loaded) loadArtistPreviews(id, previews);
+      });
+    }
   } catch (err) {
     showError(err.message);
     ArtistGraph.clearSelection();
+  }
+}
+
+// Lazy-load the artist's top-5 playable previews the first time the dropdown
+// is opened. Fetched live from iTunes on the backend and cached to the session,
+// so a re-open is instant. Display-only — never touches clustering or the map.
+async function loadArtistPreviews(id, details) {
+  const body = details.querySelector('.artist-previews-body');
+  if (!body) return;
+  details.dataset.loaded = '1';
+  try {
+    const response = await fetch('/api/artist/' + encodeURIComponent(id) + '/previews');
+    const data = await response.json();
+    // Guard against a stale response after the user clicked a different node.
+    if (state.detailId !== id || state.detailType !== 'artist') return;
+    if (!response.ok || data.error) throw new Error(data.error || 'Failed to load previews');
+    const tracks = data.tracks || [];
+    if (!tracks.length) {
+      body.innerHTML = '<div class="empty-hint">No previews available for this artist.</div>';
+      return;
+    }
+    body.innerHTML = tracks.map(t => `
+      <div class="preview-row">
+        <button class="btn-icon" title="Preview"
+          onclick="togglePreview('${esc(t.preview_url)}', this)">▶</button>
+        <span class="preview-title">${esc(t.title)}</span>
+      </div>`).join('');
+  } catch (err) {
+    delete details.dataset.loaded;
+    body.innerHTML = `<div class="empty-hint">${esc(err.message)}</div>`;
   }
 }
 
@@ -1203,7 +1243,7 @@ function fmtFollowers(n) {
 function artistProfileHtml(p) {
   if (!p) {
     return '<div class="artist-profile-empty">No enrichment profile yet — '
-         + 'run artist enrichment to add image, origin, genres &amp; labels.</div>';
+         + 'run artist enrichment to add image, origin &amp; labels.</div>';
   }
   const photo = p.image_url
     ? `<img class="artist-photo" src="${esc(p.image_url)}" alt="" loading="lazy"
@@ -1213,10 +1253,6 @@ function artistProfileHtml(p) {
     ? `<div class="artist-fans"><strong>${fmtFollowers(p.following)}</strong>
          ${esc(p.following_source || 'Deezer')} fans${p.following_as_of
            ? ` <span class="as-of">as of ${esc(p.following_as_of)}</span>` : ''}</div>`
-    : '';
-  const genres = (p.genres && p.genres.length)
-    ? `<div class="genre-chips">${p.genres.map(g =>
-         `<span class="genre-chip">${esc(g)}</span>`).join('')}</div>`
     : '';
   const origin = p.origin
     ? `<div class="artist-field"><span class="field-label">Origin</span>${esc(p.origin)}</div>`
@@ -1228,7 +1264,7 @@ function artistProfileHtml(p) {
   // never reads as an authoritative "current label" / cross-platform total.
   const srcs = [];
   if (p.image_source || p.following_source) srcs.push('Deezer');
-  if (p.origin_source === 'musicbrainz' || (p.genres && p.genres.length) || (p.labels && p.labels.length)) srcs.push('MusicBrainz');
+  if (p.origin_source === 'musicbrainz' || (p.labels && p.labels.length)) srcs.push('MusicBrainz');
   const prov = `<details class="artist-prov"><summary>Sources &amp; freshness</summary>
       <div>${srcs.length ? esc(srcs.join(' · ')) : 'no external sources'}${
         p.match_confidence != null ? ` · match ${Math.round(p.match_confidence * 100)}%` : ''}${
@@ -1236,11 +1272,11 @@ function artistProfileHtml(p) {
         p.enrichment_status && p.enrichment_status !== 'complete'
           ? ` · ${esc(p.enrichment_status)}` : ''}</div>
     </details>`;
-  const hasBody = photo || fans || genres || origin || labels;
+  const hasBody = photo || fans || origin || labels;
   return `<div class="artist-profile">
       ${photo}
       <div class="artist-profile-body">
-        ${fans}${origin}${labels}${genres}
+        ${fans}${origin}${labels}
         ${hasBody ? '' : '<div class="empty-hint">Matched, but no profile fields available.</div>'}
         ${prov}
       </div>

@@ -35,7 +35,7 @@ python ui/app.py   # port 5000; use the corpus-compatible Python 3.11 env
 | `POST /api/playlist/place` | Place a playlist's tracks onto the map |
 | `GET /api/playlist/status/<job_id>` | Poll async placement progress, including stop availability |
 | `POST /api/playlist/stop/<job_id>` | Gracefully stop a running playlist/album embedding job after the current track |
-| `GET /api/albums/search` | Deezer album search |
+| `GET /api/albums/search` | Album search (four-tier, Deezer ids out) |
 | `POST /api/album/place` | Place an album's tracks onto the map |
 | `GET /api/itunes/artists/search` | iTunes artist search (for the discography importer) |
 | `POST /api/itunes/artist/place` | Place an artist's whole iTunes discography (`cap` overrides `IMPORT_CAP`, which truncates real catalogs) |
@@ -103,6 +103,58 @@ track, so a fallback could only match a different song and silently embed the
 wrong audio. Bulk import: `POST /api/itunes/artist/place`, or
 `scripts/cache_itunes_artist.py "<artist>"` to fill the embed cache offline
 (~4s/track, resumable — re-runs skip anything already cached).
+
+## Album search — the same four tiers, a different failure
+
+`atlas.search_albums()` runs Deezer title search → Deezer artist discography →
+Spotify → iTunes, on the same two rules as `search()` (gate on relevance, top
+up rather than stop). It exists because Deezer alone could not find King
+Krule's *The OOZ*, and **not because of a catalog gap** — the album is right
+there, its tracks are findable one by one through the track search. Deezer's
+album index matches the **title alone**:
+
+| Query | Deezer `search/album` |
+|---|---|
+| `king krule the ooz` | 0 rows |
+| `the ooz king krule` | 0 rows |
+| `the ooz` | 9 albums by an unrelated band called The Oozes |
+| `album:"the ooz"` | noise — a bare structured title query is worse than the plain one |
+| `artist:"king krule" album:"the ooz"` | the album, first hit |
+
+So the tiers attack the *lookup*, not the catalog:
+
+| Tier | How it finds the album |
+|---|---|
+| `deezer` | plain title search, filtered by `_relevant_albums` (every query token a whole word in artist+title — "ooz" is not a word in "oozes", which is what keeps the band from answering for the album) |
+| `deezer_artist` | cuts the query at each token boundary, looks one half up as an artist, fuzzy-matches the other half against `artist/<id>/albums`. Catches the common "<artist> <album>" phrasing, and a bare artist name browses the discography |
+| `spotify` | Spotify's album search purely as a **name resolver** — it turns loose text into a canonical (artist, title) pair |
+| `itunes` | same, for releases the other two indexes miss; strips iTunes' " - Single"/" - EP" suffixes first |
+
+Both name tiers resolve back onto a Deezer release (`_resolve_album`: structured
+query first, then the discography), so **every result is a Deezer album id** and
+`place_album` is untouched — placed tracks keep their preview URL to embed from.
+Details that are load-bearing:
+
+- **Verify what a structured query returns.** Deezer's `artist:"…" album:"…"`
+  is not a strict AND: `artist:"Frank Ocean" album:"Chanel"` returns someone
+  else's *Chanel*, and `album:"In Rainbows"` leads with *In Rainbows (Disk 2)*.
+  `_best_album` re-scores and rejects below `ALBUM_TITLE_MIN`/`ALBUM_ARTIST_MIN`.
+- **Ghost artists.** `search/artist?q=radiohead` ranks an empty duplicate
+  Radiohead (id 323887691, `nb_album` 0) above the real one (id 399, 45 albums),
+  so equal name matches are broken by catalog size, not by search rank.
+- **The browse threshold is stricter than the split threshold**
+  (`ALBUM_BROWSE_MIN` 0.90 vs `ALBUM_ARTIST_MIN` 0.80). At 0.80, "the ooz"
+  resolves to The Oozes and their discography crowds out the record searched for.
+- **The name tiers filter on recall, not all-tokens** (`_albums_by_recall`, 60%).
+  All-tokens is right for tier 1 but throws away what tiers 3/4 exist to catch:
+  "the beatles sgt pepper" scores 2/3 against *Sgt. Pepper's Lonely Hearts Club
+  Band* because `_norm` leaves the possessive on "peppers".
+- **Latency is why the resolves are parallel.** Each (artist, title) pair costs
+  one or two Deezer round-trips; eight in series added ~4s to a search someone
+  is watching. `_fill_track_counts` is parallel for the same reason —
+  `artist/<id>/albums` carries no `nb_tracks`, so rows would show "? tracks".
+
+Tests: `tests/test_atlas_albums.py` (fully stubbed, no network).
 
 ## Runtime facts worth knowing
 
